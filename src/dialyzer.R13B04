@@ -1,0 +1,93 @@
+  application
+brick_admin.erl:1302: The created fun only terminates with explicit exception
+brick_admin.erl:1730: The created fun only terminates with explicit exception
+brick_admin.erl:2337: The created fun only terminates with explicit exception
+brick_admin_event_h.erl:112: The created fun only terminates with explicit exception
+brick_ets.erl:1502: Function my_insert/6 has no local return
+brick_ets.erl:1521: Function my_insert2/6 has no local return
+brick_ets.erl:1607: Function my_delete/3 has no local return
+brick_ets.erl:1836: Function checkpoint_start/4 only terminates with explicit exception
+brick_ets.erl:1926: The created fun only terminates with explicit exception
+brick_ets.erl:2349: The pattern {'reply', Reply, NewInterimS} can never match the type {'noreply',#state{options::'undefined' | [any()],start_time::'undefined' | {_,_,_},log_dir::'undefined' | [any()],bigdata_dir::'undefined' | [any()],n_do::pos_integer(),thisdo_mods::'undefined' | [any()],checkpoint_opts::'undefined' | [any()]}}
+brick_ets.erl:2820: Guard test is_record(S::'undefined','state',44) can never succeed
+brick_ets.erl:2953: The created fun has no local return
+brick_ets.erl:2965: Function squidflash_doit/5 only terminates with explicit exception
+brick_ets.erl:2970: The created fun only terminates with explicit exception
+brick_ets.erl:2987: Function squidflash_prime1/5 only terminates with explicit exception
+brick_mboxmon.erl:314: The created fun has no local return
+brick_mboxmon.erl:329: Function start_water_report_loop/3 has no local return
+brick_mboxmon.erl:338: Function water_report_loop/2 only terminates with explicit exception
+brick_mboxmon.erl:372: The created fun only terminates with explicit exception
+brick_mboxmon.erl:375: The call erlang:register(ResumeName::atom(),pid()) might fail due to a possible race condition caused by its combination with the erlang:whereis(ResumeName::atom()) call in brick_mboxmon.erl on line 373
+cluster_info.erl:36: The specification for cluster_info:start/0 states that the function might also return {'error',_} | {'ok',pid(),_} but the inferred return is {'ok',pid()}
+cluster_info.erl:37: The specification for cluster_info:start/2 states that the function might also return {'error',_} | {'ok',pid(),_} but the inferred return is {'ok',pid()}
+  Compiling some key modules to native code... done in 0m42.78s
+ done in 1m59.86s
+done (warnings were emitted)
+  eqc:always/2
+  eqc:forall/2
+  eqc_gen:bind/2
+  eqc_gen:bool/0
+  eqc_gen:char/0
+  eqc_gen:choose/2
+  eqc_gen:elements/1
+  eqc_gen:float/0
+  eqc_gen:int/0
+  eqc_gen:largeint/0
+  eqc_gen:lazy/1
+  eqc_gen:list/1
+  eqc_gen:oneof/1
+  eqc_gen:parameter/1
+  eqc_gen:resize/2
+  eqc_gen:sample/1
+  eqc_gen:shrinkwith/2
+  eqc_gen:sized/1
+  eqc_gen:suchthat/2
+  eqc_gen:vector/2
+  eqc_gen:weighted_default/2
+  eqc_gen:with_parameters/2
+  eqc:start/1
+  eqc_statem:commands/2
+  eqc_statem:parallel_commands/2
+  eqc_statem:run_commands/3
+  eqc_statem:run_parallel_commands/3
+  eqc_statem:zip/2
+  eqc:whenfail/2
+  gen_event
+  gen_fsm
+  gen_server
+gmt_cli.erl:166: Function close_exit_normal/1 only terminates with explicit exception
+gmt_erts_dist.erl:73: Invalid type specification for function gmt_erts_dist:dist_encode/1. The success typing is ('node_link' | {'group_leader',_,_} | {'link',_,_} | {'unlink',_,_} | {'demonitor_p',_,_,_} | {'exit',_,_,_} | {'exit2',_,_,_} | {'monitor_p',_,_,_} | {'send',_,_,_} | {'exit_tt',_,_,_,_} | {'monitor_p_exit',_,_,_,_} | {'reg_send',_,_,_,_} | {'send_tt',_,_,_,_} | {'reg_send_tt',_,_,_,_,_}) -> 'todo'
+gmt_erts_dist.erl:88: Invalid type specification for function gmt_erts_dist:dist_decode/1. The success typing is (_) -> 'todo'
+  gmt_genpool_server
+gmt_hlog_common.erl:1061: The created fun only terminates with explicit exception
+gmt_hlog_common.erl:1185: The created fun only terminates with explicit exception
+gmt_hlog_common.erl:192: The call erlang:register(CName::atom(),pid()) might fail due to a possible race condition caused by its combination with the erlang:whereis(CName::any()) call in gmt_hlog_common.erl on line 190
+gmt_hlog_common.erl:316: The created fun only terminates with explicit exception
+gmt_hlog_common.erl:748: The created fun only terminates with explicit exception
+gmt_hlog_common.erl:952: The created fun only terminates with explicit exception
+gmt_hlog_local.erl:384: The created fun only terminates with explicit exception
+gmt_pmap.erl:99: The created fun only terminates with explicit exception
+  gmt_tlog_printer:tlog_format/2
+gmt_util.erl:1114: Function wait_for_processes_loop/2 only terminates with explicit exception
+gmt_util.erl:560: Function shut_down_nicely/1 only terminates with explicit exception
+gmt_xconv.erl:21: The specification for gmt_xconv:my_char/6 states that the function might also return 'badseq' | 'general' | 'incomplete' | 'overflow' | 'timeout' but the inferred return is 'badcharset' | {'ok',_,0,0}
+mod_admin.erl:1166: The pattern [Nd | _] can never match the type []
+partition_detector.erl:29: The specification for partition_detector:start/0 states that the function might also return {'ok',pid(),_} but the inferred return is 'ignore' | {'error',_} | {'ok',pid()}
+partition_detector.erl:30: The specification for partition_detector:start/2 states that the function might also return {'ok',pid(),_} but the inferred return is 'ignore' | {'error',_} | {'ok',pid()}
+partition_detector_mnesia.erl:40: The specification for partition_detector_mnesia:init/1 states that the function might also return 'ignore' | {'stop',_} | {'ok',_,'infinity' | non_neg_integer()} but the inferred return is {'ok',{'state'}}
+partition_detector_mnesia.erl:41: The specification for partition_detector_mnesia:handle_call/3 states that the function might also return {'noreply',_} | {'noreply',_,'timeout'} | {'stop',_,_} | {'reply',_,_,'infinity' | non_neg_integer()} | {'stop',_,_,_} but the inferred return is {'reply',_,_}
+partition_detector_mnesia.erl:42: The specification for partition_detector_mnesia:handle_cast/2 states that the function might also return {'noreply',_,'timeout'} | {'stop',_,_} but the inferred return is {'noreply',_}
+partition_detector_mnesia.erl:43: The specification for partition_detector_mnesia:handle_info/2 states that the function might also return {'noreply',_,'timeout'} | {'stop',_,_} but the inferred return is {'noreply',_}
+partition_detector_server.erl:61: The specification for partition_detector_server:handle_call/3 states that the function might also return {'noreply',_} | {'noreply',_,'timeout'} | {'stop',_,_} | {'reply',_,_,'infinity' | non_neg_integer()} but the inferred return is {'reply',_,_} | {'stop','normal','ok',_}
+partition_detector_server.erl:62: The specification for partition_detector_server:handle_cast/2 states that the function might also return {'noreply',_,'timeout'} | {'stop',_,_} but the inferred return is {'noreply',_}
+partition_detector_server.erl:63: The specification for partition_detector_server:handle_info/2 states that the function might also return {'noreply',_,'timeout'} but the inferred return is {'noreply',_} | {'stop',{'node_list_change',_,_},{'state',_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_}}
+partition_detector_server.erl:64: The specification for partition_detector_server:init/1 states that the function might also return 'ignore' | {'stop',_} | {'ok',_,'infinity' | non_neg_integer()} but the inferred return is {'ok',{'state','undefined' | [any()],'undefined' | integer(),'undefined' | integer(),boolean(),'undefined' | pid(),'undefined' | pid(),'undefined' | port(),'undefined' | timer:tref(),_,[],[],[],[],0,'undefined' | fun(() -> any()),_,_,'undefined' | char(),'undefined' | integer()}}
+partition_detector_server.erl:688: The created fun has no local return
+partition_detector_sup.erl:34: The specification for partition_detector_sup:init/1 states that the function might also return 'ignore' | {'error',_} but the inferred return is {'ok',{{'one_for_one',15,60},[{_,_,_,_,_,_},...]}}
+  Proceeding with analysis...
+  proc_socket_server:server_status/1
+  supervisor
+Unknown behaviours (behaviour_info(callbacks) does not return any specs):
+Unknown functions:
+  yaws:funreverse/2

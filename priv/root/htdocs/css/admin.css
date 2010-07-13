@@ -1,0 +1,32 @@
+body { 
+  background-color: #eeeeee;
+  color: #000000;
+  font-family: sans
+}
+
+tr.head { 
+  background-color: #888888;
+  color: #ffffff
+}
+
+tr.data { 
+  background-color: #cccccc
+}
+
+td.ok { 
+  background-color: #00ff00
+}
+
+td.warn { 
+  background-color: #ffff00
+}
+
+td.error { 
+  background-color: #ff0000
+}
+
+td.blank { 
+  background-color: #eeeeee
+}
+
+

@@ -1,0 +1,81 @@
+%%% @doc A mostly-implementation of memcached, 
+%%%      <tt>http://www.danga.com/memcached/</tt>
+%%%      plus additional features that GMS might like to have.
+%%%
+%%% Extra features:
+%%% <ol>
+%%% <li> Major design goal: strong consistency, using the "chain
+%%%    replication" state machine technique described by van Renesse
+%%%    and Schneider in "Chain Replication for Supporting High Throughput
+%%%    and Availability", USENIX OSDI 2004. </li>
+%%% <li> Keys are stored in an ordered_set ETS table, which is slower, but
+%%%    GMS is going to want to search for a range of nearby keys. </li>
+%%% <li> Add a "timestamp" feature that the "Cheap Recovery" paper:
+%%%        http://swig.stanford.edu/pub/publications/dstore-tos2004.pdf
+%%%    Any change or delete will require that the new/delete timestamp
+%%%    is later than the existing timestamp. </li>
+%%% <li> Add a "transaction-like" feature: several commands can be grouped
+%%%    into a transaction: if any of the "add" or "replace" commands
+%%%    fail, then none of the add/replace/set commands in the group
+%%%    will be applied.  It isn't clear what I should do in the case
+%%%    of get and delete commands in the txn: for now their results
+%%%    have no effect on the txn's overall success.  
+%%%    GMS probably doesn't need such txns, but I'm guessing that
+%%%    they would be handy if they were available. </li>
+%%% <li> I added an optional flag (not in the memcached "16 bit flag" sense)
+%%%    on replace/set operations that implement a sort of test-and-set  
+%%%    feature: if the key is already there, the value will be overwritten
+%%%    if and only if the timestamp accompanying the 'testset' flag 
+%%%    matches the current key's timestamp.  This would help detect race
+%%%    conditions when multiple clients try updating the same key 
+%%%    without requiring a mutex/lock/whatever to serialize access.
+%%%    The 'testset' flag function works in the context of transactions,
+%%%    too. </li>
+%%% <li> All data modifying commands, add/replace/set/delete, are logged
+%%%    to disk for persistence. </li>
+%%% <li> This implementation should differ from the previous ETS brick
+%%%    implementation in that we update our ETS table <b>after</b>
+%%%    successful (a)sync log write.  We want to avoid dirty reads, since
+%%%    the goal of this implementation is strong consistency. </li>
+%%% <li> A real implementation would write &amp; sync the log first, then
+%%%     update the tables by reading *from*the*log*.  The current
+%%%     implementation relies on the fact that replies aren't sent until
+%%%     after the disk write ... but this issue needs revisiting from a
+%%%     correctness point-of-view. </li>
+%%% </ol>
+%%%
+%%% Not implemented/TODO list:
+%%% <ol>
+%%% <li> Add per-op or per-txn flag for disk sync/no-sync. </li>
+%%% <li> Add periodic check for log file size, start new one if too big. </li>
+%%% <li> Add periodic checkpoint. </li>
+%%% <li> ExpTime is not stored (always set to 0 when fetched). </li>
+%%% <li> No total memory limitation. </li>
+%%% <li> The memcached protocol "incr" and "decr" commands are not
+%%%      implemented.</li>
+%%% <li> Client side: no sliding window of in-flight queries like the
+%%%      "Cheap Recovery" paper suggests.</li>
+%%%   <ol>
+%%%   <li> Huang and Fox, "Cheap Recovery: A Key to Self-Managing State",
+%%%        ACM Transactions on Storage, Vol 1, No 1, 2004. </li>
+%%%   </ol>
+%%% <li> Server side: client requests don't yet have a timestamp when sent,
+%%%    so the server side doesn't simply ignore requests that were sent
+%%%    too long ago (as suggested by the "Cheap Recovery" paper). </li>
+%%% <li> Change add/replace/set to use must-exist/must-not-exist flags? </li>
+%%% </ol>
+%%%
+%%% Finally implemented:
+%%% <ol>
+%%% <li> Add a no-disk-logging/memory only option at init. </li>
+%%% <li> The caller is expected to do his/her own hashing to figure out
+%%%    which server(s) to talk to. </li>
+%%% </ol>
+%%%
+%%% Probably won't implement:
+%%% <ol>
+%%% <li> Flags bits (according to memcache protocol) are not stored. </li>
+%%% <li> The "delete" op does not include a time to refuse add/replace
+%%%    commands for the deleted key (according to memcached protocol
+%%%    spec).</li>
+%%% </ol>
