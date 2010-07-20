@@ -191,26 +191,30 @@ timeout_poll(S) ->
     end.
 
 make_brick_map() ->
-    AdminServer = global:whereis_name(brick_admin),
-    Tables = brick_admin:get_tables(AdminServer),
-    TabsGHs = [{Tab, GH} || Tab <- Tables,
-                            {ok, _Vers, GH} <- [brick_simple:get_gh(Tab)]],
-    %% We need all bricks in all chains, not merely the active bricks.
-    GHsChains =
-        lists:flatten(
-          lists:map(
-            fun({_Tab, GH}) ->
-                    Cs = (GH#g_hash_r.current_h_desc)#hash_r.healthy_chainlist ++
-                        (GH#g_hash_r.new_h_desc)#hash_r.healthy_chainlist,
-                    [{GH, Chain} || Chain <- Cs]
-            end, TabsGHs)),
-    %% Filter: find bricks only on this node
-    BrsChsGHs = [{Br, Ch, GH} || {GH, {Ch, Brs}} <- GHsChains,
-                                 {Br, Nd} <- Brs, Nd == node()],
-    %% Now find the head brick each chain in AllBrChs
-    BrsHds = [{Br, brick_hash:chain2brick(Ch, write, GH)} ||
-                 {Br, Ch, GH} <- BrsChsGHs],
-    orddict:from_list(BrsHds).
+    case global:whereis_name(brick_admin) of
+        undefined ->
+            orddict:new();
+        AdminServer ->
+            Tables = brick_admin:get_tables(AdminServer),
+            TabsGHs = [{Tab, GH} || Tab <- Tables,
+                                    {ok, _Vers, GH} <- [brick_simple:get_gh(Tab)]],
+            %% We need all bricks in all chains, not merely the active bricks.
+            GHsChains =
+                lists:flatten(
+                  lists:map(
+                    fun({_Tab, GH}) ->
+                            Cs = (GH#g_hash_r.current_h_desc)#hash_r.healthy_chainlist ++
+                                (GH#g_hash_r.new_h_desc)#hash_r.healthy_chainlist,
+                            [{GH, Chain} || Chain <- Cs]
+                    end, TabsGHs)),
+            %% Filter: find bricks only on this node
+            BrsChsGHs = [{Br, Ch, GH} || {GH, {Ch, Brs}} <- GHsChains,
+                                         {Br, Nd} <- Brs, Nd == node()],
+            %% Now find the head brick each chain in AllBrChs
+            BrsHds = [{Br, brick_hash:chain2brick(Ch, write, GH)} ||
+                         {Br, Ch, GH} <- BrsChsGHs],
+            orddict:from_list(BrsHds)
+    end.
 
 check_mboxes(S) ->
     Bricks = [Brick || Brick <- brick_shepherd:list_bricks(),
@@ -384,8 +388,8 @@ set_repair_overload(Brick, N, RepairHigh) ->
                   catch brick_server:chain_set_my_repair_state(
                           Brick, node(), repair_overload),
                   ?E_ERROR("Brick ~p has mailbox size ~p > repair high water "
-                             "mark ~p, changing brick status, resume in ~p "
-                             "seconds (proc ~p)\n",
+                           "mark ~p, changing brick status, resume in ~p "
+                           "seconds (proc ~p)\n",
                            [Brick, N, RepairHigh, ResumeSecs, ResumeName]),
                   put(start_date_time, {date(), time()}),
                   put(resume_secs, ResumeSecs),
@@ -401,7 +405,7 @@ set_repair_overload(Brick, N, RepairHigh) ->
                           ok
                   end,
                   exit(normal)
-                  end).
+          end).
 
 throttle_brick(ThrottleBrick, RepairingP) ->
     ?E_INFO("~s: throttle ~p repairing ~p\n",
