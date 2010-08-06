@@ -739,4 +739,10 @@
 %
 -define(APPLOG_APPM_108, ?APPLOG_GDSS_APPM(108)).
 
+% @doc cause    disk error happen on scavenger processing.
+% @doc effect   abort the scavenger process
+% @doc action   repair the error cause
+% @doc monitor  Yes
+%
+-define(APPLOG_APPM_109, ?APPLOG_GDSS_APPM(109)).
 

@@ -1171,10 +1171,10 @@ scavenger_commonlog(SA) ->
                         erlang:garbage_collect(),
                         [{brick_ets:temp_path_to_seqnum(Path2), Bytes}|Acc]
                     catch Err1:Err2 ->
-                            ?E_ERROR("SCAV: ~p error processing ~s: ~p ~p at ~p\n",
-                                     [SA#scav.name, Err1, Err2,
+                            ?APPLOG_ALERT(?APPLOG_APPM_109, "SCAV: ~p error processing ~s: ~p ~p at ~p\n",
+                                     [SA#scav.name, Path, Err1, Err2,
                                       erlang:get_stacktrace()]),
-                            Acc
+                            exit(abort)
                     end
             end,
     %% Do this next step in a child process, to try to avoid some
