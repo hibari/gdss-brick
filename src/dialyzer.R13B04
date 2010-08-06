@@ -14,52 +14,20 @@ brick_ets.erl:2953: The created fun has no local return
 brick_ets.erl:2965: Function squidflash_doit/5 only terminates with explicit exception
 brick_ets.erl:2970: The created fun only terminates with explicit exception
 brick_ets.erl:2987: Function squidflash_prime1/5 only terminates with explicit exception
-brick_mboxmon.erl:314: The created fun has no local return
-brick_mboxmon.erl:329: Function start_water_report_loop/3 has no local return
-brick_mboxmon.erl:338: Function water_report_loop/2 only terminates with explicit exception
-brick_mboxmon.erl:372: The created fun only terminates with explicit exception
-brick_mboxmon.erl:375: The call erlang:register(ResumeName::atom(),pid()) might fail due to a possible race condition caused by its combination with the erlang:whereis(ResumeName::atom()) call in brick_mboxmon.erl on line 373
+brick_mboxmon.erl:318: The created fun has no local return
+brick_mboxmon.erl:333: Function start_water_report_loop/3 has no local return
+brick_mboxmon.erl:342: Function water_report_loop/2 only terminates with explicit exception
+brick_mboxmon.erl:376: The created fun only terminates with explicit exception
+brick_mboxmon.erl:379: The call erlang:register(ResumeName::atom(),pid()) might fail due to a possible race condition caused by its combination with the erlang:whereis(ResumeName::atom()) call in brick_mboxmon.erl on line 377
 cluster_info.erl:36: The specification for cluster_info:start/0 states that the function might also return {'error',_} | {'ok',pid(),_} but the inferred return is {'ok',pid()}
 cluster_info.erl:37: The specification for cluster_info:start/2 states that the function might also return {'error',_} | {'ok',pid(),_} but the inferred return is {'ok',pid()}
-  Compiling some key modules to native code... done in 0m42.78s
- done in 1m59.86s
+  Compiling some key modules to native code... done in 0m43.55s
+ done in 1m32.23s
 done (warnings were emitted)
-  eqc:always/2
-  eqc:forall/2
-  eqc_gen:bind/2
-  eqc_gen:bool/0
-  eqc_gen:char/0
-  eqc_gen:choose/2
-  eqc_gen:elements/1
-  eqc_gen:float/0
-  eqc_gen:int/0
-  eqc_gen:largeint/0
-  eqc_gen:lazy/1
-  eqc_gen:list/1
-  eqc_gen:oneof/1
-  eqc_gen:parameter/1
-  eqc_gen:resize/2
-  eqc_gen:sample/1
-  eqc_gen:shrinkwith/2
-  eqc_gen:sized/1
-  eqc_gen:suchthat/2
-  eqc_gen:vector/2
-  eqc_gen:weighted_default/2
-  eqc_gen:with_parameters/2
-  eqc:start/1
-  eqc_statem:commands/2
-  eqc_statem:parallel_commands/2
-  eqc_statem:run_commands/3
-  eqc_statem:run_parallel_commands/3
-  eqc_statem:zip/2
-  eqc:whenfail/2
   gen_event
   gen_fsm
   gen_server
 gmt_cli.erl:166: Function close_exit_normal/1 only terminates with explicit exception
-gmt_erts_dist.erl:73: Invalid type specification for function gmt_erts_dist:dist_encode/1. The success typing is ('node_link' | {'group_leader',_,_} | {'link',_,_} | {'unlink',_,_} | {'demonitor_p',_,_,_} | {'exit',_,_,_} | {'exit2',_,_,_} | {'monitor_p',_,_,_} | {'send',_,_,_} | {'exit_tt',_,_,_,_} | {'monitor_p_exit',_,_,_,_} | {'reg_send',_,_,_,_} | {'send_tt',_,_,_,_} | {'reg_send_tt',_,_,_,_,_}) -> 'todo'
-gmt_erts_dist.erl:88: Invalid type specification for function gmt_erts_dist:dist_decode/1. The success typing is (_) -> 'todo'
-  gmt_genpool_server
 gmt_hlog_common.erl:1061: The created fun only terminates with explicit exception
 gmt_hlog_common.erl:1185: The created fun only terminates with explicit exception
 gmt_hlog_common.erl:192: The call erlang:register(CName::atom(),pid()) might fail due to a possible race condition caused by its combination with the erlang:whereis(CName::any()) call in gmt_hlog_common.erl on line 190
@@ -71,7 +39,6 @@ gmt_pmap.erl:99: The created fun only terminates with explicit exception
   gmt_tlog_printer:tlog_format/2
 gmt_util.erl:1114: Function wait_for_processes_loop/2 only terminates with explicit exception
 gmt_util.erl:560: Function shut_down_nicely/1 only terminates with explicit exception
-gmt_xconv.erl:21: The specification for gmt_xconv:my_char/6 states that the function might also return 'badseq' | 'general' | 'incomplete' | 'overflow' | 'timeout' but the inferred return is 'badcharset' | {'ok',_,0,0}
 mod_admin.erl:1166: The pattern [Nd | _] can never match the type []
 partition_detector.erl:29: The specification for partition_detector:start/0 states that the function might also return {'ok',pid(),_} but the inferred return is 'ignore' | {'error',_} | {'ok',pid()}
 partition_detector.erl:30: The specification for partition_detector:start/2 states that the function might also return {'ok',pid(),_} but the inferred return is 'ignore' | {'error',_} | {'ok',pid()}
@@ -90,4 +57,3 @@ partition_detector_sup.erl:34: The specification for partition_detector_sup:init
   supervisor
 Unknown behaviours (behaviour_info(callbacks) does not return any specs):
 Unknown functions:
-  yaws:funreverse/2
