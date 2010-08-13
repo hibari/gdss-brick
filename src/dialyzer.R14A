@@ -48,10 +48,10 @@ brick_mboxmon.erl:379: The call erlang:register(ResumeName::atom(),pid()) might 
   brick_squorum:set_res/0
 cluster_info.erl:36: The specification for cluster_info:start/0 states that the function might also return {'error',_} | {'ok',pid(),_} but the inferred return is {'ok',pid()}
 cluster_info.erl:37: The specification for cluster_info:start/2 states that the function might also return {'error',_} | {'ok',pid(),_} but the inferred return is {'ok',pid()}
-  Compiling some key modules to native code... done in 0m43.30s
- done in 1m27.46s
+  Compiling some key modules to native code... done in 0m45.50s
+ done in 1m34.62s
 done (warnings were emitted)
-  erlang:time/0
+  erlang:now/0
   gen_event
   gen_fsm
   gen_server
