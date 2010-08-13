@@ -445,7 +445,7 @@
 -type brick_name() :: atom().
 -type chain_name() :: atom().
 -type do_list() :: list(do1_op() | {ssf, binary(), flags_list()}).
--type do_op() :: {do, erlang:time(), do_list(), flags_list()}.
+-type do_op() :: {do, erlang:now(), do_list(), flags_list()}.
 -type global_hash_r() :: #g_hash_r{}.
 -type node_name() :: atom().
 -type prop_list() :: list(atom() | {atom(), term()}).

@@ -51,7 +51,7 @@
 -type eee() :: {eee, brickname(), seqnum(), offset(), key(), typenum(), len(), bytes()}.
 -type filtfun() :: fun((seqnum()) -> boolean()).
 -type foldacc() :: term().
--type foldfun() :: fun((#hunk_summ{}, fd(), foldacc()) -> foldacc()).
+-type foldfun() :: fun((#hunk_summ{}, file:fd(), foldacc()) -> foldacc()).
 -type foldret() :: {foldacc(), list({term(), [{seq, seqnum(), err, term()}]})} | no_return().
 -type hlogtype() :: 'metadata' | 'bigblob' | 'bigblob_longterm'.
 -type incr() :: integer().
@@ -63,6 +63,6 @@
 -type openmode() :: list('append' | 'binary' | 'compressed' | 'delayed_write' | 'raw' | 'read' | 'read_ahead' | 'write' | {'read_ahead',pos_integer()} | {'delayed_write',pos_integer(),non_neg_integer()}).
 -type seqnum() :: integer().
 -type typenum() :: integer().
--type xformfun() :: fun((Su::#hunk_summ{}, FH::fd()) -> binary()).
+-type xformfun() :: fun((Su::#hunk_summ{}, FH::file:fd()) -> binary()).
 
 -endif. % -ifndef(gmt_hlog)

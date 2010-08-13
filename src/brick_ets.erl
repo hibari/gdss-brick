@@ -197,7 +197,7 @@
 -spec append_external_bad_sequence_file(atom(),integer()) -> ok.
 -spec brick_name2data_dir(atom()) -> nonempty_string().
 -spec copy_one_hunk(tuple(), term(), integer(), integer(), integer(), fun()) -> {{integer(), integer()}, integer()} | error.
--spec count_live_bytes_in_log(fd()) -> integer().
+-spec count_live_bytes_in_log(file:fd()) -> integer().
 -spec delete_seq(#scav{},integer()) -> ok.
 -spec disk_log_fold(log_fold_fun(),tuple()|integer(),term()) -> tuple()|integer().
 -spec disk_log_fold_bychunk(fun(([tuple()],integer())->integer()),integer(),term()) -> integer().

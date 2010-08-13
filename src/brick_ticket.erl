@@ -51,7 +51,7 @@
 %%% API
 %%%===================================================================
 
--type serverref() :: name() | {name(),atom()} | {global,atom()} | pid().
+-type serverref() :: file:name() | {file:name(),atom()} | {global,atom()} | pid().
 
 -spec get(serverref(),integer()) -> ok.
 -spec start_link(atom(),integer()) -> ignore | {error,term()} | {ok,pid()}.

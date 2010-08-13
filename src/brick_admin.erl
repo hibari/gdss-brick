@@ -172,20 +172,19 @@
 -type error() :: {error,any()}.
 -type add_table_ret() :: ok | no_exists | error().
 -type create_new_schema_ret() :: {ok,any()} | error().
--type serverref() :: name() | {name(),atom()} | {global,atom()} | pid().
-
+-type serverref() :: file:name() | {file:name(),atom()} | {global,atom()} | pid().
 
 -spec add_client_monitor(atom()) -> ok.
 -spec add_table(atom(),chainlist()) -> add_table_ret().
 -spec add_table(serverref(),chainlist()|atom(),deeplist()) -> add_table_ret().
 -spec add_table(serverref(),atom(),chainlist(),deeplist()) -> add_table_ret().
--spec bootstrap(name(),proplist(),boolean(),char(),integer(),[atom()],integer(),[any()],proplist()) -> no_exists | ok.
--spec bootstrap(name(),proplist(),boolean(),char(),integer(),[atom()],integer(),[any()]) -> no_exists | ok.
+-spec bootstrap(file:name(),proplist(),boolean(),char(),integer(),[atom()],integer(),[any()],proplist()) -> no_exists | ok.
+-spec bootstrap(file:name(),proplist(),boolean(),char(),integer(),[atom()],integer(),[any()]) -> no_exists | ok.
 -spec bootstrap_local(proplist(),boolean(),char(),integer(),non_neg_integer(),integer(),_) -> no_exists | ok.
 -spec bootstrap_local(proplist(),boolean(),char(),integer(),non_neg_integer(),integer(),any(),proplist()) -> no_exists | ok.
 -spec change_chain_length(atom(),bricklist()) -> ok | error().
--spec create_new_schema(bricklist(), name()) -> create_new_schema_ret().
--spec create_new_schema(bricklist(), proplist(), name()) -> create_new_schema_ret().
+-spec create_new_schema(bricklist(), file:name()) -> create_new_schema_ret().
+-spec create_new_schema(bricklist(), proplist(), file:name()) -> create_new_schema_ret().
 -spec delete_client_monitor(node()) ->  brick_server:set_reply().
 -spec get_all_bootstrap_keys(bricklist()) -> [any()].
 -spec get_all_bootstrap_keys({'ok',[any()],boolean()},bricklist(),[any()]) -> [any()].
@@ -208,7 +207,7 @@
 -spec make_common_table_opts(proplist(),boolean(),char(),non_neg_integer(),chainlist()) -> proplist().
 -spec spam_gh_to_all_nodes() -> ok.
 -spec spam_gh_to_all_nodes(pid()) -> ok.
--spec start([name()]|name()) -> ok | error().
+-spec start([file:name()]|file:name()) -> ok | error().
 -spec start_brick_only({brick(),atom()}) -> ok.
 -spec start_brick_only(brick(),atom()) -> ok.
 -spec start_brick_only(brick(),atom(),proplist()) -> ok.

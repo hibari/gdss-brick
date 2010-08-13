@@ -146,7 +146,7 @@
 -spec read_bigblob_hunk_blob(seqnum(), offset(), checkmd5(), lenhint()) -> #hunk_summ{} | eof | {error, term()}.
 -spec read_bigblob_hunk_blob(dirname(), seqnum(), offset(), checkmd5(), lenhint()) -> #hunk_summ{} | eof | {error, term()}.
 
--spec read_hunk_member_ll(fd(), #hunk_summ{}, md5 | undefined, nth()) -> binary().
+-spec read_hunk_member_ll(file:fd(), #hunk_summ{}, md5 | undefined, nth()) -> binary().
 
 -spec stop(server()) -> ok | {error,term()}.
 
@@ -154,7 +154,7 @@
 
 -spec write_hunk(server(), brickname(), hlogtype(), key(), typenum(), CBlobs::blobs(), UBlobs::blobs()) -> {ok, seqnum(), offset()} | {hunk_too_big, len()} | no_return().
 
--spec write_log_header(fd()) -> ok | {error, term()}.
+-spec write_log_header(file:fd()) -> ok | {error, term()}.
 
 
 %%%===================================================================

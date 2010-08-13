@@ -221,12 +221,12 @@
           %% short-term state
           cur_seqS                    :: integer(),                % current sequence #
           cur_offS                    :: integer(),                % current offset
-          cur_fhS                     :: fd(),                     % current file
+          cur_fhS                     :: file:fd(),                % current file
           %% long-term state
           cur_seqL                    :: integer(),                % current sequence #
           cur_offL                    :: integer(),                % current offset
-          cur_fhL                     :: fd()                      % current file
-                                         }).
+          cur_fhL                     :: file:fd()                 % current file
+         }).
 
 %% TODO: is this list complete (enough?)
 -spec start_link(props()) -> {ok,pid()} | {error,term()} | ignore.
@@ -234,8 +234,8 @@
 -spec sync(server()) -> {ok, seqnum(), offset()}.
 -spec sync(server(),shortterm | longterm) -> {ok, seqnum(), offset()}.
 -spec create_hunk(typenum(), CBlobs::blobs(), UBlobs::blobs()) -> {len(), bytes()}.
--spec open_log_file(dirname(), seqnum(), openmode()) -> {ok, fd()} | {error, atom()}.
--spec write_log_header(fd()) -> ok | {error, term()}.
+-spec open_log_file(dirname(), seqnum(), openmode()) -> {ok, file:fd()} | {error, atom()}.
+-spec write_log_header(file:fd()) -> ok | {error, term()}.
 
 -spec write_hunk(server(), brickname(), hlogtype(), key(), typenum(), CBlobs::blobs(), UBlobs::blobs()) -> {ok, seqnum(), offset()} | {hunk_too_big, len()} | no_return().
 -spec write_hunk_internalwrapper(server(), brickname(), hlogtype(), key(), typenum(), len(), bytes()) -> {ok, seqnum(), offset()} | {hunk_too_big, len()} | no_return().
@@ -245,14 +245,14 @@
 -spec read_hunk(server(), seqnum(), offset(), lenhint(), xformfun()) -> {ok, binary()} | no_return().
 
 %% seqnum() | atom() because if 1st arg is a file handle, 2nd arg is ignored.
--spec read_hunk_summary(dirname() | fd(), seqnum() | atom(), offset()) -> #hunk_summ{} | eof | {error, term()}.
--spec read_hunk_summary(dirname() | fd(), seqnum() | atom(), offset(), lenhint(), xformfun()) -> term().
+-spec read_hunk_summary(dirname() | file:fd(), seqnum() | atom(), offset()) -> #hunk_summ{} | eof | {error, term()}.
+-spec read_hunk_summary(dirname() | file:fd(), seqnum() | atom(), offset(), lenhint(), xformfun()) -> term().
 
--spec read_hunk_summ_ll(fd(), offset()) -> {ok, #hunk_summ{}} | eof | {bof, offset()} | {error, term(), term()}.
--spec read_hunk_summ_ll(fd(), offset(), lenhint()) -> {ok, #hunk_summ{}} | eof | {bof, offset()} | {error, term(), term()}.
+-spec read_hunk_summ_ll(file:fd(), offset()) -> {ok, #hunk_summ{}} | eof | {bof, offset()} | {error, term(), term()}.
+-spec read_hunk_summ_ll(file:fd(), offset(), lenhint()) -> {ok, #hunk_summ{}} | eof | {bof, offset()} | {error, term(), term()}.
 
--spec read_hunk_member_ll(fd(), #hunk_summ{}, md5 | undefined, nth()) -> binary().
--spec read_hunk_member_ll(fd(), #hunk_summ{}, md5 | undefined, nth(), offset()) -> binary().
+-spec read_hunk_member_ll(file:fd(), #hunk_summ{}, md5 | undefined, nth()) -> binary().
+-spec read_hunk_member_ll(file:fd(), #hunk_summ{}, md5 | undefined, nth(), offset()) -> binary().
 
 -spec read_bigblob_hunk_blob(seqnum(), offset()) -> no_return().
 -spec read_bigblob_hunk_blob(seqnum(), offset(), checkmd5()) -> no_return().
@@ -271,7 +271,7 @@
 -spec fold(shortterm | longterm, dirname(), foldfun(), foldacc()) -> foldret().
 -spec fold(shortterm | longterm, dirname(), foldfun(), filtfun(), foldacc()) -> foldret().
 
--spec fold_a_file(fd(), len(), seqnum(), offset(), foldfun(), foldacc()) -> foldret().
+-spec fold_a_file(file:fd(), len(), seqnum(), offset(), foldfun(), foldacc()) -> foldret().
 
 -spec find_current_log_files(dirname()) -> list(dirname()).
 -spec find_current_log_seqnums(dirname()) -> list(seqnum()).
@@ -695,7 +695,7 @@ find_longterm_log_seqnums(Dir, H1, H2) ->
     Files = find_longterm_log_files(Dir, H1, H2),
     lists:sort([abs(file2seqnum(F)) || F <- Files]).
 
-%% @spec (fd()) -> term()
+%% @spec (file:fd()) -> term()
 
 write_log_header(FH) ->
     file:write(FH, file_header_version_1()).   % Header for version #1 file
@@ -845,7 +845,7 @@ do_advance_seqnum(Incr, From, #state{syncer_advance_reqs = Rs} = S) ->
     %% error_logger:info_msg("Advance deferred ~p\n", [From]),
     S#state{syncer_advance_reqs = [{Incr, From}|Rs]}.
 
-%% @spec (fd(), integer()) ->
+%% @spec (file:fd(), integer()) ->
 %%       {ok, hunk_summ_r()} | eof | {bof, integer} | {error, term()}
 
 read_hunk_summ_ll(FH, 0) ->
@@ -923,13 +923,13 @@ read_hunk_member_ll(FH, Summ, MemberType, MemberNum, ExtraOffset) ->
     {ok, Bin} = my_pread(FH, ByteOff + ExtraOffset, ByteLen - ExtraOffset, 0),
     Bin.
 
-%% @spec (string() | fd(), integer(), integer()) ->
+%% @spec (string() | file:fd(), integer(), integer()) ->
 %%       hunk_summ_r() | eof | {error, term()}
 
 read_hunk_summary(Dir, N, Offset) when is_list(Dir) ->
     read_hunk_summary(Dir, N, Offset, 0, fun(Summ, _FH) -> Summ end).
 
-%% @spec (string() | fd(), integer(), integer(), integer(), fun()) ->
+%% @spec (string() | file:fd(), integer(), integer(), integer(), fun()) ->
 %%       hunk_summ_r() | eof | {error, term()}
 
 read_hunk_summary(Dir, N, Offset, HunkLenHint, XformFun)
@@ -1100,7 +1100,7 @@ seqnum2file(N, Suffix) ->
     "-" ++ gmt_util:left_pad(integer_to_list(abs(N)), 12, $0) ++ "." ++ Suffix.
 
 %% @spec (string(), integer(), proplist()) ->
-%%       {ok, fd()} | {error, term()}
+%%       {ok, file:fd()} | {error, term()}
 
 open_log_file(Dir, N, Options) ->
     Path = log_file_path(Dir, N),
@@ -1115,7 +1115,7 @@ open_log_file(Dir, N, Options) ->
     end.
 
 %% @spec (string(), integer()) ->
-%%       {ok, string(), fd()} | {error, term()}
+%%       {ok, string(), file:fd()} | {error, term()}
 
 log_file_info(Dir, N) ->
     Path = log_file_path(Dir, N),

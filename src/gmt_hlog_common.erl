@@ -64,8 +64,8 @@
 -opaque from() :: {pid(),term()}.
 
 -record(state, {
-          name                            :: name(),
-          hlog_name                       :: name(),
+          name                            :: file:name(),
+          hlog_name                       :: file:name(),
           hlog_pid                        :: pid(),
           hlog_dir                        :: dirname(),
           last_seqnum                     :: seqnum(),                 % SeqNum of last writeback
@@ -106,7 +106,7 @@
 
 -spec sequence_file_is_bad(seqnum(), offset()) -> ok.
 
--spec open_log_file(dirname(), seqnum(), openmode()) -> {ok, fd()} | {error, atom()}.
+-spec open_log_file(dirname(), seqnum(), openmode()) -> {ok, file:fd()} | {error, atom()}.
 -spec write_hunk(server(), brickname(), hlogtype(), key(), typenum(), CBlobs::blobs(), UBlobs::blobs()) -> {ok, seqnum(), offset()} | {hunk_too_big, len()} | no_return().
 
 -spec log_file_path(dirname(), seqnum()) -> dirname().

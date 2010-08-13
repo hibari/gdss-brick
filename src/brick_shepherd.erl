@@ -144,9 +144,9 @@ list_bricks_all_nodes() ->
                        end].
 
 %% @spec (atom()) -> {integer(), integer(), integer()}
-%% @doc Return the erlang:time() when the brick_shepherd process was started.
+%% @doc Return the erlang:now() when the brick_shepherd process was started.
 
--spec get_start_time(brick_server:node_name()) -> erlang:time().
+-spec get_start_time(brick_server:node_name()) -> erlang:now().
 get_start_time(Node) ->
     gen_server:call({?MODULE, Node}, {get_start_time}).
 
@@ -196,14 +196,14 @@ list_do_not_restart_bricks(Node) when is_atom(Node) ->
 %% @doc Create a "shepherd pid", which can be useful for storing
 %% in a table and then later checking if that pid is still alive.
 
--spec make_shepherd_pid() -> {erlang:time() , pid()}.
+-spec make_shepherd_pid() -> {erlang:now() , pid()}.
 make_shepherd_pid() ->
     {get_start_time(node()), self()}.
 
 %% @doc Check to see if a "shepherd pid" process is still alive
 %% (to guard against pid wrap-around after a few VM restarts).
 
--spec is_shepherd_pid_alive({erlang:time(), pid()}) -> boolean().
+-spec is_shepherd_pid_alive({erlang:now(), pid()}) -> boolean().
 is_shepherd_pid_alive({ShepTime, Pid}) ->
     StartTime = get_start_time(node(Pid)),
     if StartTime /= ShepTime ->
