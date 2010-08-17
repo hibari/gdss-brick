@@ -597,15 +597,15 @@
                                                                      % replay when log sync is done.
              , globalhash = undefined   :: #g_hash_r{} | undefined   % Global hash state
              , sweepstate               :: #sweep_r{} | undefined    % Migration sweep state
-                 , do_op_too_old_usec       :: integer()                 % do op too old (microseconds)
+             , do_op_too_old_usec       :: integer()                 % do op too old (microseconds)
              , n_too_old = 0            :: integer()
              , bad_pid                  :: pid()                     % An intentionally bogus pid
              , do_list_preprocess = []  :: [] | [fun()]              % Preprocessing fun for do list
              , pingee_pid               :: pid()                     % pid()
-                 , retry_send_repair        :: reference() | undefined
-                 , bz_debug_check_hunk_summ :: boolean()                 % BZDEBUG
-                 , bz_debug_check_hunk_blob :: boolean()                 % BZDEBUG
-                 , throttle_tab             :: ets:tab()                 % ETS table
+             , retry_send_repair        :: reference() | undefined
+             , bz_debug_check_hunk_summ :: boolean()                 % BZDEBUG
+             , bz_debug_check_hunk_blob :: boolean()                 % BZDEBUG
+             , throttle_tab             :: ets:tab()                 % ETS table
              }).
 
 -type state_r() :: #state{}.
@@ -1442,8 +1442,8 @@ init([ServerName, Options]) ->
     ThrottleTab = ets:new(throttle_tab_name(ServerName),
                           [public, named_table, ordered_set]),
 
-    {ok, BZsumm} = gmt_config_svr:get_config_value_boolean(debug_check_hunk_summ, "true"),
-    {ok, BZblob} = gmt_config_svr:get_config_value_boolean(debug_check_hunk_blob, "true"),
+    {ok, BZsumm} = gmt_config_svr:get_config_value_boolean(debug_check_hunk_summ, "false"),
+    {ok, BZblob} = gmt_config_svr:get_config_value_boolean(debug_check_hunk_blob, "false"),
     if BZsumm orelse BZblob ->
             ?E_WARNING("NOTE: debug_check_hunk_summ = ~p, debug_check_hunk_blob = ~p\n", [BZsumm, BZblob]);
        true ->
