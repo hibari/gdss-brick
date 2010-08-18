@@ -109,7 +109,7 @@
 -export([make_chain_description/3, make_chain_description/5,
          hack_all_tab_setup/5, hack_all_tab_setup/6,
          spam_gh_to_all_nodes/0, spam_gh_to_all_nodes/1,
-         spam_gh_to_all_nodes/2]).
+         spam_gh_to_all_nodes/2, set_gh_minor_rev/0]).
 
 %% Cluster reconfiguration API
 -export([change_chain_length/2, change_chain_length/3,
@@ -646,6 +646,13 @@ spam_gh_to_all_nodes(ServerRef, TableName) ->
     ServerRef ! {do_spam_gh_to_all_nodes, TableName},
     ok.
 
+%% @doc Update the global hash minor revision number for all tables
+set_gh_minor_rev() ->
+    set_gh_minor_rev(?MODULE).
+
+set_gh_minor_rev(ServerRef) ->
+    gen_server:call(ServerRef, {set_gh_minor_rev}, 90*1000).
+
 %%====================================================================
 %% gen_server callbacks
 %%====================================================================
@@ -834,6 +841,9 @@ handle_call({get_gh_by_table, TableName}, _From, State) ->
                     {error, not_found}
             end,
     {reply, Reply, State};
+handle_call({set_gh_minor_rev}, _From, State) ->
+    {Reply, NewState} = do_set_gh_minor_rev(State),
+    {reply, Reply, NewState};
 handle_call({change_chain_length, ChainName, BrickList}, _From, State) ->
     case (catch do_change_chain_length(ChainName, BrickList, State)) of
         {Reply, NewState} when is_record(NewState, state) ->
@@ -1383,6 +1393,23 @@ do_chain_status_change(ChainName, Status, PropList, S) ->
         _ ->
             S
     end.
+
+do_set_gh_minor_rev(State) ->
+    Schema = State#state.schema,
+    %% Use one timestamp for all tables.
+    Timestamp = brick_server:make_timestamp(),
+    %% Update all global hashes in all tables and get a new schema
+    {NewSchema, Reply} = dict:fold(fun(TableName, Table, {S, RList}) ->
+                                       GH = Table#table_r.ghash,
+                                       MR = GH#g_hash_r.minor_rev,
+                                       NewGH = GH#g_hash_r{minor_rev=Timestamp},
+                                       NewS = update_tab_ghash(TableName, Table, NewGH, S),
+                                       {NewS, [{TableName, MR, Timestamp}|RList]}
+                                   end, {Schema, []}, Schema#schema_r.tabdefs),
+    %% Save the schema to the quorum
+    ok = squorum_set(NewSchema#schema_r.schema_bricklist, ?BKEY_SCHEMA_DEFINITION, NewSchema),
+    %% Update the state and reply
+    {Reply, State#state{schema = NewSchema}}.
 
 %% info_schema_r() ->
 %%     Es = record_info(fields, schema_r),
