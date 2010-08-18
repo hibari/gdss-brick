@@ -74,9 +74,6 @@ init([]) ->
     BrickShepherd =
         {brick_server, {brick_shepherd, start_link, []},
          permanent, 2000, worker, [brick_shepherd]},
-    BrickSimple =
-        {brick_simple, {brick_simple, start_link, []},
-         permanent, 2000, worker, [brick_simple]},
     BrickMboxMon =
         {brick_mboxmon, {brick_mboxmon, start_link, []},
          permanent, 2000, worker, [brick_mboxmon]},
@@ -97,7 +94,6 @@ init([]) ->
                                  CommonLog,
                                  BrickBrickSup,
                                  BrickShepherd,
-                                 BrickSimple,
                                  BrickMboxMon,
                                  BrickCPThrottle,
                                  BrickPrimerThrottle
