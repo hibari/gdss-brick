@@ -2069,7 +2069,7 @@ do_delete_client_monitor(Node) ->
     Res.
 
 client_mon_app_names() ->
-    [gdss, gdss_client].
+    [gdss_client].
 
 do_mod_client_monitor(Node, Fun) ->
     {SBricks, Flags, OldList} = get_client_monitor_details(),
