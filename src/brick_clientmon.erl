@@ -129,11 +129,13 @@ do_check_status(S) ->
         case [yes || {App, _, _} <- As, App == S#state.app_name] of
             [yes] ->
                 do_up(S),
+		flush_mailbox_extra_check_status(),
                 S#state{is_up = true}
         end
     catch
         _X:_Y ->
             do_down(S),
+	    flush_mailbox_extra_check_status(),
             S#state{is_up = false}
     end.
 
@@ -161,3 +163,10 @@ do_down(S) when S#state.is_up ->
 do_down(_) ->
     ok.
 
+flush_mailbox_extra_check_status() ->
+    receive
+	check_status ->
+	    flush_mailbox_extra_check_status()
+    after 0 ->
+	    ok
+    end.
