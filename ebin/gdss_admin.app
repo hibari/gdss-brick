@@ -13,8 +13,8 @@
 %%% See the License for the specific language governing permissions and
 %%% limitations under the License.
 %%%
-%%% File    : brick_admin.app
-%%% Purpose : brick admin application
+%%% File    : gdss_admin.app
+%%% Purpose : gdss admin application
 %%%----------------------------------------------------------------------
 
 %% For further documentation, see:
@@ -25,7 +25,7 @@
 %%   http://www.erlang.org/doc/doc-5.5/doc/design_principles/
 %%     Section 7 for description of an OTP "application", incl. the .app file
 
-{application, brick_admin,
+{application, gdss_admin,
  [
   %% Description of this application
   {description, "Gemini Distributed Storage Service, Admin Server"},
