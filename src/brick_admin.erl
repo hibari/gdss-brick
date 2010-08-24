@@ -118,7 +118,7 @@
 
 %% Schema bootstrap API (e.g. for mod_admin)
 -export([bootstrap/8, bootstrap/9, bootstrap_local/7, bootstrap_local/8,
-         make_common_table_opts/5]).
+         make_common_table_opts/5, add_bootstrap_copy/1]).
 
 %% Internal process signalling API, not for wide (ab)use
 -export([start_er_up/1, table_finished_migration/1]).
@@ -153,11 +153,11 @@
          stop_brick_only/1, stop_brick_only/2]).
 
 -record(state, {
-          schema,                               % dict:new()
-          mig_mons,                             % migration monitor 2-tuples
-          start_time,                           % now()
-          extra_term,                           % term()
-          mbox_highwater
+          schema = undefined,                               % dict:new()
+          mig_mons = undefined,                             % migration monitor 2-tuples
+          start_time = undefined,                           % now()
+          extra_term = undefined,                           % term()
+          mbox_highwater = undefined
          }).
 
 %%====================================================================
@@ -182,6 +182,7 @@
 -spec bootstrap(file:name(),proplist(),boolean(),char(),integer(),[atom()],integer(),[any()]) -> no_exists | ok.
 -spec bootstrap_local(proplist(),boolean(),char(),integer(),non_neg_integer(),integer(),_) -> no_exists | ok.
 -spec bootstrap_local(proplist(),boolean(),char(),integer(),non_neg_integer(),integer(),any(),proplist()) -> no_exists | ok.
+-spec add_bootstrap_copy(bricklist()) -> ok | error().
 -spec change_chain_length(atom(),bricklist()) -> ok | error().
 -spec create_new_schema(bricklist(), file:name()) -> create_new_schema_ret().
 -spec create_new_schema(bricklist(), proplist(), file:name()) -> create_new_schema_ret().
@@ -243,6 +244,7 @@ start(BootstrapFile)
                 {brick_admin, {brick_admin, start_er_up, [BootstrapFile]},
                  permanent, 2000, worker, [brick_admin]},
             supervisor:start_child(brick_admin_sup, ChildSpec2),
+
             timer:sleep(5000),
             case whereis(brick_admin) of undefined -> error;
                 _Pid      -> ok
@@ -665,119 +667,13 @@ set_gh_minor_rev(ServerRef) ->
 %% Description: Initiates the server
 %%--------------------------------------------------------------------
 init([BootstrapFile]) ->
-    %% Kludge: We will ping all of the bootstrap bricks, to try to
-    %% establish a wider net of nodes in the cluster.  Then we'll try
-    %% to register a global name as our mutual exclusion tactic.
-    %% Not good enough in the face of a network partition, but good enough
-    %% as a quick kludge.
-    %% NOTE: Do not use bootstrap_existing_schema() here, r-o ops only!
-    DiskBrickList = get_bricklist_from_disk(BootstrapFile),
-    [spawn(fun() -> net_adm:ping(Nd) end)|| {_, Nd} <- DiskBrickList],
-    timer:sleep(1000),
-
-    {ok, MboxHigh} = gmt_config_svr:get_config_value_i(
-                       brick_admin_mbox_high_water, 100),
-    %% Cross-app dependency: we need the partition_detector app running.
-    %% If not, complain loudly.
-    StartTime = now(),
-    ExtraStarting = {brick_admin, {starting, StartTime, node(), self()}},
-    ExtraRunning = {brick_admin, {running, StartTime, node(), self()}},
-    case (catch partition_detector_server:is_active()) of
-        true ->
-            partition_detector_server:add_to_beacon_extra(ExtraStarting),
-            case check_for_other_admin_server_beacons(first_time, StartTime) of
-                0 ->
-                    ok;
-                _N ->
-                    partition_detector_server:del_from_beacon_extra(
-                      ExtraStarting),
-                    exit(another_admin_server_running)
-            end,
-            partition_detector_server:replace_beacon_extra(ExtraStarting,
-                                                           ExtraRunning),
-            gen_event:add_sup_handler(?EVENT_SERVER, brick_admin_event_h, []),
-            0 = check_for_other_admin_server_beacons(3, StartTime),
-            ?APPLOG_INFO(?APPLOG_APPM_006,"Finished checking for Admin Server "
-                         "beacons\n", []);
-        _ ->
-            gmt_util:set_alarm({app_disabled, partition_detector},
-                               "This application must run in production environments.",
-                               fun() -> ok end),
-            ?APPLOG_WARNING(?APPLOG_APPM_007,"ERROR: partition_detector application "
-                            "is not running!  This should not happen "
-                            "in a production environment.",[])
-    end,
-
-    case global:whereis_name(?MODULE) of
-        undefined ->
-            ok;
-        APid ->
-            ?APPLOG_ALERT(?APPLOG_APPM_008,"~s: admin server already running on ~p\n",
-                          [?MODULE, node(APid)]),
-            exit({global_name_already_in_use, ?MODULE})
-    end,
-    yes = global:register_name(?MODULE, self()), % Honest racing here.
-
-    %% Use bootstrap hint file to find our schema.  Read/write is ok now.
-    {DiskBrickList2, Schema} =
-        bootstrap_existing_schema(BootstrapFile),
-
-    %% Update on-disk schema location hints, if needed.
-    if DiskBrickList2 /= Schema#schema_r.schema_bricklist ->
-            OldFile = BootstrapFile ++ integer_to_list(gmt_time:time_t()),
-            file:rename(BootstrapFile, OldFile),
-            ok = write_schema_bootstrap_file(BootstrapFile,
-                                             Schema#schema_r.schema_bricklist);
-       true ->
-            ok
-    end,
-
-    %% Start thread that will eventually repair out-of-date bootstrap replicas.
-    %% Do this asynchronously to avoid supervisor deadlock.
-    spawn(fun() ->
-                  ChildSpec =
-                      {brick_bootstrap_scan,
-                       {?MODULE, start_bootstrap_scan, []},
-                       permanent, 100, worker, [?MODULE]},
-                  supervisor:start_child(brick_mon_sup, ChildSpec)
-          end),
-
-    %% Start chain monitors and brick pingers
-    %% Do this asynchronously to avoid supervisor deadlock.
-    spawn_link(fun() -> start_pingers_and_chmons(Schema) end),
-    %% Start client node monitors
-    spawn(fun() -> run_client_monitor_procs() end),
-
-    %% Start the migration monitors.
-    MMs = lists:foldl(fun({TableName, T}, Acc) ->
-                              if not (T#table_r.ghash)#g_hash_r.migrating_p ->
-                                      Acc;
-                                 true ->
-                                      Options = T#table_r.migration_options,
-                                      {ok, Pid} = brick_migmon:start_link(
-                                                    T, Options),
-                                      [{TableName, Pid}|Acc]
-                              end
-                      end, [], dict:to_list(Schema#schema_r.tabdefs)),
-
-    %% Add an event handler to the SASL alarm_handler to watch for
-    %% alarm events from the partition detector.
-    ok = brick_admin_event_h:add_handler(alarm_handler),
-
-    %% HACK: Send a reminder to ourselves to set up the
-    %% brick_simple stuff.
-    timer:apply_after( 1*1000, ?MODULE, spam_gh_to_all_nodes, [self()]),
-    timer:apply_after(10*1000, ?MODULE, spam_gh_to_all_nodes, [self()]),
-    brick_itimer:send_interval(5*1000, restart_pingers_and_chmons),
-
-    %% Start client monitor processes (must be done async/after our init())
-    spawn(fun() -> timer:sleep(200), run_client_monitor_procs() end),
-
-    ?APPLOG_INFO(?APPLOG_APPM_009,"~s: admin server now running on ~p\n",
-                 [?MODULE, node()]),
-    {ok, #state{schema = Schema, mig_mons = MMs,
-                start_time = StartTime, extra_term = ExtraRunning,
-                mbox_highwater = MboxHigh}}.
+    %% we may decide to restart ourselves while initializing, so it's
+    %% important to finish this pre-init quickly and let the supervisor
+    %% assume its role over us. Since nobody knows us yet, its safe to
+    %% assume we will get the finish_init_tasks message first. An empty
+    %% state should crash us though if that is ever not true.
+    self() ! {finish_init_tasks, BootstrapFile},
+    {ok, #state{}}.
 
 %%--------------------------------------------------------------------
 %% Function: %% handle_call(Request, From, State) -> {reply, Reply, State} |
@@ -856,6 +752,9 @@ handle_call({start_migration, TableName, LH, Options}, _From, State) ->
             {reply, Reply, NewState};
         Err -> {reply, Err, State}
     end;
+handle_call({add_bootstrap_copy, [{B,N}|_T]=BrickList}, _From, State) when is_atom(B), is_atom(N) ->
+    {Reply, NewState} = do_add_bootstrap_copy(BrickList, State),
+    {reply, Reply, NewState};
 handle_call(_Request, _From, State) ->
     ?APPLOG_ALERT(?APPLOG_APPM_010,"~s: handle_call: ~p\n", [?MODULE, _Request]),
     Reply = err_bad_call,
@@ -877,6 +776,122 @@ handle_cast(_Msg, State) ->
 %%                                       {stop, Reason, State}
 %% Description: Handling all non call/cast messages
 %%--------------------------------------------------------------------
+handle_info({finish_init_tasks, BootstrapFile}, State) ->
+    %% Kludge: We will ping all of the bootstrap bricks, to try to
+    %% establish a wider net of nodes in the cluster.  Then we'll try
+    %% to register a global name as our mutual exclusion tactic.
+    %% Not good enough in the face of a network partition, but good enough
+    %% as a quick kludge.
+    %% NOTE: Do not use bootstrap_existing_schema() here, r-o ops only!
+    DiskBrickList = get_bricklist_from_disk(BootstrapFile),
+    [spawn(fun() -> net_adm:ping(Nd) end)|| {_, Nd} <- DiskBrickList],
+    timer:sleep(1000),
+
+    {ok, MboxHigh} = gmt_config_svr:get_config_value_i(
+                       brick_admin_mbox_high_water, 100),
+    %% Cross-app dependency: we need the partition_detector app running.
+    %% If not, complain loudly.
+    StartTime = now(),
+    ExtraStarting = {brick_admin, {starting, StartTime, node(), self()}},
+    ExtraRunning = {brick_admin, {running, StartTime, node(), self()}},
+    case (catch partition_detector_server:is_active()) of
+        true ->
+            partition_detector_server:add_to_beacon_extra(ExtraStarting),
+            case check_for_other_admin_server_beacons(first_time, StartTime) of
+                0 ->
+                    ok;
+                _N ->
+                    partition_detector_server:del_from_beacon_extra(
+                      ExtraStarting),
+                    exit(another_admin_server_running)
+            end,
+            partition_detector_server:replace_beacon_extra(ExtraStarting,
+                                                           ExtraRunning),
+            gen_event:add_sup_handler(?EVENT_SERVER, brick_admin_event_h, []),
+            0 = check_for_other_admin_server_beacons(3, StartTime),
+            ?APPLOG_INFO(?APPLOG_APPM_006,"Finished checking for Admin Server "
+                         "beacons\n", []);
+        _ ->
+            gmt_util:set_alarm({app_disabled, partition_detector},
+                               "This application must run in production environments.",
+                               fun() -> ok end),
+            ?APPLOG_WARNING(?APPLOG_APPM_007,"ERROR: partition_detector application "
+                            "is not running!  This should not happen "
+                            "in a production environment.",[])
+    end,
+
+    case global:whereis_name(?MODULE) of
+        undefined ->
+            ok;
+        APid ->
+            ?APPLOG_ALERT(?APPLOG_APPM_008,"~s: admin server already running on ~p\n",
+                          [?MODULE, node(APid)]),
+            exit({global_name_already_in_use, ?MODULE})
+    end,
+    yes = global:register_name(?MODULE, self()), % Honest racing here.
+
+    %% Use bootstrap hint file to find our schema.  Read/write is not yet ok.
+    {DiskBrickList2, Schema} = bootstrap_existing_schema(BootstrapFile),
+
+    %% Update on-disk schema location hints, if needed.
+    if DiskBrickList2 /= Schema#schema_r.schema_bricklist ->
+            OldFile = BootstrapFile ++ integer_to_list(gmt_time:time_t()),
+            file:rename(BootstrapFile, OldFile),
+            ok = write_schema_bootstrap_file(BootstrapFile, Schema#schema_r.schema_bricklist),
+            %% After repairing, we should restart to ensure proper quorum available
+            exit({restarting, repaired_hint_file, BootstrapFile});
+       true ->
+            ok
+    end,
+
+    %% read/write ops are now ok
+
+    %% Start thread that will eventually repair out-of-date bootstrap replicas.
+    %% Do this asynchronously to avoid supervisor deadlock.
+    spawn(fun() ->
+                  ChildSpec =
+                      {brick_bootstrap_scan,
+                       {?MODULE, start_bootstrap_scan, []},
+                       permanent, 100, worker, [?MODULE]},
+                  supervisor:start_child(brick_mon_sup, ChildSpec)
+          end),
+
+    %% Start chain monitors and brick pingers
+    %% Do this asynchronously to avoid supervisor deadlock.
+    spawn_link(fun() -> start_pingers_and_chmons(Schema) end),
+    %% Start client node monitors
+    spawn(fun() -> run_client_monitor_procs() end),
+
+    %% Start the migration monitors.
+    MMs = lists:foldl(fun({TableName, T}, Acc) ->
+                              if not (T#table_r.ghash)#g_hash_r.migrating_p ->
+                                      Acc;
+                                 true ->
+                                      Options = T#table_r.migration_options,
+                                      {ok, Pid} = brick_migmon:start_link(
+                                                    T, Options),
+                                      [{TableName, Pid}|Acc]
+                              end
+                      end, [], dict:to_list(Schema#schema_r.tabdefs)),
+
+    %% Add an event handler to the SASL alarm_handler to watch for
+    %% alarm events from the partition detector.
+    ok = brick_admin_event_h:add_handler(alarm_handler),
+
+    %% HACK: Send a reminder to ourselves to set up the
+    %% brick_simple stuff.
+    timer:apply_after( 1*1000, ?MODULE, spam_gh_to_all_nodes, [self()]),
+    timer:apply_after(10*1000, ?MODULE, spam_gh_to_all_nodes, [self()]),
+    brick_itimer:send_interval(5*1000, restart_pingers_and_chmons),
+
+    %% Start client monitor processes (must be done async/after our init())
+    spawn(fun() -> timer:sleep(200), run_client_monitor_procs() end),
+
+    ?APPLOG_INFO(?APPLOG_APPM_009,"~s: admin server now running on ~p\n",
+                 [?MODULE, node()]),
+    {noreply, State#state{schema = Schema, mig_mons = MMs,
+                          start_time = StartTime, extra_term = ExtraRunning,
+                          mbox_highwater = MboxHigh}};
 handle_info({do_spam_gh_to_all_nodes, TableName} = Msg, State) ->
     gmt_loop:do_while(fun(_) -> receive Msg -> {true, x}
                                 after 0     -> {false, x}
@@ -1410,6 +1425,33 @@ do_set_gh_minor_rev(State) ->
     ok = squorum_set(NewSchema#schema_r.schema_bricklist, ?BKEY_SCHEMA_DEFINITION, NewSchema),
     %% Update the state and reply
     {Reply, State#state{schema = NewSchema}}.
+
+%% Add a list of new bricks as bootstrap bricks
+do_add_bootstrap_copy(BrickList, State) ->
+    OldSchema = State#state.schema,
+    OldBootList = OldSchema#schema_r.schema_bricklist,
+    NewBootList = OldBootList ++ BrickList,
+    case contains_duplicate_bricks(NewBootList) of
+        true ->
+            {{error, duplicates}, State};
+        false ->
+            NewSchema = OldSchema#schema_r{schema_bricklist=NewBootList},
+            %% start new bootstrap bricks.
+            [catch start_standalone_brick(Brick) || Brick <- BrickList],
+            %% Update the schema hint file
+            BootstrapFile = "Schema.local",
+            OldFile = BootstrapFile ++ integer_to_list(gmt_time:time_t()),
+            file:rename(BootstrapFile, OldFile),
+            ok = write_schema_bootstrap_file(BootstrapFile, NewBootList),
+            %% Save the schema to the combined new bricklist quorum
+            ok = squorum_set(NewSchema#schema_r.schema_bricklist, ?BKEY_SCHEMA_DEFINITION, NewSchema),
+            {{ok,NewBootList}, State#state{schema = NewSchema}}
+    end.
+
+%% returns true if BrickList contains duplicate BrickNames
+contains_duplicate_bricks(BrickList) ->
+    UniqueBrickNames = length(lists:usort([B || {B,_} <- BrickList])),
+    UniqueBrickNames =/= length(BrickList).
 
 %% info_schema_r() ->
 %%     Es = record_info(fields, schema_r),
@@ -2045,6 +2087,17 @@ bootstrap_local(DataProps, VarPrefixP, PrefixSep, NumSep, Bricks,
     NodeList = lists:duplicate(Bricks, node()),
     bootstrap("Schema.local", DataProps, VarPrefixP, PrefixSep, NumSep,
               NodeList, BricksPerChain, [node()], Props).
+
+%% add the given bricks as bootstrap_copy bricks.
+add_bootstrap_copy(BrickList) ->
+    %% confirm nodes pingable before calling into the gen_server
+    NodePongs = [{N,net_adm:ping(N)} || {_,N} <- BrickList],
+    case lists:keyfind(pang, 2, NodePongs) of
+        {Node, pang} ->
+            {error, nodedown, Node};
+        false ->
+            gen_server:call(?MODULE, {add_bootstrap_copy, BrickList}, 90*1000)
+    end.
 
 do_add_client_monitor(Node) ->
     Res = do_mod_client_monitor(Node, fun(Nd, OldList) ->
