@@ -60,6 +60,8 @@
 %% Exported purely to stop dialyzer warnings - not for use externally
 -export([get_brick_repair_state/2,call_with_timeout_repeat/3,brick_monitor_simple/3]).
 
+-export_type([brick_name/0, nowtime/0, proplist/0, state_name/0]).
+
 -type brick_name() :: atom().
 -type nowtime() :: {non_neg_integer(), non_neg_integer(), non_neg_integer()}.
 -type state_name() :: brick_server:repair_state_name_base() | repairing.

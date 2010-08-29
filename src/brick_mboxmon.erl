@@ -31,7 +31,6 @@
 
 -define(MY_TIMEOUT, 500).
 
-%%%%-compile(export_all).                               % debugging only!
 
 %% API
 -export([start_link/0,

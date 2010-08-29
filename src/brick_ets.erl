@@ -113,7 +113,6 @@
 -export([sequence_file_is_bad_common/6, append_external_bad_sequence_file/2,
          delete_external_bad_sequence_file/1]).
 
-%%% -compile(export_all).                               % QQQ debugging only!
 
 %%%
 %%% ctab format:
@@ -126,6 +125,8 @@
 %%%----------------------------------------------------------------------
 %%% Types/Specs/Records
 %%%----------------------------------------------------------------------
+
+-export_type([extern_tuple/0, state_r/0]).
 
 -type proplist() :: [ atom() | {any(),any()} ].
 

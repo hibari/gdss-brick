@@ -29,7 +29,7 @@
 -include("applog.hrl").
 
 
--compile([binary_comprehension, export_all]).
+-compile([binary_comprehension]).
 
 %% External API
 -export([make_proplist/3]).

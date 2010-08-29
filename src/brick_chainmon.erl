@@ -110,7 +110,7 @@
 -export([set_all_chain_roles/1,
          stitch_op_state/1, figure_out_current_chain_op_status/1]).
 
--compile(export_all).                           % QQQ debugging only!!
+-export_type([brick_list/0]).
 
 -type internal_status() :: unknown | pre_init | ok | repairing | repair_overload | disk_error.
 -type brick_list() :: list({brick_bp:brick_name(), node()}).

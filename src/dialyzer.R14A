@@ -1,76 +1,76 @@
   application
-  brick_admin:brick/0
-brick_admin.erl:1311: The created fun only terminates with explicit exception
-brick_admin.erl:1756: The created fun only terminates with explicit exception
-brick_admin.erl:2363: The created fun only terminates with explicit exception
+brick_admin.erl:1328: The created fun only terminates with explicit exception
+brick_admin.erl:1800: The created fun only terminates with explicit exception
+brick_admin.erl:2418: The created fun only terminates with explicit exception
 brick_admin_event_h.erl:112: The created fun only terminates with explicit exception
-  brick_bp:brick_name/0
-  brick_bp:nowtime/0
-  brick_bp:proplist/0
-  brick_bp:state_name/0
-  brick_chainmon:brick_list/0
-brick_ets.erl:1502: Function my_insert/6 has no local return
-brick_ets.erl:1521: Function my_insert2/6 has no local return
-brick_ets.erl:1607: Function my_delete/3 has no local return
-brick_ets.erl:1836: Function checkpoint_start/4 only terminates with explicit exception
-brick_ets.erl:1926: The created fun only terminates with explicit exception
-brick_ets.erl:2349: The pattern {'reply', Reply, NewInterimS} can never match the type {'noreply',#state{name::atom(),options::'undefined' | [any()],start_time::'undefined' | {_,_,_},do_logging::boolean(),do_sync::boolean(),log_dir::'undefined' | [any()],bigdata_dir::'undefined' | [any()],n_add::non_neg_integer(),n_replace::non_neg_integer(),n_set::non_neg_integer(),n_get::non_neg_integer(),n_get_many::non_neg_integer(),n_delete::non_neg_integer(),n_txn::non_neg_integer(),n_do::pos_integer(),n_expired::non_neg_integer(),logging_op_serial::non_neg_integer(),logging_op_q::queue(),log::'undefined' | pid(),thisdo_mods::'undefined' | [any()],check_pid::'undefined' | pid(),check_lastseqnum::'undefined' | integer(),ctab::atom(),shadowtab::atom(),shadowtab_name::atom(),bypass_shadowtab::boolean(),etab::atom(),mdtab::atom(),sync_pid::'undefined' | pid(),checkpoint_timer::'undefined' | reference(),checkpoint_opts::'undefined' | [any()],dirty_tab::atom(),wait_on_dirty_q::'undefined' | queue(),read_only_p::boolean(),expiry_tref::'undefined' | reference(),scavenger_pid::'undefined' | pid(),scavenger_tref::'undefined' | reference(),syncsum_count::non_neg_integer(),syncsum_msec::non_neg_integer(),syncsum_len::integer(),syncsum_tref::'undefined' | reference(),do_expiry_fun::'undefined' | fun(),wal_mod::atom()}}
-brick_ets.erl:2820: Guard test is_record(S::'undefined','state',44) can never succeed
-brick_ets.erl:2953: The created fun has no local return
-brick_ets.erl:2965: Function squidflash_doit/5 only terminates with explicit exception
-brick_ets.erl:2970: The created fun only terminates with explicit exception
-brick_ets.erl:2987: Function squidflash_prime1/5 only terminates with explicit exception
-  brick_ets:extern_tuple/0
-  brick_ets:state_r/0
-  brick_hash:chash_r/0
-  brick_hash:fixed_prefix_r/0
-  brick_hash:naive_r/0
-  brick_hash:var_prefix_r/0
-brick_mboxmon.erl:318: The created fun has no local return
-brick_mboxmon.erl:333: Function start_water_report_loop/3 has no local return
-brick_mboxmon.erl:342: Function water_report_loop/2 only terminates with explicit exception
-brick_mboxmon.erl:376: The created fun only terminates with explicit exception
-brick_mboxmon.erl:379: The call erlang:register(ResumeName::atom(),pid()) might fail due to a possible race condition caused by its combination with the erlang:whereis(ResumeName::atom()) call in brick_mboxmon.erl on line 377
-  brick_server:brick/0
-  brick_server:brick_name/0
-  brick_server:chain_name/0
-  brick_server:delete_reply/0
-  brick_server:flags_list_many/0
-  brick_server:get_reply/0
-  brick_server:global_hash_r/0
-  brick_server:node_name/0
-  brick_server:prop_list/0
-  brick_server:repair_state_name/0
-  brick_server:repair_state_name_base/0
-  brick_server:role/0
-  brick_server:set_reply/0
-  brick_squorum:brick_list/0
-  brick_squorum:set_res/0
-cluster_info.erl:36: The specification for cluster_info:start/0 states that the function might also return {'error',_} | {'ok',pid(),_} but the inferred return is {'ok',pid()}
-cluster_info.erl:37: The specification for cluster_info:start/2 states that the function might also return {'error',_} | {'ok',pid(),_} but the inferred return is {'ok',pid()}
-  Compiling some key modules to native code... done in 0m45.50s
- done in 1m34.62s
+brick_chainmon.erl:1001: Function will never be called
+brick_chainmon.erl:1002: Function will never be called
+brick_chainmon.erl:1019: Function process_brickstatus_some_ok_fallback/4 will never be called
+brick_chainmon.erl:1176: Function substitute_prop/3 will never be called
+brick_chainmon.erl:1478: Function add_repair_brick_to_end/2 will never be called
+brick_chainmon.erl:1592: Function backward_status_but_alive_p/2 will never be called
+brick_chainmon.erl:1602: Function status_to_num/1 will never be called
+brick_chainmon.erl:1637: Function set_global_hash_wrapper/3 will never be called
+brick_chainmon.erl:622: The pattern <StateName, _DiffList, _LastBricksStatus, NewBricksStatus, S> can never match since previous clauses completely covered the type <_,[],[{{_,_},'disk_error' | 'ok' | 'pre_init' | 'repair_overload' | 'repairing' | 'unknown'}],[{{_,_},'disk_error' | 'ok' | 'pre_init' | 'repair_overload' | 'repairing' | 'unknown'}],#state{chain::atom(),bricks::'undefined' | [{_,_}],chainlen::'undefined' | integer(),tref::'undefined' | reference(),last_bricks_status::'undefined' | [{_,_}],chain_now::'undefined' | [{_,_}],repairing_brick::'undefined' | {atom(),atom()},num_checks::integer(),sb_pid::'undefined' | pid()}>
+brick_chainmon.erl:631: Function will never be called
+brick_chainmon.erl:731: The pattern <_StateName = 'healthy', DiffList, LastBricksStatus, _NewBricksStatus, S> can never match since previous clauses completely covered the type <_,[],[{{_,_},'disk_error' | 'ok' | 'pre_init' | 'repair_overload' | 'repairing' | 'unknown'}],[{{_,_},'disk_error' | 'ok' | 'pre_init' | 'repair_overload' | 'repairing' | 'unknown'}],#state{chain::atom(),bricks::'undefined' | [{_,_}],chainlen::'undefined' | integer(),tref::'undefined' | reference(),last_bricks_status::'undefined' | [{_,_}],chain_now::'undefined' | [{_,_}],repairing_brick::'undefined' | {atom(),atom()},num_checks::integer(),sb_pid::'undefined' | pid()}>
+brick_chainmon.erl:738: The created fun has no local return
+brick_chainmon.erl:739: The created fun has no local return
+brick_chainmon.erl:748: The created fun has no local return
+brick_chainmon.erl:776: The pattern <StateName = 'degraded', DiffList, LastBricksStatus, NewBricksStatus, S> can never match since previous clauses completely covered the type <_,[],[{{_,_},'disk_error' | 'ok' | 'pre_init' | 'repair_overload' | 'repairing' | 'unknown'}],[{{_,_},'disk_error' | 'ok' | 'pre_init' | 'repair_overload' | 'repairing' | 'unknown'}],#state{chain::atom(),bricks::'undefined' | [{_,_}],chainlen::'undefined' | integer(),tref::'undefined' | reference(),last_bricks_status::'undefined' | [{_,_}],chain_now::'undefined' | [{_,_}],repairing_brick::'undefined' | {atom(),atom()},num_checks::integer(),sb_pid::'undefined' | pid()}>
+brick_chainmon.erl:973: The pattern <_StateName, _DiffList, _LastBricksStatus, _NewBricksStatus, S> can never match since previous clauses completely covered the type <_,[],[{{_,_},'disk_error' | 'ok' | 'pre_init' | 'repair_overload' | 'repairing' | 'unknown'}],[{{_,_},'disk_error' | 'ok' | 'pre_init' | 'repair_overload' | 'repairing' | 'unknown'}],#state{chain::atom(),bricks::'undefined' | [{_,_}],chainlen::'undefined' | integer(),tref::'undefined' | reference(),last_bricks_status::'undefined' | [{_,_}],chain_now::'undefined' | [{_,_}],repairing_brick::'undefined' | {atom(),atom()},num_checks::integer(),sb_pid::'undefined' | pid()}>
+brick_chainmon.erl:981: Function process_brickstatus_some_ok/4 will never be called
+brick_chainmon.erl:989: Function will never be called
+brick_ets.erl:1503: Function my_insert/6 has no local return
+brick_ets.erl:1522: Function my_insert2/6 has no local return
+brick_ets.erl:1608: Function my_delete/3 has no local return
+brick_ets.erl:1837: Function checkpoint_start/4 only terminates with explicit exception
+brick_ets.erl:1927: The created fun only terminates with explicit exception
+brick_ets.erl:2350: The pattern {'reply', Reply, NewInterimS} can never match the type {'noreply',#state{name::atom(),options::'undefined' | [any()],start_time::'undefined' | {_,_,_},do_logging::boolean(),do_sync::boolean(),log_dir::'undefined' | [any()],bigdata_dir::'undefined' | [any()],n_add::non_neg_integer(),n_replace::non_neg_integer(),n_set::non_neg_integer(),n_get::non_neg_integer(),n_get_many::non_neg_integer(),n_delete::non_neg_integer(),n_txn::non_neg_integer(),n_do::pos_integer(),n_expired::non_neg_integer(),logging_op_serial::non_neg_integer(),logging_op_q::queue(),log::'undefined' | pid(),thisdo_mods::'undefined' | [any()],check_pid::'undefined' | pid(),check_lastseqnum::'undefined' | integer(),ctab::atom(),shadowtab::atom(),shadowtab_name::atom(),bypass_shadowtab::boolean(),etab::atom(),mdtab::atom(),sync_pid::'undefined' | pid(),checkpoint_timer::'undefined' | reference(),checkpoint_opts::'undefined' | [any()],dirty_tab::atom(),wait_on_dirty_q::'undefined' | queue(),read_only_p::boolean(),expiry_tref::'undefined' | reference(),scavenger_pid::'undefined' | pid(),scavenger_tref::'undefined' | reference(),syncsum_count::non_neg_integer(),syncsum_msec::non_neg_integer(),syncsum_len::integer(),syncsum_tref::'undefined' | reference(),do_expiry_fun::'undefined' | fun(),wal_mod::atom()}}
+brick_ets.erl:2821: Guard test is_record(S::'undefined','state',44) can never succeed
+brick_ets.erl:2954: The created fun has no local return
+brick_ets.erl:2966: Function squidflash_doit/5 only terminates with explicit exception
+brick_ets.erl:2971: The created fun only terminates with explicit exception
+brick_ets.erl:2988: Function squidflash_prime1/5 only terminates with explicit exception
+brick_hash.erl:1083: Function doo_make_chain_weights/1 will never be called
+brick_hash.erl:1084: Function will never be called
+brick_hash.erl:1089: Function doo_iter_chain/3 will never be called
+brick_hash.erl:1091: The created fun has no local return
+brick_hash.erl:488: Function naive_key_to_chain_DEBUG/3 will never be called
+brick_hash.erl:783: Function verify_chain_list/1 will never be called
+brick_mboxmon.erl:317: The created fun has no local return
+brick_mboxmon.erl:332: Function start_water_report_loop/3 has no local return
+brick_mboxmon.erl:341: Function water_report_loop/2 only terminates with explicit exception
+brick_mboxmon.erl:375: The created fun only terminates with explicit exception
+brick_mboxmon.erl:378: The call erlang:register(ResumeName::atom(),pid()) might fail due to a possible race condition caused by its combination with the erlang:whereis(ResumeName::atom()) call in brick_mboxmon.erl on line 376
+cluster_info.erl:36: The specification for cluster_info:start/0 states that the function might also return {'error',_} but the inferred return is {'ok',pid()}
+cluster_info.erl:37: The specification for cluster_info:start/2 states that the function might also return {'error',_} but the inferred return is {'ok',pid()}
+  Compiling some key modules to native code... done in 0m49.61s
+ done in 1m44.12s
 done (warnings were emitted)
-  erlang:now/0
   gen_event
   gen_fsm
   gen_server
 gmt_cli.erl:166: Function close_exit_normal/1 only terminates with explicit exception
-gmt_hlog_common.erl:1061: The created fun only terminates with explicit exception
-gmt_hlog_common.erl:1185: The created fun only terminates with explicit exception
-gmt_hlog_common.erl:192: The call erlang:register(CName::atom(),pid()) might fail due to a possible race condition caused by its combination with the erlang:whereis(CName::any()) call in gmt_hlog_common.erl on line 190
-gmt_hlog_common.erl:316: The created fun only terminates with explicit exception
-gmt_hlog_common.erl:748: The created fun only terminates with explicit exception
-gmt_hlog_common.erl:952: The created fun only terminates with explicit exception
+gmt_hlog_common.erl:1062: The created fun only terminates with explicit exception
+gmt_hlog_common.erl:1186: The created fun only terminates with explicit exception
+gmt_hlog_common.erl:193: The call erlang:register(CName::atom(),pid()) might fail due to a possible race condition caused by its combination with the erlang:whereis(CName::any()) call in gmt_hlog_common.erl on line 191
+gmt_hlog_common.erl:317: The created fun only terminates with explicit exception
+gmt_hlog_common.erl:749: The created fun only terminates with explicit exception
+gmt_hlog_common.erl:953: The created fun only terminates with explicit exception
 gmt_hlog_local.erl:384: The created fun only terminates with explicit exception
 gmt_pmap.erl:99: The created fun only terminates with explicit exception
   gmt_tlog_printer:tlog_format/2
-gmt_util.erl:1114: Function wait_for_processes_loop/2 only terminates with explicit exception
-gmt_util.erl:560: Function shut_down_nicely/1 only terminates with explicit exception
+gmt_util.erl:1107: Function wait_for_processes_loop/2 only terminates with explicit exception
+gmt_util.erl:559: Function shut_down_nicely/1 only terminates with explicit exception
 mod_admin.erl:1170: The pattern [Nd | _] can never match the type []
-  orddict:orddict/0
-partition_detector.erl:29: The specification for partition_detector:start/0 states that the function might also return {'ok',pid(),_} but the inferred return is 'ignore' | {'error',_} | {'ok',pid()}
-partition_detector.erl:30: The specification for partition_detector:start/2 states that the function might also return {'ok',pid(),_} but the inferred return is 'ignore' | {'error',_} | {'ok',pid()}
+mod_admin.erl:1487: Function dump_fmt_width/2 will never be called
+mod_admin.erl:1506: Function watch_mailbox_size/1 will never be called
+mod_admin.erl:1507: The created fun has no local return
+mod_admin.erl:1512: Function watch_mailbox_size_loop/1 will never be called
+mod_admin.erl:1517: Function will never be called
+mod_admin.erl:1523: The created fun has no local return
+mod_admin.erl:1536: Function will never be called
 partition_detector_mnesia.erl:40: The specification for partition_detector_mnesia:init/1 states that the function might also return 'ignore' | {'stop',_} | {'ok',_,'infinity' | non_neg_integer()} but the inferred return is {'ok',{'state'}}
 partition_detector_mnesia.erl:41: The specification for partition_detector_mnesia:handle_call/3 states that the function might also return {'noreply',_} | {'noreply',_,'timeout'} | {'stop',_,_} | {'reply',_,_,'infinity' | non_neg_integer()} | {'stop',_,_,_} but the inferred return is {'reply',_,_}
 partition_detector_mnesia.erl:42: The specification for partition_detector_mnesia:handle_cast/2 states that the function might also return {'noreply',_,'timeout'} | {'stop',_,_} but the inferred return is {'noreply',_}

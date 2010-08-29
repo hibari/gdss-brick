@@ -159,7 +159,8 @@
 %%
 %% This layer does *not* make any key -> chain name mapping decisions.
 
--export([init_global_hash_state/7, init_global_hash_state/8,
+-export([add_migr_dict_if_missing/1,
+         init_global_hash_state/7, init_global_hash_state/8,
          key_to_brick/3,
          key_to_chain/2,                        % Not for general use
          chain2brick/3, chain2brick/4
@@ -176,8 +177,6 @@
 %% Useful mostly for debugging: invent a list of chains that will all
 %% live on the same node.
 -export([invent_nodelist/2, invent_nodelist/4]).
-
--compile(export_all).                           % Debugging only.
 
 
 %% Chain descriptor
@@ -230,6 +229,8 @@
           %% administrivia
           old_props                             % proplist()
          }).
+
+-export_type([chash_r/0, fixed_prefix_r/0, naive_r/0, var_prefix_r/0]).
 
 %% declare types for easy ref showing _r as record
 -type naive_r() :: #naive{}.

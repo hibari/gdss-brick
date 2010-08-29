@@ -435,17 +435,34 @@
 %%% Types/Specs/Records
 %%%----------------------------------------------------------------------
 
+-export_type([brick/0
+              , brick_name/0
+              , chain_name/0
+              , delete_reply/0
+              , flags_list_many/0
+              , get_reply/0
+              , global_hash_r/0
+              , node_name/0
+              , prop_list/0
+              , repair_state_name/0
+              , repair_state_name_base/0
+              , role/0
+              , set_reply/0
+             ]).
+
 %% depending on impl module %%%%%%%%%%%%%%%%%%%%%%%%%%
 -type impl_tuple() :: brick_ets:extern_tuple().
 -type impl_state_r() :: brick_ets:state_r().
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+-type orddict() :: list().
 
 -type role() :: undefined | standalone | chain_member.
 -type brick() :: {brick_name(), node_name()}.
 -type brick_name() :: atom().
 -type chain_name() :: atom().
 -type do_list() :: list(do1_op() | {ssf, binary(), flags_list()}).
--type do_op() :: {do, erlang:now(), do_list(), flags_list()}.
+-type do_op() :: {do, brick_bp:nowtime(), do_list(), flags_list()}.
 -type global_hash_r() :: #g_hash_r{}.
 -type node_name() :: atom().
 -type prop_list() :: list(atom() | {atom(), term()}).
@@ -532,7 +549,7 @@
                                                                                %   ch_log_replay messages
                , last_ack = undefined        :: brick_bp:nowtime() | undefined % now() time of last ack by
                                                                                % downstream.
-               , unknown_acks = []                       :: orddict:orddict()              % orddict() (init cheating!)
+               , unknown_acks = []                       :: orddict()              % orddict() (init cheating!)
                %% The clock_tref timer is used for:
                %% * For a downstream brick, to send chain_admin_periodic msgs.
                , clock_tref                  :: reference()                    % Timer ref
@@ -4966,7 +4983,7 @@ sweep_move_or_keep(ListWithBricks, LastKey, S) ->
                   Sw#sweep_r.bigdata_dir_p,Sw#sweep_r.val_prime_lastkey})
     end.
 
--spec sweep_move_or_keep3(sweep_key(), orddict:orddict(), list({delete_noexptime, term()}), #state{}) -> #state{}.
+-spec sweep_move_or_keep3(sweep_key(), orddict(), list({delete_noexptime, term()}), #state{}) -> #state{}.
 sweep_move_or_keep3(LastKey, MoveDict, Thisdo_Mods, S) ->
     Sw = S#state.sweepstate,
 
@@ -5053,11 +5070,11 @@ sweep_move_or_keep3(LastKey, MoveDict, Thisdo_Mods, S) ->
                     globalhash = NewGH}
     end.
 
--spec sweep_move_or_keep2(list({chain_name(), chain_name(),tuple()}), chain_name(), #state{}) -> {orddict:orddict(), list({delete_noexptime, term()})}.
+-spec sweep_move_or_keep2(list({chain_name(), chain_name(),tuple()}), chain_name(), #state{}) -> {orddict(), list({delete_noexptime, term()})}.
 sweep_move_or_keep2(ListWithBricks, ChainName, S) ->
     sweep_move_or_keep2(ListWithBricks, orddict:new(), [], ChainName, S).
 
--spec sweep_move_or_keep2(list({chain_name(), chain_name(),tuple()}), orddict:orddict(), list({delete_noexptime, term()}), chain_name(), #state{}) -> {orddict:orddict(), list({delete_noexptime, term()})}.
+-spec sweep_move_or_keep2(list({chain_name(), chain_name(),tuple()}), orddict(), list({delete_noexptime, term()}), chain_name(), #state{}) -> {orddict(), list({delete_noexptime, term()})}.
 sweep_move_or_keep2([{CHcur, CHnew, Item}|T], Dict, Thisdo_Mods, MyChainName,
                     S) ->
     if MyChainName /= CHcur, MyChainName /= CHnew ->

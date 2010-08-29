@@ -70,7 +70,7 @@
           hlog_dir                        :: dirname(),
           last_seqnum                     :: seqnum(),                 % SeqNum of last writeback
           last_offset                     :: offset(),                 % Offset of last writeback
-          reg_dict=orddict:new()          :: orddict:orddict(),
+          reg_dict=orddict:new()          :: orddict(),
           tref                            :: timer:tref(),
           scavenger_tref                  :: timer:tref() | undefined,
           async_writeback_pid             :: pid() | undefined,
@@ -88,6 +88,7 @@
           relocate_ts = []            :: list(eee())
                                          }).
 
+-type orddict() :: list().
 
 -type props() :: list({common_log_name,servername()}).
 

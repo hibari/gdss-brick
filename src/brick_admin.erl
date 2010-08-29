@@ -164,6 +164,8 @@
 %% API
 %%====================================================================
 
+-export_type([brick/0]).
+
 -type deeplist() :: [char() | atom() | deeplist()].
 -type brick() :: {atom(),atom()}.
 -type bricklist() :: [brick()].

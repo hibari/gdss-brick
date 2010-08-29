@@ -58,7 +58,7 @@
 -export([multiset/2]).
 -export([t0/0]).                                % Unit tests
 
--compile(export_all).                           %QQQ debugging only
+-export_type([brick_list/0, set_res/0]).
 
 -type brick_list() :: list(brick_server:brick()).
 -type set_res() :: brick_server:set_reply() | error | quorum_error.
