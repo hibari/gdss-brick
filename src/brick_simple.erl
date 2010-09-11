@@ -60,6 +60,7 @@
          do/2, do/3, do/4]).
 -export([fold_table/5, fold_table/6, fold_table/7,
          fold_key_prefix/5, fold_key_prefix/9]).
+-export([clear_table/1]).
 
 %% Consistent hash checking ... TODO: does this belong in this module? brick_ets??
 -export([chash_migration_pre_check/2]).         % public
@@ -419,6 +420,19 @@ fold_key_prefix2({ok, {Rs, Bool}}, GetFun, Tab, Key, Fun, Acc,
     end;
 fold_key_prefix2(Err, _GetFun, _Tab, _Key, _Fun, Acc, _SleepTime, Iters) ->
     {error, Err, Acc, Iters}.
+
+%% @spec (atom()) -> ok.
+%% @doc Delete all keys in a table.
+%%
+clear_table(Tab)
+  when is_atom(Tab) ->
+    Fun = fun({K,_TS}, _Acc) -> ok = brick_simple:delete(Tab, K) end,
+    case brick_simple:fold_key_prefix(Tab, <<>>, Fun, ok, [witness]) of
+        {ok,ok,_} ->
+            ok;
+        {error,_Err,_,_} ->
+            clear_table(Tab)
+    end.
 
 %% @spec (atom(), do_list())
 %%    -> zzz_do_reply() | {error, mumble(), mumble2()}
