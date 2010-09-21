@@ -13,8 +13,8 @@
 %%% See the License for the specific language governing permissions and
 %%% limitations under the License.
 %%%
-%%% File    : gdss.R14A.rel
-%%% Purpose : gdss application release file
+%%% File    : gdss_admin.R14A.rel
+%%% Purpose : gdss admin application release file
 %%%----------------------------------------------------------------------
 
 %% See http://www.erlang.org/doc/doc-5.5/doc/design_principles/
@@ -22,21 +22,21 @@
 
 {release,
  %% The name and version number of this OTP "release" (a collection of apps)
- {"brick-app", "0.01"},
+ {"brick-admin-app", "0.01"},
 
  %% Version of the Erlang/OTP runtime system used by this release.
  %% ERTS 47.4.1 = emulator version 5.4.12 = Erlang/OTP R10B-9.
- {erts, "5.8"},
+ {erts, "5.8.1"},
 
  %% List of applications (and their version numbers) for this release.
  [
-  {kernel, "2.14"},
-  {stdlib, "1.17"},
+  {kernel, "2.14.1"},
+  {stdlib, "1.17.1"},
   {sasl, "2.1.9.2"},
-  {crypto, "2.0"},
+  {crypto, "2.0.1"},
 
   {gmt, "0.01"},
-  {gdss, "0.01"},
+  {gdss, "0.01"}
   {gdss_client, "0.01"}
  ]
 }.
