@@ -1395,7 +1395,7 @@ update_locations_on_brick(Brick, NewLocs) ->
     end.
 
 scavenge_one_seq_file_fun(TempDir, SA, Fread_blob, Finfolog) ->
-    {ok, SleepTime} = gmt_config_svr:get_config_value_i(brick_dirty_buffer_wait, 60*1000),
+    {ok, SleepTimeSec} = gmt_config_svr:get_config_value_i(brick_dirty_buffer_wait, 60),
     fun({SeqNum, Bytes}, {SeqNums, Hs, Bs, Es}) ->
             scav_check_shutdown(),
 
@@ -1452,7 +1452,7 @@ scavenge_one_seq_file_fun(TempDir, SA, Fread_blob, Finfolog) ->
                               "~p updates\n",
                               [SA#scav.name, SeqNum, NumUpdates]),
                             spawn(fun() ->
-                                          timer:sleep(SleepTime),
+                                          timer:sleep(SleepTimeSec*1000),
                                           brick_ets:delete_seq(SA, SeqNum)
                                   end);
                        UpRes ->
