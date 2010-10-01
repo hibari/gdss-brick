@@ -2966,7 +2966,7 @@ accumulate_maybe(Key, ST, Acc) ->
 squidflash_doit(KsRaws, DoOp, From, ParentPid, FakeS) ->
     Me = self(),
     KRV_Refs = [{X, make_ref()} || X <- KsRaws],
-    [gmt_parallel_limit:enqueue(
+    [catch gmt_parallel_limit:enqueue(
        brick_primer_limit,
        fun() ->
                catch squidflash_prime1(Key, RawVal, ValLen, Me, FakeS),
@@ -3138,10 +3138,44 @@ scavenger_get_keys(Name, Fs, {ok, {Rs, true}}, Acc, F_k2d, F_lump, Iters) ->
                        prepend_rs(Name, Rs, Acc), F_k2d, F_lump, Iters + 1).
 
 scavenger_get_many(Name, Key, Flags) ->
+    Retry =
+	case gmt_config_svr:get_config_value_i(scavenger_get_many_retry, 5) of
+	    {ok, Retry0} ->
+		Retry0;
+	    _ ->
+		5
+	end,
+    Max =
+	case gmt_config_svr:get_config_value_i(scavenger_get_many_max, 1000) of
+	    {ok, Max0} ->
+		Max0;
+	    _ ->
+		1000
+	end,
+    TimeOut =
+	case gmt_config_svr:get_config_value_i(scavenger_get_many_timeout, 5000) of
+	    {ok, T0} ->
+		T0;
+	    _ ->
+		5000
+	end,
+    scavenger_get_many_retry(Name, Key, Flags, Max, TimeOut, Retry).
+
+
+scavenger_get_many_retry(Name, Key, Flags, Max, TimeOut, 0) ->
     [Res] = brick_server:do(Name, node(),
-                            [brick_server:make_get_many(Key, 1000, Flags)],
-                            [ignore_role], 5000),
-    Res.
+                            [brick_server:make_get_many(Key, Max, Flags)],
+                            [ignore_role], TimeOut),
+    Res;
+scavenger_get_many_retry(Name, Key, Flags, Max, TimeOut, Retry) ->
+    case catch brick_server:do(Name, node(),
+			       [brick_server:make_get_many(Key, Max, Flags)],
+			       [ignore_role], TimeOut) of
+	[Res] ->
+	    Res;
+	_Err ->
+	    scavenger_get_many_retry(Name, Key, Flags, Max, TimeOut, Retry-1)
+    end.
 
 prepend_rs(Name, L1, L2) ->
     %% NOTE: Calling storetuple_val/1 twice for each tuple, I don't
