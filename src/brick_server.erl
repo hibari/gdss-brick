@@ -668,7 +668,7 @@ dump_state(Server) ->
 
 -spec add(brick_name(), node_name(), key(), val()) -> add_reply().
 add(ServerName, Node, Key, Value) ->
-    add(ServerName, Node, Key, Value, 0, [], ?FOO_TIMEOUT).
+    add(ServerName, Node, Key, Value, 0, [], foo_timeout()).
 
 %% @spec (brick_name(), node_name(), io_list(), io_list(), prop_list() | timeout())
 %%    -> zzz_add_reply()
@@ -677,7 +677,7 @@ add(ServerName, Node, Key, Value) ->
 
 -spec add(brick_name(), node_name(), key(), val(), flags_list0() | non_neg_integer()) -> add_reply().
 add(ServerName, Node, Key, Value, Flags) when is_list(Flags) ->
-    add(ServerName, Node, Key, Value, 0, Flags, ?FOO_TIMEOUT);
+    add(ServerName, Node, Key, Value, 0, Flags, foo_timeout());
 add(ServerName, Node, Key, Value, Timeout) when is_integer(Timeout) ->
     add(ServerName, Node, Key, Value, 0, [], Timeout).
 
@@ -701,7 +701,7 @@ add(ServerName, Node, Key, Value, ExpTime, Flags, Timeout)
 
 -spec replace(brick_name(), node_name(), key(), val()) -> replace_reply().
 replace(ServerName, Node, Key, Value) ->
-    replace(ServerName, Node, Key, Value, 0, [], ?FOO_TIMEOUT).
+    replace(ServerName, Node, Key, Value, 0, [], foo_timeout()).
 
 %% @spec (brick_name(), node_name(), io_list(), io_list(), prop_list() | timeout())
 %%    -> zzz_add_reply()
@@ -710,7 +710,7 @@ replace(ServerName, Node, Key, Value) ->
 
 -spec replace(brick_name(), node_name(), key(), val(), flags_list0() | timeout()) -> replace_reply().
 replace(ServerName, Node, Key, Value, Flags) when is_list(Flags) ->
-    replace(ServerName, Node, Key, Value, 0, Flags, ?FOO_TIMEOUT);
+    replace(ServerName, Node, Key, Value, 0, Flags, foo_timeout());
 replace(ServerName, Node, Key, Value, Timeout) when is_integer(Timeout) ->
     replace(ServerName, Node, Key, Value, 0, [], Timeout).
 
@@ -734,7 +734,7 @@ replace(ServerName, Node, Key, Value, ExpTime, Flags, Timeout)
 
 -spec set(brick_name(), node_name(), key(), val()) -> set_reply().
 set(ServerName, Node, Key, Value) ->
-    set(ServerName, Node, Key, Value, 0, [], ?FOO_TIMEOUT).
+    set(ServerName, Node, Key, Value, 0, [], foo_timeout()).
 
 %% @spec (brick_name(), node_name(), io_list(), io_list(), prop_list() | timeout())
 %%    -> zzz_add_reply()
@@ -743,7 +743,7 @@ set(ServerName, Node, Key, Value) ->
 
 -spec set(brick_name(), node_name(), key(), val(), flags_list0() | non_neg_integer()) -> set_reply().
 set(ServerName, Node, Key, Value, Flags) when is_list(Flags) ->
-    set(ServerName, Node, Key, Value, 0, Flags, ?FOO_TIMEOUT);
+    set(ServerName, Node, Key, Value, 0, Flags, foo_timeout());
 set(ServerName, Node, Key, Value, Timeout) when is_integer(Timeout) ->
     set(ServerName, Node, Key, Value, 0, [], Timeout).
 
@@ -767,7 +767,7 @@ set(ServerName, Node, Key, Value, ExpTime, Flags, Timeout)
 
 -spec get(brick_name(), node_name(), key()) -> get_reply().
 get(ServerName, Node, Key) ->
-    get(ServerName, Node, Key, [], ?FOO_TIMEOUT).
+    get(ServerName, Node, Key, [], foo_timeout()).
 
 %% @spec (brick_name(), node_name(), io_list(), prop_list() | timeout())
 %%    -> zzz_get_reply()
@@ -776,7 +776,7 @@ get(ServerName, Node, Key) ->
 
 -spec get(brick_name(), node_name(), key(), flags_list0() | non_neg_integer()) -> get_reply().
 get(ServerName, Node, Key, Flags) when is_list(Flags) ->
-    get(ServerName, Node, Key, Flags, ?FOO_TIMEOUT);
+    get(ServerName, Node, Key, Flags, foo_timeout());
 get(ServerName, Node, Key, Timeout) when is_integer(Timeout) ->
     get(ServerName, Node, Key, [], Timeout).
 
@@ -799,7 +799,7 @@ get(ServerName, Node, Key, Flags, Timeout)
 
 -spec delete(brick_name(), node_name(), key()) -> delete_reply().
 delete(ServerName, Node, Key) ->
-    delete(ServerName, Node, Key, [], ?FOO_TIMEOUT).
+    delete(ServerName, Node, Key, [], foo_timeout()).
 
 %% @spec (brick_name(), node_name(), io_list(), prop_list() | timeout())
 %%    -> zzz_delete_reply()
@@ -808,7 +808,7 @@ delete(ServerName, Node, Key) ->
 
 -spec delete(brick_name(), node_name(), key(), flags_list0() | non_neg_integer()) -> delete_reply().
 delete(ServerName, Node, Key, Flags) when is_list(Flags) ->
-    delete(ServerName, Node, Key, Flags, ?FOO_TIMEOUT);
+    delete(ServerName, Node, Key, Flags, foo_timeout());
 delete(ServerName, Node, Key, Timeout) when is_integer(Timeout) ->
     delete(ServerName, Node, Key, [], Timeout).
 
@@ -824,31 +824,31 @@ delete(ServerName, Node, Key, Flags, Timeout)
         Else  -> Else
     end.
 
-%% @spec (brick_name(), node_name(), io_list(), integer())
+%% @spec (brick_name(), node_name(), io_list() | ?BRICK__GET_MANY_FIRST, integer())
 %%    -> zzz_getmany_reply()
 %% @equiv getmany(ServerName, Node, Key, MaxNum, [], DefaultTimeout)
 %% @doc Get many Key/Value pairs from a brick, up to MaxNum.
 
--spec get_many(brick_name(), node_name(), key(), integer()) -> getmany_reply().
+-spec get_many(brick_name(), node_name(), key() | ?BRICK__GET_MANY_FIRST, integer()) -> getmany_reply().
 get_many(ServerName, Node, Key, MaxNum) ->
-    get_many(ServerName, Node, Key, MaxNum, [], ?FOO_TIMEOUT).
+    get_many(ServerName, Node, Key, MaxNum, [], foo_timeout()).
 
-%% @spec (brick_name(), node_name(), io_list(), integer(), prop_list() | timeout())
+%% @spec (brick_name(), node_name(), io_list() | ?BRICK__GET_MANY_FIRST, integer(), prop_list() | timeout())
 %%    -> zzz_getmany_reply()
 %% @equiv getmany(ServerName, Node, Key, MaxNum, [], DefaultTimeoutOrFlags)
 %% @doc Get many Key/Value pairs from a brick, up to MaxNum.
 
--spec get_many(brick_name(), node_name(), key(), integer(), flags_list() | timeout()) -> getmany_reply().
+-spec get_many(brick_name(), node_name(), key() | ?BRICK__GET_MANY_FIRST, integer(), flags_list() | timeout()) -> getmany_reply().
 get_many(ServerName, Node, Key, MaxNum, Flags) when is_list(Flags) ->
-    get_many(ServerName, Node, Key, MaxNum, Flags, ?FOO_TIMEOUT);
+    get_many(ServerName, Node, Key, MaxNum, Flags, foo_timeout());
 get_many(ServerName, Node, Key, MaxNum, Timeout) when is_integer(Timeout) ->
     get_many(ServerName, Node, Key, MaxNum, [], Timeout).
 
-%% @spec (brick_name(), node_name(), io_list(), integer(), prop_list(), timeout())
+%% @spec (brick_name(), node_name(), io_list() | ?BRICK__GET_MANY_FIRST, integer(), prop_list(), timeout())
 %%    -> zzz_getmany_reply()
 %% @doc Get many Key/Value pairs from a brick, up to MaxNum.
 
--spec get_many(brick_name(), node_name(), key(), integer(), flags_list(), timeout()) -> getmany_reply().
+-spec get_many(brick_name(), node_name(), key() | ?BRICK__GET_MANY_FIRST, integer(), flags_list(), timeout()) -> getmany_reply().
 get_many(ServerName, Node, Key, MaxNum, Flags, Timeout)
   when not is_list(Node), is_integer(MaxNum),
        is_list(Flags), is_integer(Timeout) ->
@@ -857,11 +857,11 @@ get_many(ServerName, Node, Key, MaxNum, Flags, Timeout)
         Else  -> Else
     end.
 
-%% @spec (brick_name(), node_name(), io_list(), integer(), prop_list(), prop_list(), timeout())
+%% @spec (brick_name(), node_name(), io_list() | ?BRICK__GET_MANY_FIRST, integer(), prop_list(), prop_list(), timeout())
 %%    -> zzz_getmany_reply()
 %% @doc Get many Key/Value pairs from a brick, up to MaxNum.
 
--spec get_many(brick_name(), node_name(), key(), integer(), flags_list(), prop_list(), timeout()) -> getmany_reply().
+-spec get_many(brick_name(), node_name(), key() | ?BRICK__GET_MANY_FIRST, integer(), flags_list(), prop_list(), timeout()) -> getmany_reply().
 get_many(ServerName, Node, Key, MaxNum, Flags, DoFlags, Timeout)
   when not is_list(Node), is_integer(MaxNum),
        is_list(Flags), is_list(DoFlags), is_integer(Timeout) ->
@@ -878,7 +878,7 @@ get_many(ServerName, Node, Key, MaxNum, Flags, DoFlags, Timeout)
 
 -spec do(brick_name(), node_name(), do_list()) -> do_reply().
 do(ServerName, Node, DoList) ->
-    do(ServerName, Node, DoList, [], ?FOO_TIMEOUT).
+    do(ServerName, Node, DoList, [], foo_timeout()).
 
 %% @spec (brick_name(), node_name(), do_list(), prop_list() | timeout())
 %%    -> zzz_do_reply() | {error, mumble(), mumble2()}
@@ -949,7 +949,7 @@ do(ServerName, Node, DoList, DoFlags, Timeout)
                -> key_not_exist | {quota_root, key(), ts(), val(), exp_time(), flags_list()}.
 get_quota(ServerName, Node, Key) ->
     Op = make_get_quota(Key),
-    case do(ServerName, Node, [Op], ?FOO_TIMEOUT*4) of
+    case do(ServerName, Node, [Op], foo_timeout()*4) of
         [Res] -> Res;
         Else  -> Else
     end.
@@ -980,7 +980,7 @@ get_quota(ServerName, Node, Key) ->
                        quota_reply().
 set_quota(ServerName, Node, Key, Items, Bytes) ->
     Op = make_set_quota(Key, Items, Bytes),
-    case do(ServerName, Node, [Op], ?FOO_TIMEOUT*4) of
+    case do(ServerName, Node, [Op], foo_timeout()*4) of
         [Res] -> Res;
         Else  -> Else
     end.
@@ -997,7 +997,7 @@ set_quota(ServerName, Node, Key, Items, Bytes) ->
                          ok | key_not_exist.
 resum_quota(ServerName, Node, Key) when is_binary(Key) ->
     Op = make_resum_quota(Key),
-    case do(ServerName, Node, [Op], ?FOO_TIMEOUT*4) of
+    case do(ServerName, Node, [Op], foo_timeout()*4) of
         [Res] -> Res;
         Else  -> Else
     end.
@@ -1008,7 +1008,7 @@ resum_quota(ServerName, Node, Key) when is_binary(Key) ->
 
 -spec status(brick_name(), node_name()) -> status_reply().
 status(ServerName, Node) when not is_list(Node) ->
-    status(ServerName, Node, ?FOO_TIMEOUT).
+    status(ServerName, Node, foo_timeout()).
 
 -spec status(brick_name(), node_name(), integer()) -> status_reply().
 status(ServerName, Node, Timeout) when not is_list(Node) ->
@@ -1020,7 +1020,7 @@ status(ServerName, Node, Timeout) when not is_list(Node) ->
 
 -spec state(brick_name(), node_name()) -> state_reply().
 state(ServerName, Node) when not is_list(Node) ->
-    gen_server:call({ServerName, Node}, {state}, ?FOO_TIMEOUT).
+    gen_server:call({ServerName, Node}, {state}, foo_timeout()).
 
 %% @spec (brick_name(), node_name())
 %%    -> zzz_flushall_reply()
@@ -1028,7 +1028,7 @@ state(ServerName, Node) when not is_list(Node) ->
 
 -spec flush_all(brick_name(), node_name()) -> flushall_reply().
 flush_all(ServerName, Node) when not is_list(Node) ->
-    gen_server:call({ServerName, Node}, {flush_all}, ?FOO_TIMEOUT).
+    gen_server:call({ServerName, Node}, {flush_all}, foo_timeout()).
 
 %% @spec (brick_name(), node_name())
 %%    -> zzz_checkpoint_reply()
@@ -1084,7 +1084,7 @@ checkpoint_bricks_and_wait(BrickList) when is_list (BrickList) ->
 
 -spec sync_down_the_chain(brick_name(), node_name(), prop_list()) -> syncdown_reply().
 sync_down_the_chain(ServerName, Node, Options) when is_list(Options) ->
-    sync_down_the_chain(ServerName, Node, Options, ?FOO_TIMEOUT).
+    sync_down_the_chain(ServerName, Node, Options, foo_timeout()).
 
 %% @spec (brick_name(), node_name(), prop_list(), timeout())
 %%    -> zzz_syncdown_reply()
@@ -1159,7 +1159,7 @@ start_scavenger(ServerName, Node, PropList) ->
 -spec chain_role_standalone(brick_name(), node_name()) -> rolestandalone_reply().
 chain_role_standalone(ServerName, Node) ->
     gen_server:call({ServerName, Node}, {chain_role, standalone},
-                    ?FOO_TIMEOUT * 1).
+                    foo_timeout() * 1).
 
 %% @spec (brick_name(), node_name())
 %%    -> zzz_roleundefined_reply()
@@ -1168,7 +1168,7 @@ chain_role_standalone(ServerName, Node) ->
 -spec chain_role_undefined(brick_name(), node_name()) -> roleundefined_reply().
 chain_role_undefined(ServerName, Node) ->
     gen_server:call({ServerName, Node}, {chain_role, undefined},
-                    ?FOO_TIMEOUT * 1).
+                    foo_timeout() * 1).
 
 %% @spec (brick_name(), node_name(), brick_name(), node_name(), prop_list())
 %%    -> zzz_rolehead_reply()
@@ -1178,7 +1178,7 @@ chain_role_undefined(ServerName, Node) ->
 chain_role_head(ServerName, Node, DownNode, DownServerName, PropList) ->
     PL2 = [head, {downstream_node, {DownNode, DownServerName}}] ++ PropList,
     PL3 = get_debug_chain_props(),
-    gen_server:call({ServerName, Node}, {chain_role, PL2++PL3}, ?FOO_TIMEOUT * 1).
+    gen_server:call({ServerName, Node}, {chain_role, PL2++PL3}, foo_timeout() * 1).
 
 %% @spec (brick_name(), node_name(), brick_name(), node_name(), prop_list())
 %%    -> zzz_roletail_reply()
@@ -1188,7 +1188,7 @@ chain_role_head(ServerName, Node, DownNode, DownServerName, PropList) ->
 chain_role_tail(ServerName, Node, UpNode, UpServerName, PropList) ->
     PL2 = [tail, {upstream_node, {UpNode, UpServerName}}] ++ PropList,
     PL3 = get_debug_chain_props(),
-    gen_server:call({ServerName, Node}, {chain_role, PL2++PL3}, ?FOO_TIMEOUT * 1).
+    gen_server:call({ServerName, Node}, {chain_role, PL2++PL3}, foo_timeout() * 1).
 
 %% @spec (brick_name(), node_name(), brick_name(), node_name(), brick_name(), node_name(), prop_list())
 %%    -> zzz_rolemiddle_reply()
@@ -1200,7 +1200,7 @@ chain_role_middle(ServerName, Node, UpNode, UpServerName,
     PL2 = [middle, {upstream_node, {UpNode, UpServerName}},
            {downstream_node, {DownNode, DownServerName}}] ++ PropList,
     PL3 = get_debug_chain_props(),
-    gen_server:call({ServerName, Node}, {chain_role, PL2++PL3}, ?FOO_TIMEOUT * 1).
+    gen_server:call({ServerName, Node}, {chain_role, PL2++PL3}, foo_timeout() * 1).
 
 %% @spec (brick_name(), node_name())
 %%    -> zzz_getrole_reply()
@@ -1209,7 +1209,7 @@ chain_role_middle(ServerName, Node, UpNode, UpServerName,
 -spec chain_get_role(brick_name(), node_name()) -> getrole_reply().
 chain_get_role(ServerName, Node) ->
     gen_server:call({ServerName, Node}, {chain_get_role},
-                    ?FOO_TIMEOUT * 1).
+                    foo_timeout() * 1).
 
 %% @spec (brick_name(), node_name(), repair_state_name())
 %%    -> zzz_setmyrepair_reply()
@@ -1219,7 +1219,7 @@ chain_get_role(ServerName, Node) ->
                                -> setmyrepair_reply().
 chain_set_my_repair_state(ServerName, Node, Val) ->
     gen_server:call({ServerName, Node}, {chain_set_my_repair_state, Val},
-                    ?FOO_TIMEOUT * 1).
+                    foo_timeout() * 1).
 
 %% @spec (brick_name(), node_name(), repair_state_name())
 %%    -> zzz_setmyrepair_reply()
@@ -1229,13 +1229,13 @@ chain_set_my_repair_state(ServerName, Node, Val) ->
                                -> setmyrepair_reply().
 chain_set_ds_repair_state(ServerName, Node, Val) ->
     gen_server:call({ServerName, Node}, {chain_set_ds_repair_state, Val},
-                    ?FOO_TIMEOUT * 1).
+                    foo_timeout() * 1).
 
-%% @ equiv (BrickName, NodeName, ?FOO_TIMEOUT * 1)
+%% @ equiv (BrickName, NodeName, foo_timeout() * 1)
 
 -spec chain_get_my_repair_state(brick_name(), node_name()) -> repair_state_name().
 chain_get_my_repair_state(ServerName, Node) ->
-    chain_get_my_repair_state(ServerName, Node, ?FOO_TIMEOUT * 1).
+    chain_get_my_repair_state(ServerName, Node, foo_timeout() * 1).
 
 %% @spec (brick_name(), node_name(), integer())
 %%    -> repair_state_name()
@@ -1252,7 +1252,7 @@ chain_get_my_repair_state(ServerName, Node, Timeout) ->
 -spec chain_get_ds_repair_state(brick_name(), node_name()) -> repair_state_name().
 chain_get_ds_repair_state(ServerName, Node) ->
     gen_server:call({ServerName, Node}, {chain_get_ds_repair_state},
-                    ?FOO_TIMEOUT * 1).
+                    foo_timeout() * 1).
 
 %% @spec (brick_name(), node_name())
 %%    -> repair_state_name()
@@ -1261,7 +1261,7 @@ chain_get_ds_repair_state(ServerName, Node) ->
 -spec chain_start_repair(brick_name(), node_name()) -> ok | {error, not_chain_member | no_downstream | ds_repair_state, term()}.
 chain_start_repair(ServerName, Node) ->
     gen_server:call({ServerName, Node}, {chain_start_repair},
-                    ?FOO_TIMEOUT * 1).
+                    foo_timeout() * 1).
 
 %% @spec (brick_name(), node_name(), global_hash_r())
 %%    -> ok | error
@@ -1270,7 +1270,7 @@ chain_start_repair(ServerName, Node) ->
 
 -spec chain_hack_set_global_hash(brick_name(), node_name(), global_hash_r()) -> ok | {error, integer()}.
 chain_hack_set_global_hash(ServerName, Node, GH) ->
-    chain_hack_set_global_hash(ServerName, Node, GH, ?FOO_TIMEOUT * 1).
+    chain_hack_set_global_hash(ServerName, Node, GH, foo_timeout() * 1).
 
 chain_hack_set_global_hash(ServerName, Node, GH, Timeout) ->
     gen_server:call({ServerName, Node},
@@ -1284,7 +1284,7 @@ chain_hack_set_global_hash(ServerName, Node, GH, Timeout) ->
 -spec chain_get_global_hash(brick_name(), node_name()) -> global_hash_r().
 chain_get_global_hash(ServerName, Node) ->
     gen_server:call({ServerName, Node}, {chain_get_global_hash},
-                    ?FOO_TIMEOUT * 1).
+                    foo_timeout() * 1).
 
 %% @spec (brick_name(), node_name(), true | false)
 %%    -> ok
@@ -1294,7 +1294,7 @@ chain_get_global_hash(ServerName, Node) ->
 chain_set_read_only_mode(ServerName, Node, On_p)
   when On_p == true; On_p == false ->
     gen_server:call({ServerName, Node}, {chain_set_read_only_mode, On_p},
-                    ?FOO_TIMEOUT * 1).
+                    foo_timeout() * 1).
 
 %% @spec (brick_name(), node_name())
 %%    -> {integer(), integer()}
@@ -1305,7 +1305,7 @@ chain_set_read_only_mode(ServerName, Node, On_p)
 -spec chain_get_downstream_serials(brick_name(), node_name()) -> {integer(), integer()}.
 chain_get_downstream_serials(ServerName, Node) ->
     gen_server:call({ServerName, Node}, {chain_get_downstream_serials},
-                    ?FOO_TIMEOUT * 1).
+                    foo_timeout() * 1).
 
 %% @spec (brick_name(), node_name())
 %%    -> ok
@@ -1319,7 +1319,7 @@ chain_get_downstream_serials(ServerName, Node) ->
 -spec chain_flush_log_downstream(brick_name(), node_name()) -> ok.
 chain_flush_log_downstream(ServerName, Node) ->
     gen_server:call({ServerName, Node}, {chain_flush_log_downstream},
-                    ?FOO_TIMEOUT * 5).
+                    foo_timeout() * 5).
 
 %% @spec (brick_name(), node_name(), proplist())
 %%    -> ok
@@ -1329,7 +1329,7 @@ chain_flush_log_downstream(ServerName, Node) ->
 -spec chain_add_to_proplist(brick_name(), node_name(), prop_list()) -> ok.
 chain_add_to_proplist(ServerName, Node, PropList) when is_list(PropList) ->
     gen_server:call({ServerName, Node}, {chain_add_to_proplist, PropList},
-                    ?FOO_TIMEOUT * 1).
+                    foo_timeout() * 1).
 
 %% @spec (brick_name(), node_name(), term(), atom(), proplist())
 %%    -> term() | {error, Reason, ExtraInfo}
@@ -1338,7 +1338,7 @@ chain_add_to_proplist(ServerName, Node, PropList) when is_list(PropList) ->
 -spec migration_start_sweep(brick_name(), node_name(), term(), atom(), prop_list()) -> term() | {error, term(), term()}.
 migration_start_sweep(ServerName, Node, Cookie, YourChainName, Options) ->
     migration_start_sweep(ServerName, Node, Cookie, YourChainName, Options,
-                          ?FOO_TIMEOUT * 5).
+                          foo_timeout() * 5).
 
 -spec migration_start_sweep(brick_name(), node_name(), term(), atom(), prop_list(), integer()) -> term() | {error, term(), term()}.
 migration_start_sweep(ServerName, Node, Cookie, YourChainName, Options,
@@ -1361,7 +1361,7 @@ migration_start_sweep(ServerName, Node, Cookie, YourChainName, Options,
                            -> {ok, integer(), prop_list()} |
                                   {error, not_migrating | migrating, term()}.
 migration_clear_sweep(ServerName, Node) ->
-    migration_clear_sweep(ServerName, Node, ?FOO_TIMEOUT * 5).
+    migration_clear_sweep(ServerName, Node, foo_timeout() * 5).
 
 -spec migration_clear_sweep(brick_name(), node_name(), integer())
                            -> {ok, integer(), prop_list()} |
@@ -1376,7 +1376,7 @@ migration_clear_sweep(ServerName, Node, Timeout) ->
 -spec md_test_get(brick_name(), node_name(), key()) -> list({key(), val()}).
 md_test_get(ServerName, Node, Key) ->
     gen_server:call({ServerName, Node}, {md_test_get, Key},
-                    ?FOO_TIMEOUT * 5).
+                    foo_timeout() * 5).
 
 %% @spec (brick_name(), node_name(), term(), term())
 %%    -> ok
@@ -1385,7 +1385,7 @@ md_test_get(ServerName, Node, Key) ->
 -spec md_test_set(brick_name(), node_name(), key(), val()) -> ok.
 md_test_set(ServerName, Node, Key, Val) ->
     gen_server:call({ServerName, Node}, {md_test_set, Key, Val},
-                    ?FOO_TIMEOUT * 5).
+                    foo_timeout() * 5).
 
 %% @spec (brick_name(), node_name(), term())
 %%    -> list(tuple())
@@ -1394,7 +1394,7 @@ md_test_set(ServerName, Node, Key, Val) ->
 -spec md_test_delete(brick_name(), node_name(), key()) -> list(tuple()).
 md_test_delete(ServerName, Node, Key) ->
     gen_server:call({ServerName, Node}, {md_test_delete, Key},
-                    ?FOO_TIMEOUT * 5).
+                    foo_timeout() * 5).
 
 %% @spec (brick_name(), node_name(), integer()) -> sorry | ok
 %% @doc Func used by CommonLog server to inform a brick that one of the
@@ -1576,6 +1576,8 @@ handle_call({chain_hack_set_global_hash, GH_0, false}, _From, State) ->
     end;
 handle_call({chain_get_global_hash}, _From, State) ->
     {reply, State#state.globalhash, State};
+handle_call({get_too_old}, _From, State) ->
+    {reply, State#state.n_too_old, State};
 handle_call({chain_set_read_only_mode, On_p}, _From, State) ->
     {ImplMod, ImplState} = impl_details(State),
     CS = State#state.chainstate,
@@ -2686,7 +2688,10 @@ make_resum_quota(KeyArg) ->
 -spec make_op2(atom(), key() | ?BRICK__GET_MANY_FIRST, flags_or_fun_list()) ->
                       {atom(), binary(), flags_or_fun_list()}.
 make_op2(OpName, Key, Flags) ->
-    {OpName, gmt_util:bin_ify(Key), encode_op_flags(Flags)}.
+    OpKey = if Key == ?BRICK__GET_MANY_FIRST -> Key;
+               true                          -> gmt_util:bin_ify(Key)
+            end,
+    {OpName, OpKey, encode_op_flags(Flags)}.
 
 %% @spec (atom(), term(), term(), integer(), prop_list()) -> do_op()
 %% @doc Create a 5-argument do op (see encode_op_flags() for valid flags).
@@ -2814,9 +2819,8 @@ extract_do_list_keys_find_bricks(DoList, GH) ->
 %% thing is broken in the general case.
 
 extract_do_list_keys_find_bricks([{get_many, ?BRICK__GET_MANY_FIRST, _}],
-                                 _GH, _S)->
-    %%{[{S#state.name, node()}], [{read, ?BRICK__GET_MANY_FIRST}]};
-    exit({extract_do_list_keys_find_bricks, not_implemented, get_many_first});
+                                 _GH, S)->
+    {[{S#state.name, node()}], [{read, <<>>}], read};
 extract_do_list_keys_find_bricks(DoList, GH, S) ->
     RdWr_Keys = harvest_do_keys(DoList, S),
     WhereList =
@@ -5992,6 +5996,11 @@ bz_debug_chk(Su, FH) ->
     Su2 = Su#hunk_summ{c_blobs = [Blob]},
     true = gmt_hlog:md5_checksum_ok_p(Su2).
 
+
+foo_timeout() ->
+    {ok, MilliSec} = gmt_config_svr:get_config_value_i(brick_server_default_timeout, ?FOO_TIMEOUT),
+    MilliSec.
+    
 
 %%%
 %%% Misc edoc stuff
