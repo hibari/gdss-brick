@@ -87,6 +87,7 @@ check: all
 	@echo ""
 	@sleep 2
 	$(RUNAPP1) -noshell -noinput \
+		-s brick_squorum t0 \
 		-s brick_test0 cl_chain_t35 \
 		-s brick_test0 cl_single_brick_regression \
 		-s erlang halt > brick_test0.log

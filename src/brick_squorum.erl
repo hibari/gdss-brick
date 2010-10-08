@@ -173,7 +173,7 @@ do_multi(Bricks, OpList, Timeout, _Resubs)
     MinQuorum = if NumBricks == 1 -> 1;
                    NumBricks == 2 -> 1;
                    true           -> calc_min_quorum(NumBricks)
-               end,
+                end,
     if length(Rs) >= MinQuorum ->
             case lists:usort(Rs) of
                 [_] ->
@@ -202,9 +202,9 @@ primitive_do(Bricks, OpList, Timeout, StripP) ->
     Self = self(),
     BricksUp = filter_up_bricks_only(Bricks),
     Pids = [spawn(fun() ->
-                         Res = (catch ?SINGLE:do(Brick, Name, OpList, Timeout)),
-                         Self ! {self(), Res}
-                       end) || {Brick, Name} <- BricksUp],
+                          Res = (catch ?SINGLE:do(Brick, Name, OpList, Timeout)),
+                          Self ! {self(), Res}
+                  end) || {Brick, Name} <- BricksUp],
     PidsBricksUp = lists:zip(Pids, BricksUp),
     lists:foldl(
       fun({Pid, Brick}, {ResList, ResBad}) ->
@@ -406,7 +406,8 @@ popular_answer(L, _BadNodes) ->
 %% Mimic "cat L | sort | uniq -c | sort -nr | head -1"
 sort_answers_by_popularity(L) ->
     L2 = sort_answers(L),
-    lists:sort(fun({X, _}, {Y, _}) -> X > Y end, uniq_minus_c(L2)).
+    lists:sort(fun({I, X}, {I, Y}) -> X > Y;
+                  ({I, _}, {J, _}) -> I > J end, uniq_minus_c(L2)).
 
 sort_answers(L) ->
     lists:sort(fun({_, X}, {_, Y}) -> X > Y end, L).
@@ -450,7 +451,7 @@ t0() ->
     %% failed node list (for total = 3).
     H3 = {h3, timeout},
     [{2, {ok, foo}} = popular_answer(shuffle(Rs2a), [H3]) || _ <- Times],
-    [{1, key_not_exist} = popular_answer(shuffle(Rs2b), [H3]) || _ <- Times],
+    [{1, {ok, foo}} = popular_answer(shuffle(Rs2b), [H3]) || _ <- Times],
     [{2, key_not_exist} = popular_answer(shuffle(Rs2c), [H3]) || _ <- Times],
 
     [{3, ok} = popular_answer(shuffle(Rs3a), []) || _ <- Times],
