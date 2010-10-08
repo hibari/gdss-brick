@@ -52,6 +52,8 @@ MODULES4 = $(MODULES1)
 TESTS = \
 	brick_test0 \
 	test_reliablefifo \
+	test_xref \
+	test_scav \
 	brick_itimer_test
 
 EUNITTESTS = \
@@ -110,7 +112,17 @@ chk: all
 		-s erlang halt > chk2.log & 
 	$(RUNAPP4) -noshell -noinput \
 		-s test_reliablefifo cl_chain_reliablefifo \
-		-s erlang halt | tee chk3.log 
+		-s erlang halt | tee chk3.log
+
+chk2: all
+	rm -rf hlog.*
+	rm -f *.log testtableschema.txt
+	$(RUNAPP1) -noshell -noinput \
+		-s test_scav test_all \
+		-s erlang halt > chk2.log &
+	$(RUNAPP3) -noshell -noinput \
+		-s test_scav get_busy \
+		-s erlang halt |tee chk3.log
 
 check-quickcheck: check-quickcheck-pretest \
     check-qc-hlog-local-qc check-qc-hlog-qc1 \
