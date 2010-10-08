@@ -32,6 +32,9 @@ brick_ets.erl:2954: The created fun has no local return
 brick_ets.erl:2966: Function squidflash_doit/5 only terminates with explicit exception
 brick_ets.erl:2971: The created fun only terminates with explicit exception
 brick_ets.erl:2988: Function squidflash_prime1/5 only terminates with explicit exception
+brick_ets.erl:3145: The variable _ can never match since previous clauses completely covered the type {'ok',integer()}
+brick_ets.erl:3152: The variable _ can never match since previous clauses completely covered the type {'ok',integer()}
+brick_ets.erl:3159: The variable _ can never match since previous clauses completely covered the type {'ok',integer()}
 brick_hash.erl:1083: Function doo_make_chain_weights/1 will never be called
 brick_hash.erl:1084: Function will never be called
 brick_hash.erl:1089: Function doo_iter_chain/3 will never be called
@@ -45,8 +48,8 @@ brick_mboxmon.erl:375: The created fun only terminates with explicit exception
 brick_mboxmon.erl:378: The call erlang:register(ResumeName::atom(),pid()) might fail due to a possible race condition caused by its combination with the erlang:whereis(ResumeName::atom()) call in brick_mboxmon.erl on line 376
 cluster_info.erl:36: The specification for cluster_info:start/0 states that the function might also return {'error',_} but the inferred return is {'ok',pid()}
 cluster_info.erl:37: The specification for cluster_info:start/2 states that the function might also return {'error',_} but the inferred return is {'ok',pid()}
-  Compiling some key modules to native code... done in 0m49.61s
- done in 1m44.12s
+  Compiling some key modules to native code... done in 0m45.26s
+ done in 3m14.19s
 done (warnings were emitted)
   gen_event
   gen_fsm
