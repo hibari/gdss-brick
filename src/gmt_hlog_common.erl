@@ -203,12 +203,13 @@ init(PropList) ->
                 %% without GDSS app running, and there's only one of
                 %% these things per app.
                 {ok, TRef} = timer:send_interval(1000, do_async_writeback),
+                {ok, SupressScavenger} = gmt_config_svr:get_config_value_boolean(brick_scavenger_suppress, proplists:is_defined(suppress_scavenger, PropList)),
                 ScavengerTRef =
-                    case proplists:get_value(suppress_scavenger, PropList) of
-                        undefined ->
+                    case SupressScavenger of
+                        false ->
                             {ok, STR} = schedule_next_daily_scavenger(),
                             STR;
-                        _ ->
+                        true ->
                             undefined
                     end,
                 {ok, DirtySec} = gmt_config_svr:get_config_value_i(
