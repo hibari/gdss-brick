@@ -89,14 +89,6 @@ prep_stop(State) ->
     [catch Fstop(Br) || Br <- FirstBricks],
     timer:sleep(2000),
 
-    %% Shut down the children of the brick_admin_sup nicely, to avoid
-    %% spewing lots of ERR messages to the app log.  It doesn't avoid
-    %% 100% of the ERR messages, but it's usually effective.
-    %%
-    %% If the Admin Server isn't running on this node, no big deal.
-    [catch supervisor:terminate_child(brick_admin_sup, Child) ||
-        Child <- [brick_mon_sup, brick_admin, brick_sb]],
-
     %% Finally, shut down any bootstrap bricks.
     [catch Fstop(Br) || Br <- BootstrapBricks],
     State.

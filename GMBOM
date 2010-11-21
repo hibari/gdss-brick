@@ -1,5 +1,0 @@
-#DEP  src/erl-tools/gmt-bom                  *
-#DEP  src/erl-apps/gmt-util                  *
-
-#DEP  src/erl-apps/cluster-info              *
-#DEP  src/erl-apps/partition-detector        *

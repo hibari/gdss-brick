@@ -19,11 +19,9 @@
 
 %% @doc Supervisor for this node's individual brick processes.
 %%
-%% The brick_sup supervisor has (at the moment) two children:
+%% The brick_sup supervisor has (at the moment) one child:
 %%
 %% <ul>
-%% <li> The brick_admin_sup supervisor, responsible for the larger
-%%      cluster administration. </li>
 %% <li> The brick_data_sup supervisor, which is responsible only for
 %%      managing local bricks and therefore unaware (mostly) of other
 %%      bricks. </li>
@@ -74,16 +72,12 @@ init([]) ->
     BrickItimer =
         {brick_timer, {brick_itimer, start_link, []},
          permanent, 2000, worker, [brick_itimer]},
-    AdminSup =
-        {brick_admin_sup, {brick_admin_sup, start_link, []},
-         permanent, 2000, supervisor, [brick_admin_sup]},
     DataSup =
         {brick_data_sup, {brick_data_sup, start_link, []},
          permanent, 2000, supervisor, [brick_data_sup]},
 
     {ok, {{one_for_all, 0, 1}, [
                                 BrickItimer,
-                                AdminSup,
                                 DataSup
                                ]}}.
 

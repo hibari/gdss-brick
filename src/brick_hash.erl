@@ -128,7 +128,7 @@
 %% mapping from key -> chain name.
 
 %% Exports for first hash method, 'naive'.
--export([naive_init/1, naive_init/2, naive_key_to_chain/3]).
+-export([naive_init/1, naive_init/2, naive_key_to_chain/3, naive_key_to_chain_DEBUG/3]).
 
 %% Exports for second hash method, 'var_prefix'.
 %% It hashes the same way as 'naive', but only operates on a
@@ -171,7 +171,7 @@
 -export([set_chain_sweep_key/3,
          all_chains/2,
          update_chain_dicts/3, desc_substitute_chain/3,
-         verify_chain_list/2
+         verify_chain_list/1, verify_chain_list/2
         ]).
 
 %% Useful mostly for debugging: invent a list of chains that will all
@@ -252,7 +252,6 @@
 -spec chash_extract_old_props(#hash_r{}|#g_hash_r{}) -> [{any(),any()}].
 -spec chash_init(via_proplist,[{atom(),[atom()]}],[{any(),any()}]) -> #hash_r{}.
 -spec desc_substitute_chain(#hash_r{},atom(),[atom()]) -> #hash_r{}.
--spec doo_iter_chain([{any(),float()}],integer(),integer()) -> ok.
 -spec fixed_prefix_init(chainlist()) -> #hash_r{}.
 -spec fixed_prefix_init(via_proplist,chainlist(),[{any(),any()}]) -> #hash_r{}.
 -spec init_global_hash_state(atom(), phase(), integer(),#hash_r{},chainlist(),#hash_r{},chainlist()) -> #g_hash_r{}.
@@ -1075,46 +1074,3 @@ chash_gb_next1(_X, nil) ->
 %% position I_n > I_m, for all n, m such that n > m.
 %% For example, a nextfloat_list of the float_map example above,
 %% [{0.25, {br1, nd1}}, {0.75, {br2, nd1}}, {1.0, {br3, nd1}].
-
-%%
-%% Doodling
-%%
-
-doo_make_chain_weights(Len) ->
-    [{list_to_atom([Name]), 100} || Name <- lists:seq($a, $a + Len - 1)].
-
-%% doo_make_chain(Weights) ->
-%%     [{Name, [{x,y}]} || {Name, _Wt} <- Weights].
-
-doo_iter_chain(StartFloatMap, StartLen, Iters) ->
-    lists:foldl(
-      fun(ChainLen, FloatMap) ->
-              NewWeights = doo_make_chain_weights(ChainLen),
-%%            NewChain = doo_make_chain(NewWeights),
-              chash_make_float_map(FloatMap, NewWeights)
-      end, StartFloatMap, lists:seq(StartLen + 1, StartLen + Iters)).
-
-%% length(brick_hash:doo_iter_chain([], 0, 100)) -> 4265
-%% And, to see the smallest subdivisions:
-%% io:format("~P\n", [lists:keysort(2, brick_hash:doo_iter_chain([], 0, 100)), 150]).
-%% [{'\257',3.46945e-18},
-%%  {'\230',3.46945e-18},
-%%  {'\223',1.04083e-17},
-%% ...
-%%  {'\246',9.36751e-17},
-%%  {'\221',9.71445e-17},
-%%  {'\276',1.04083e-16},
-%% ...
-%%  {'\257',7.26849e-16},
-%%  {'\300',3.01631e-7},
-%%  {'\301',3.38759e-7},
-%%
-%% So, even after 100 migrations of equal size, the smallest
-%% significant partition is still as large as 3.01e-7.  The sum of all
-%% partitions smaller than that (less or equal to 1.04083e-16) is only
-%% 1.32810e-14, so they're pretty safe to ignore.  I've added the
-%% constant ?SMALLEST_SIGNIFICANT_FLOAT_SIZE to keep track of this.
-
-doo_weight1() ->
-    [{a, 0.1}, {b, 0.025}, {c, 0.125}, {d, 0.125}, {e, 0.025}, {f, 0.1},
-     {g, 0.125}, {h, 0.125}, {i, 0.05}, {j, 0.075}, {k, 0.125}].
