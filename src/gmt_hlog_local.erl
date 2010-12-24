@@ -18,7 +18,6 @@
 %%%-------------------------------------------------------------------
 
 -module(gmt_hlog_local).
--include("applog.hrl").
 
 %% @doc The API module for a performance-enhanced hunk log.
 %%
@@ -413,7 +412,7 @@ handle_call({stop}, _From, State) ->
 %% @end
 %%--------------------------------------------------------------------
 handle_cast(_Msg, State) ->
-    ?APPLOG_ALERT(?APPLOG_APPM_099,"~s:handle_cast: ~p\n", [?MODULE, _Msg]),
+    ?ELOG_ERROR("~p", [_Msg]),
     {noreply, State}.
 
 %%--------------------------------------------------------------------
@@ -433,7 +432,7 @@ handle_info(finish_init_tasks, State) ->
                                               State#state.name),
     {noreply, State#state{common_log = CommonLogPid}};
 handle_info(_Info, State) ->
-    ?APPLOG_ALERT(?APPLOG_APPM_100,"~s:handle_info: ~p\n", [?MODULE, _Info]),
+    ?ELOG_ERROR("~p", [_Info]),
     {noreply, State}.
 
 %%--------------------------------------------------------------------
@@ -491,7 +490,7 @@ get_or_start_common_log(PropList) ->
         undefined ->
             Ps = [{common_log_name, CName}],
             %% Use start() func to avoid linking to the new proc.
-            ?APPLOG_INFO(?APPLOG_APPM_101,"~s: trying to start ~p\n", [?MODULE,CName]),
+            ?ELOG_INFO("trying to start ~p\n", [CName]),
             case (catch gmt_hlog_common:start(Ps)) of
                 {ok, _Pid} ->
                     ok;

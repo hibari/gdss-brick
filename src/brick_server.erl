@@ -318,21 +318,13 @@
 %% </ul>
 
 -module(brick_server).
--include("applog.hrl").
-
 
 -behaviour(gen_server).
 
 -include("brick.hrl").
 -include("brick_public.hrl").
 -include("brick_hash.hrl").
--include("gmt_hlog.hrl"). % BZDEBUG
-
-%%-define(gmt_debug, true).                     %QQQXXXYYYZZZ
--ifdef(debug_server).
--define(gmt_debug, true).
--endif.
--include("gmt_debug.hrl").
+-include("gmt_hlog.hrl").
 -include("brick_specs.hrl").
 
 -include_lib("kernel/include/file.hrl").
@@ -1437,8 +1429,8 @@ init([ServerName, Options]) ->
     BadPid = spawn(fun() -> ok end),            % Will die very shortly
     PreprocList =
         try
-            case gmt_config_svr:get_config_value(brick_preprocess_method, "") of
-                {ok, "none"}     ->
+            case application:get_env(gdss, brick_preprocess_method) of
+                {ok, "none"} ->
                     [];
                 {ok, "ssf_only"} ->
                     [fun ssf_preprocess/3];
@@ -1459,8 +1451,8 @@ init([ServerName, Options]) ->
     ThrottleTab = ets:new(throttle_tab_name(ServerName),
                           [public, named_table, ordered_set]),
 
-    {ok, BZsumm} = gmt_config_svr:get_config_value_boolean(debug_check_hunk_summ, "false"),
-    {ok, BZblob} = gmt_config_svr:get_config_value_boolean(debug_check_hunk_blob, "false"),
+    {ok, BZsumm} = application:get_env(gdss, debug_check_hunk_summ),
+    {ok, BZblob} = application:get_env(gdss, debug_check_hunk_blob),
     if BZsumm orelse BZblob ->
             ?E_WARNING("NOTE: debug_check_hunk_summ = ~p, debug_check_hunk_blob = ~p\n", [BZsumm, BZblob]);
        true ->
@@ -2075,9 +2067,9 @@ handle_cast({ch_repair_finished, Brick, Node, Checkpoint_p, NumKeys}=RepairMsg,
                 undefined ->
                     ok;
                 MS when is_integer(MS) ->
-                    error_logger:info_msg("DEBUG: ~p: repair finished, "
-                                          "sleeping for ~p ms\n",
-                                          [State#state.name, MS]),
+                    ?E_INFO("DEBUG: ~p: repair finished, "
+                            "sleeping for ~p ms\n",
+                            [State#state.name, MS]),
                     timer:sleep(MS)
             end,
             catch ImplMod:bcb_force_flush(ImplState2),
@@ -2293,7 +2285,7 @@ handle_info({priming_value_blobs_done_for_sweep, LastKey}, State) ->
                                   Sw#sweep_r{stage = {notify_down_old, now()}}},
             {noreply, kick_next_sweep_do_phase2(Sw, LastKey, NewState)};
        true ->
-            ?E_ERROR("~p: priming_value_blobs_done_for_sweep: expected ~p, got ~p\n",
+            ?E_ERROR("priming_value_blobs_done_for_sweep: expected ~p, got ~p\n",
                      [Sw#sweep_r.val_prime_lastkey, LastKey]),
             {noreply, State}
     end;
@@ -3698,11 +3690,11 @@ chain_start_repair(S) ->
                                           repair_diff),
             MaxKeys = proplists:get_value(repair_max_keys, CS#chain_r.proplist,
                                           ?REPAIR_MAX_KEYS),
-            MaxBytes = prop_or_central_conf_i(
+            MaxBytes = prop_or_application_env_i(
                          brick_repair_max_bytes,
                          repair_max_bytes, CS#chain_r.proplist,
                          ?REPAIR_MAX_BYTES),
-            MaxPrimers = prop_or_central_conf_i(
+            MaxPrimers = prop_or_application_env_i(
                            brick_repair_max_primers,
                            repair_max_primers, CS#chain_r.proplist,
                            ?REPAIR_MAX_PRIMERS),
@@ -3918,8 +3910,8 @@ exit_if_bad_serial_from_upstream(Serial, LastUpstreamSerial, Msg, S)
                           %% occasional increment by more than one (see next
                           %% clause below), but we will be paranoid and crash
                           %% here to force consistency again.
-                          ?APPLOG_WARNING(?APPLOG_APPM_108,"restarting brick_server for unmatched serial(~p ~p)",
-                                       [LastUpstreamSerial, LastSerial]),
+                          ?ELOG_WARNING("restarting brick_server for unmatched serial(~p ~p)",
+                                        [LastUpstreamSerial, LastSerial]),
                           exit({upstream_monitor_and_serial_check_failure,
                                 LastUpstreamSerial, LastSerial});
                      true ->
@@ -5737,8 +5729,8 @@ get_debug_chain_props() ->
     try
         {ok, B} = file:read_file("debug_chain_props"),
         Ps = binary_to_term(B),
-        ?APPLOG_INFO(?APPLOG_APPM_064,"debug_chain_props: adding ~p to chain props\n",
-                     [Ps]),
+        ?ELOG_INFO("debug_chain_props: adding ~p to chain props",
+                   [Ps]),
         Ps
     catch _:_ ->
             []
@@ -5749,15 +5741,15 @@ start_chain_admin_periodic_timer(S) ->
     {ok, T} = brick_itimer:send_interval(?ADMIN_PERIODIC, chain_admin_periodic),
     T.
 
-prop_or_central_conf_i(ConfName, PropName, PropList, Default) ->
+prop_or_application_env_i(ConfName, PropName, PropList, Default) ->
     gmt_util:int_ify(
-      prop_or_central_conf(ConfName, PropName, PropList, Default)).
+      prop_or_application_env(ConfName, PropName, PropList, Default)).
 
-prop_or_central_conf(ConfName, PropName, PropList, Default) ->
+prop_or_application_env(ConfName, PropName, PropList, Default) ->
     case proplists:get_value(PropName, PropList, not_in_list) of
         not_in_list ->
-            case gmt_config_svr:get_config_value(ConfName, "") of
-                {ok, ""} ->
+            case application:get_env(gdss, ConfName) of
+                undefined ->
                     Default;
                 {ok, Res} ->
                     Res
@@ -5892,7 +5884,7 @@ replace_file_sync(PermPath, Suffix, WriteFun) ->
     ok = file:rename(TmpPath, PermPath).
 
 get_do_op_too_old_timeout(S) ->
-    {ok, MSec} = gmt_config_svr:get_config_value_i(brick_do_op_too_old_timeout, ?DO_OP_TOO_OLD),
+    {ok, MSec} = application:get_env(gdss, brick_do_op_too_old_timeout),
     S#state{do_op_too_old_usec = MSec * 1000}.
 
 %% @doc Force all changes to #chain_r.my_repair_state to also tell the pingee.
@@ -5923,9 +5915,8 @@ do_common_log_sequence_file_is_bad(SeqNum, S) ->
     {NumPurged, ImplState2} =
         ImplMod:bcb_common_log_sequence_file_is_bad(SeqNum, ImplState),
     set_sequence_file_is_bad_key(S#state.name, SeqNum),
-    ?APPLOG_INFO(?APPLOG_APPM_063,
-                 "~s:common_log_sequence_file_is_bad: ~p: ~w purged keys for log ~p\n",
-                 [?MODULE, S#state.name, NumPurged, SeqNum]),
+    ?ELOG_INFO("common_log_sequence_file_is_bad: ~p: ~w purged keys for log ~p",
+               [S#state.name, NumPurged, SeqNum]),
     if NumPurged == 0 ->
             S#state{impl_state = ImplState2};
        true ->
@@ -5998,9 +5989,9 @@ bz_debug_chk(Su, FH) ->
 
 
 foo_timeout() ->
-    {ok, MilliSec} = gmt_config_svr:get_config_value_i(brick_server_default_timeout, ?FOO_TIMEOUT),
+    {ok, MilliSec} = application:get_env(gdss, brick_server_default_timeout),
     MilliSec.
-    
+
 
 %%%
 %%% Misc edoc stuff

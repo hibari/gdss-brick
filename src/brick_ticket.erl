@@ -23,9 +23,8 @@
 %%%-------------------------------------------------------------------
 
 -module(brick_ticket).
--include("applog.hrl").
--include("gmt_hlog.hrl").
 
+-include("gmt_hlog.hrl").
 
 -behaviour(gen_server).
 

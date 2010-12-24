@@ -20,8 +20,6 @@
 %% @doc Todo
 
 -module(brick_mboxmon).
--include("applog.hrl").
-
 
 -behaviour(gen_server).
 
@@ -97,9 +95,9 @@ is_pid_repairing(Pid) when is_pid(Pid) ->
 init([]) ->
     process_flag(trap_exit, true),
     net_kernel:monitor_nodes(true, [{node_type, visible}, nodedown_reason]),
-    {ok, RepairHigh} = gmt_config_svr:get_config_value_i(brick_mbox_repair_high_water, 1500),
-    {ok, High} = gmt_config_svr:get_config_value_i(brick_mbox_high_water, 500),
-    {ok, Low} = gmt_config_svr:get_config_value_i(brick_mbox_low_water, 100),
+    {ok, RepairHigh} = application:get_env(gdss, brick_mbox_repair_high_water),
+    {ok, High} = application:get_env(gdss, brick_mbox_high_water),
+    {ok, Low} = application:get_env(gdss, brick_mbox_low_water),
     {ok, #state{repair_high_water = RepairHigh,
                 high_water = High,
                 low_water = Low,
@@ -149,15 +147,15 @@ handle_info(timeout, State) ->
     NewState = timeout_poll(State),
     {noreply, NewState, ?MY_TIMEOUT};
 handle_info({nodeup, Node, Extra}, State) ->
-    ?APPLOG_INFO(?APPLOG_APPM_051,"~s net_kernel: node ~p up Extra ~w\n",
-                 [?MODULE, Node, Extra]),
+    ?ELOG_INFO("node ~p up Extra ~w",
+               [Node, Extra]),
     {noreply, State, ?MY_TIMEOUT};
 handle_info({nodedown, Node, Extra}, State) ->
-    ?APPLOG_INFO(?APPLOG_APPM_052,"~s net_kernel: node ~p down Extra ~w\n",
-                 [?MODULE, Node, Extra]),
+    ?ELOG_INFO("node ~p down Extra ~w",
+               [Node, Extra]),
     {noreply, State, ?MY_TIMEOUT};
 handle_info(Info, State) ->
-    ?APPLOG_INFO(?APPLOG_APPM_053,"DEBUG: ~s:handle_info: Info ~w\n", [?MODULE, Info]),
+    ?ELOG_INFO("Info ~w", [Info]),
     {noreply, State, ?MY_TIMEOUT}.
 
 %%--------------------------------------------------------------------
@@ -366,8 +364,7 @@ get_mbox_size(Brick) ->
 
 set_repair_overload(Brick, N, RepairHigh) ->
     ?E_INFO("~s: Brick ~p mailbox at ~p > ~p\n", [?MODULE, Brick, N, RepairHigh]),
-    {ok, ResumeSecs} = gmt_config_svr:get_config_value_i(
-                         brick_mbox_repair_overload_resume_interval, 300),
+    {ok, ResumeSecs} = application:get_env(gdss, brick_mbox_repair_overload_resume_interval),
     %% The overloaded brick is running on this node, so we're able to
     %% call brick_server:set_repair_overload_key().
     brick_server:set_repair_overload_key(Brick),

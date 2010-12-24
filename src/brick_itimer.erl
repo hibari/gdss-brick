@@ -28,8 +28,6 @@
 %%
 
 -module(brick_itimer).
--include("applog.hrl").
-
 
 -behaviour(gen_server).
 

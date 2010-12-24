@@ -109,17 +109,10 @@
 %%   of the default 1 chain.
 
 -module(brick_hash).
--include("applog.hrl").
-
 
 -include("brick.hrl").
 -include("brick_hash.hrl").
 -include("brick_public.hrl").
-
--ifdef(debug_hash).
--define(gmt_debug, true).
--endif.
--include("gmt_debug.hrl").
 
 -define(PHASH2_BIGGEST_VAL,              134217727). % (2^27)-1
 -define(SMALLEST_SIGNIFICANT_FLOAT_SIZE, 0.1e-12).
@@ -690,8 +683,8 @@ chash_key_to_chain(_ReadOrWrite, Key, Opaque) ->
                                       Opaque#chash.prefix_is_integer_hack_p),
                 X / ?PHASH2_BIGGEST_VAL;
            true ->
-                ?APPLOG_ALERT(?APPLOG_APPM_050,"pid ~p: Unknown Opaque: ~p (~p)\n",
-                              [self(), element(1, Opaque), Opaque]),
+                ?ELOG_ERROR("pid ~p: Unknown Opaque: ~p (~p)",
+                            [self(), element(1, Opaque), Opaque]),
                 timer:sleep(1000),
                 exit({unknown_prefix_method, Opaque#chash.prefix_method})
         end,

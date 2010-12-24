@@ -21,10 +21,10 @@
 %% supervisor.
 
 -module(brick).
--include("applog.hrl").
-
 
 -behaviour(application).
+
+-include("gmt_elog.hrl").
 
 %% application callbacks
 -export([start/0, start/2, stop/1]).
@@ -41,13 +41,9 @@
 %%          {error, Reason}
 %%----------------------------------------------------------------------
 start() ->
-    start(xxxwhocares, []).
+    start(normal, []).
 
 start(_Type, StartArgs) ->
-    %% Set up GMT custom error handler, shutdown on error handler exception.
-    gmt_event_h:start_singleton_report_handler(brick, generic, []),
-    gmt_event_h:add_exception_fun(fun(_Err) -> application:stop(gdss) end),
-
     gmt_cinfo_basic:register(),
     brick_cinfo:register(),
 
@@ -73,7 +69,7 @@ start_phase(_Phase, _StartType, _PhaseArgs) ->
     ok.
 
 prep_stop(State) ->
-    ?APPLOG_INFO(?APPLOG_APPM_046,"~s:prep_stop(~p)\n", [?MODULE, State]),
+    ?ELOG_INFO("prep_stop(~p)", [State]),
 
     Bs = [Brick || Brick <- brick_shepherd:list_bricks()],
     {FirstBricks, BootstrapBricks} =
@@ -82,7 +78,7 @@ prep_stop(State) ->
                   string:substr(atom_to_list(Br), 1, 10) /= "bootstrap_"
           end, Bs),
     Fstop = fun(Br) ->
-                    ?APPLOG_INFO(?APPLOG_APPM_047,"Stopping local brick ~p\n", [Br]),
+                    ?ELOG_INFO("Stopping local brick ~p", [Br]),
                     brick_shepherd:add_do_not_restart_brick(Br, node()),
                     brick_shepherd:stop_brick(Br)
             end,

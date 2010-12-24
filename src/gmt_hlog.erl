@@ -127,13 +127,10 @@
 
 
 -module(gmt_hlog).
--include("applog.hrl").
-
 
 -behaviour(gen_server).
 
 -include("gmt_hlog.hrl").
--include("gmt_debug.hrl").
 -include("brick.hrl").                          % for ?E_ macros
 
 %% TODO: This stuff should be configurable at runtime, but it's not
@@ -525,7 +522,7 @@ handle_call({write_hunk_bytes, _LocalBrickName, HLogType, _Key,
     End1 = now(),
     case timer:now_diff(End1, Start1) div 1000 of
         N when N > 50 ->
-            ?APPLOG_INFO(?APPLOG_APPM_092,"Write to ~p took ~p ms\n", [S#state.dir, N]);
+            ?ELOG_INFO("Write to ~p took ~p ms", [S#state.dir, N]);
         _ ->
             ok
     end,
@@ -569,7 +566,7 @@ handle_call({advance_seqnum, Incr}, From, State) ->
 handle_call({stop}, _From, State) ->
     {stop, normal, ok, State};
 handle_call(_Request, _From, State) ->
-    ?APPLOG_ALERT(?APPLOG_APPM_093,"~s:handle_call: ~p ~p\n", [?MODULE, _Request, _From]),
+    ?ELOG_ERROR("~p ~p", [_Request, _From]),
     {reply, 'wha?????', State}.
 
 %%----------------------------------------------------------------------
@@ -591,7 +588,7 @@ handle_info({'DOWN', _Ref, _, Pid, Reason} = _Msg, State)
   when Pid == State#state.syncer_pid ->
     {noreply, asyncly_done(Pid, Reason, State)};
 handle_info(_Info, State) ->
-    ?APPLOG_INFO(?APPLOG_APPM_095,"~s:handle_info ~p got ~p\n", [?MODULE, State#state.dir,_Info]),
+    ?ELOG_INFO("~p got ~p", [State#state.dir, _Info]),
     {noreply, State}.
 
 %%----------------------------------------------------------------------
@@ -821,7 +818,6 @@ create_hunk(TypeNum, CBlobs, UBlobs) ->
 do_advance_seqnum(Incr, From, #state{syncer_pid = SyncPid,
                                      write_backlog = Wbacklog} = S)
   when (Wbacklog == [] andalso SyncPid == undefined) orelse (Incr < 0) ->
-    %% error_logger:info_msg("Advance ok ~p\n", [From]),
     NextSeq = S#state.last_seq + abs(Incr),
     NewSeq = if Incr > 0 -> ok = safe_log_close_short(S),
                             NextSeq;
@@ -842,7 +838,6 @@ do_advance_seqnum(Incr, From, #state{syncer_pid = SyncPid,
                     cur_seqL = NewSeq, cur_fhL = FH, cur_offL = Off}
     end;
 do_advance_seqnum(Incr, From, #state{syncer_advance_reqs = Rs} = S) ->
-    %% error_logger:info_msg("Advance deferred ~p\n", [From]),
     S#state{syncer_advance_reqs = [{Incr, From}|Rs]}.
 
 %% @spec (file:fd(), integer()) ->
@@ -1013,7 +1008,7 @@ fold2(ShortLong, Dir, Fun, FiltFun, InitialAcc) ->
                       Off = get(fold_off),
                       ?DBG_TLOGx({gmt_hlog_fold2, err,X,Y, seq_off,Seq,Off}),
                       fold_warning("WAL fold of dir ~p sequence ~p offset ~p. "
-                                   "\nerror ~p:~p\n~p\n",
+                                   "\nerror ~p:~p\n~p",
                                    [Dir, Seq, Off, X, Y, erlang:get_stacktrace()]),
                       Err = {seq, N, err, Y},
                       {Acc00, [Err|ErrList]}
@@ -1357,9 +1352,8 @@ spawn_sync_asyncly(Froms, S) ->
               end,
               MSec = timer:now_diff(now(), Start) div 1000,
               if MSec > 200 ->
-                      ?APPLOG_INFO(?APPLOG_APPM_096,
-                                   "~s sync was ~p msec for ~p callers\n",
-                                   [S#state.name, MSec, length(Froms)]);
+                      ?ELOG_INFO("~s sync was ~p msec for ~p callers\n",
+                                 [S#state.name, MSec, length(Froms)]);
                  true ->
                       ok
               end,
@@ -1374,10 +1368,8 @@ asyncly_done(Pid, _Reason, S) when S#state.syncer_pid == Pid ->
     do_pending_syncs(do_pending_writes(S#state{syncer_pid = undefined,
                                                syncer_ref = undefined}));
 asyncly_done(_Pid, _Reason, S) ->
-    ?APPLOG_ALERT(
-       ?APPLOG_APPM_097,
-       "\n\n\n~s:asyncly_done: ~p ~p when expecting ~p\n\n\n\n",
-       [?MODULE, _Pid, _Reason, S#state.syncer_pid]),
+    ?ELOG_ERROR("asyncly_done: ~p ~p when expecting ~p",
+                [_Pid, _Reason, S#state.syncer_pid]),
     S.
 
 do_pending_writes(S) ->

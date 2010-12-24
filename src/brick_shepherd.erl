@@ -23,7 +23,7 @@
 %% Default config state is limited at the moment:
 %% <ul>
 %% <li> <b>default_data_dir</b>: Obtained via
-%%   <tt>gmt_config:get_config_value()</tt>, see <tt>init()</tt> for
+%%   <tt>application:get_env(, )</tt>, see <tt>init()</tt> for
 %%   details.</li>
 %% </ul>
 %%
@@ -35,12 +35,11 @@
 %% </ul>
 
 -module(brick_shepherd).
--include("applog.hrl").
-
 
 -behaviour(gen_server).
 
 -include("brick_public.hrl").
+-include("gmt_elog.hrl").
 
 %% API
 -export([start/0, start_link/0,
@@ -225,7 +224,7 @@ is_shepherd_pid_alive({ShepTime, Pid}) ->
 %%--------------------------------------------------------------------
 init([]) ->
     DefDataDir =
-        gmt_config:get_config_value(brick_default_data_dir, "."),
+        application:get_env(gdss, brick_default_data_dir),
 
     Os = [{default_data_dir, DefDataDir}],
     {ok, #state{do_not_restart_list = [],
@@ -293,7 +292,7 @@ handle_cast(Msg, State) ->
 %% Description: Handling all non call/cast messages
 %%--------------------------------------------------------------------
 handle_info(Info, State) ->
-    ?APPLOG_INFO(?APPLOG_APPM_065,"DEBUG: ~s:handle_info: Info ~w\n", [?MODULE, Info]),
+    ?ELOG_INFO("Info ~w", [Info]),
     {noreply, State}.
 
 %%--------------------------------------------------------------------

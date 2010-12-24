@@ -18,7 +18,6 @@
 %%%----------------------------------------------------------------------
 
 -module(brick_cinfo).
--include("applog.hrl").
 
 %% Registration API
 -export([register/0]).

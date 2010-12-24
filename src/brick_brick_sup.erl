@@ -24,8 +24,6 @@
 %% the buddy "brick pinger" process, but not always).
 
 -module(brick_brick_sup).
--include("applog.hrl").
-
 
 -behaviour(supervisor).
 

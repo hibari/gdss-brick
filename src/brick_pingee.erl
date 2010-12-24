@@ -18,7 +18,6 @@
 %%%----------------------------------------------------------------------
 
 -module(brick_pingee).
--include("applog.hrl").
 
 -behaviour(gen_server).
 

@@ -82,64 +82,53 @@
 -define(CAT_MIGRATE,              (1 bsl  6)). % Migration-related
 -define(CAT_HASH,                 (1 bsl  7)). % Hash-related
 
-%% We put the error_logger calls in these macros because we want to
-%% include those messages in the trace log also.  Otherwise, sorting
-%% events between the app log and the gmt_elog log is a huge, huge
-%% problem.
-
--define(E_INFO(Fmt, Args),
-        begin ?ELOG_INFO_C(?CAT_GENERAL, Fmt, Args),
-              error_logger:info_msg(Fmt, Args)
-        end).
 -define(E_ERROR(Fmt, Args),
-        begin ?ELOG_ERR_C(?CAT_GENERAL, Fmt, Args),
-              error_logger:error_msg(Fmt, Args)
-        end).
+        ?ELOG_ERROR(?CAT_GENERAL, Fmt, Args)).
 -define(E_WARNING(Fmt, Args),
-        begin ?ELOG_WARNING_C(?CAT_GENERAL, Fmt, Args),
-              error_logger:warning_msg(Fmt, Args)
-        end).
+        ?ELOG_WARNING(?CAT_GENERAL, Fmt, Args)).
+-define(E_INFO(Fmt, Args),
+        ?ELOG_INFO(?CAT_GENERAL, Fmt, Args)).
 -define(E_DBG(Cat, Fmt, Args),
-        ?ELOG_DEBUG_C(Cat, Fmt, Args)).
+        ?ELOG_DEBUG(Cat, Fmt, Args)).
 
 -define(DBG_GEN(Fmt, Args),
-        ?ELOG_DEBUG_C(?CAT_GENERAL, Fmt, Args)).
+        ?ELOG_DEBUG(?CAT_GENERAL, Fmt, Args)).
 -define(DBG_OP(Fmt, Args),
-        ?ELOG_DEBUG_C(?CAT_OP, Fmt, Args)).
+        ?ELOG_DEBUG(?CAT_OP, Fmt, Args)).
 -define(DBG_ETS(Fmt, Args),
-        ?ELOG_DEBUG_C(?CAT_ETS, Fmt, Args)).
+        ?ELOG_DEBUG(?CAT_ETS, Fmt, Args)).
 -define(DBG_TLOG(Fmt, Args),
-        ?ELOG_DEBUG_C(?CAT_TLOG, Fmt, Args)).
+        ?ELOG_DEBUG(?CAT_TLOG, Fmt, Args)).
 -define(DBG_REPAIR(Fmt, Args),
-        ?ELOG_DEBUG_C(?CAT_REPAIR, Fmt, Args)).
+        ?ELOG_DEBUG(?CAT_REPAIR, Fmt, Args)).
 -define(DBG_CHAIN(Fmt, Args),
-        ?ELOG_DEBUG_C(?CAT_CHAIN, Fmt, Args)).
+        ?ELOG_DEBUG(?CAT_CHAIN, Fmt, Args)).
 -define(DBG_CHAIN_TLOG(Fmt, Args),
-        ?ELOG_DEBUG_C((?CAT_CHAIN bor ?CAT_TLOG), Fmt, Args)).
+        ?ELOG_DEBUG((?CAT_CHAIN bor ?CAT_TLOG), Fmt, Args)).
 -define(DBG_MIGRATE(Fmt, Args),
-        ?ELOG_DEBUG_C(?CAT_MIGRATE, Fmt, Args)).
+        ?ELOG_DEBUG(?CAT_MIGRATE, Fmt, Args)).
 -define(DBG_HASH(Fmt, Args),
-        ?ELOG_DEBUG_C(?CAT_HASH, Fmt, Args)).
+        ?ELOG_DEBUG(?CAT_HASH, Fmt, Args)).
 
 %% Hold-over from brick_simple:dumblog/1, which only took a single arg.
 
 -define(DBG_GENx(Arg),
-        ?ELOG_DEBUG_C(?CAT_GENERAL, "~p", [Arg])).
+        ?ELOG_DEBUG(?CAT_GENERAL, "~p", [Arg])).
 -define(DBG_OPx(Arg),
-        ?ELOG_DEBUG_C(?CAT_OP, "~p", [Arg])).
+        ?ELOG_DEBUG(?CAT_OP, "~p", [Arg])).
 -define(DBG_ETSx(Arg),
-        ?ELOG_DEBUG_C(?CAT_ETS, "~p", [Arg])).
+        ?ELOG_DEBUG(?CAT_ETS, "~p", [Arg])).
 -define(DBG_TLOGx(Arg),
-        ?ELOG_DEBUG_C(?CAT_TLOG, "~p", [Arg])).
+        ?ELOG_DEBUG(?CAT_TLOG, "~p", [Arg])).
 -define(DBG_REPAIRx(Arg),
-        ?ELOG_DEBUG_C(?CAT_REPAIR, "~p", [Arg])).
+        ?ELOG_DEBUG(?CAT_REPAIR, "~p", [Arg])).
 -define(DBG_CHAINx(Arg),
-        ?ELOG_DEBUG_C(?CAT_CHAIN, "~p", [Arg])).
+        ?ELOG_DEBUG(?CAT_CHAIN, "~p", [Arg])).
 -define(DBG_CHAIN_TLOGx(Arg),
-        ?ELOG_DEBUG_C((?CAT_CHAIN bor ?CAT_TLOG), "~p", [Arg])).
+        ?ELOG_DEBUG((?CAT_CHAIN bor ?CAT_TLOG), "~p", [Arg])).
 -define(DBG_MIGRATEx(Arg),
-        ?ELOG_DEBUG_C(?CAT_MIGRATE, "~p", [Arg])).
+        ?ELOG_DEBUG(?CAT_MIGRATE, "~p", [Arg])).
 -define(DBG_HASHx(Arg),
-        ?ELOG_DEBUG_C(?CAT_HASH, "~p", [Arg])).
+        ?ELOG_DEBUG(?CAT_HASH, "~p", [Arg])).
 
 -endif. % -ifndef(ets_brick_hrl).

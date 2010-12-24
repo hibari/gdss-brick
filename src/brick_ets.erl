@@ -42,8 +42,6 @@
 %%
 
 -module(brick_ets).
--include("applog.hrl").
-
 
 -behaviour(gen_server).
 -compile({inline_size,24}).                     % 24 is the default
@@ -266,7 +264,7 @@ init([ServerName, Options]) ->
     MaxLogSize =
         case proplists:get_value(max_log_size, Options) of
             undefined ->
-                M = gmt_config:get_config_value_i(brick_max_log_size_mb,100),
+                {ok, M} = application:get_env(gdss, brick_max_log_size_mb),
                 M * 1024 * 1024;
             M ->
                 M * 1024 * 1024
@@ -295,8 +293,7 @@ init([ServerName, Options]) ->
 
     DefaultExpFun = fun delete_keys_immediately/2,
     DoExpFun =
-        case gmt_config_svr:get_config_value(brick_expiration_processor,
-                                             "[].") of
+        case application:get_env(gdss, brick_expiration_processor) of
             {ok, "["++_ = ExpConfig} ->
                 case brick_server:get_tabprop_via_str(ServerName, ExpConfig) of
                     undefined -> DefaultExpFun;
@@ -516,8 +513,8 @@ handle_info({'EXIT', Pid, Reason}, State) when Pid == State#state.check_pid ->
     NewState = fold_shadow_into_ctab(State),
     {noreply, NewState#state{check_pid = undefined}};
 handle_info({'EXIT', Pid, Reason}, State) when Pid == State#state.sync_pid ->
-    ?APPLOG_ALERT(?APPLOG_APPM_048,"~s: sync pid ~p died ~p\n",
-                  [State#state.name, Pid, Reason]),
+    ?ELOG_ERROR("~s: sync pid ~p died ~p",
+                [State#state.name, Pid, Reason]),
     {stop, normal, State};
 handle_info({'EXIT', Pid, Done}, State)
   when Pid == State#state.scavenger_pid andalso
@@ -581,8 +578,8 @@ handle_info(do_init_second_half, State) ->
     %%       the missing keys, which could make us regret deleting keys
     %%       as many keys as we are doing here.
     [begin {Purged, _S} = purge_recs_by_seqnum(SeqNum, true, State),
-           error_logger:info_msg("~s: purged ~p keys from sequence ~p\n",
-                                 [State#state.name, Purged, SeqNum]),
+           ?E_INFO("~s: purged ~p keys from sequence ~p\n",
+                   [State#state.name, Purged, SeqNum]),
            Purged
      end || SeqNum <- read_external_bad_sequence_file(State#state.name)],
 
@@ -1733,8 +1730,8 @@ load_rec_clean_up_etab(Key, S) ->
     end.
 
 purge_recs_by_seqnum(SeqNum, CheckpointNotRunning_p, S) ->
-    error_logger:info_msg("~s: purging keys with sequence ~p, size ~p\n",
-                          [S#state.name, SeqNum, ets:info(S#state.ctab, size)]),
+    ?E_INFO("~s: purging keys with sequence ~p, size ~p\n",
+            [S#state.name, SeqNum, ets:info(S#state.ctab, size)]),
     if CheckpointNotRunning_p ->
             undefined = S#state.shadowtab; % sanity
        true ->
@@ -1836,14 +1833,6 @@ do_checkpoint(S, Options) ->
 
 checkpoint_start(S_ro, DoneLogSeq, ParentPid, Options) ->
     ?DBG_GENx({checkpoint_start, S_ro#state.name, start}),
-    case gmt_config:get_config_value_i(brick_check_checkpoint_throttle_bytes, 1000*1000) of
-        25001001 ->
-            gmt_util:set_alarm({err, brick_check_checkpoint_throttle_bytes},
-                               "Contact Gemini technical support"),
-            ok;
-        _T_bytes ->
-            ok
-    end,
 
     _LogProps = (S_ro#state.wal_mod):get_proplist(S_ro#state.log),
     Dir = (S_ro#state.wal_mod):log_name2data_dir(S_ro#state.name),
@@ -2028,7 +2017,7 @@ read_checkpoint_num(Dir) ->
 sync_pid_start(SPA) ->
     process_flag(priority, high),
     link(SPA#syncpid_arg.wal_pid),      % share fate
-    Interval = gmt_config:get_config_value_i(brick_sync_interval_msec, 500),
+    {ok, Interval} = application:get_env(gdss, brick_sync_interval_msec),
     brick_itimer:send_interval(Interval, force_sync),
     sync_pid_loop(SPA).
 
@@ -2102,7 +2091,6 @@ do_check_checkpoint(S)
                                 {error, enoent} ->
                                     %% In the 2-tier CommonLog scheme, this
                                     %% can happen occasionally, don't log.
-                                    %% error_logger:error_msg("do_check_checkpoint: ~p: File ~p in dir ~p doesn't exist\n", [S#state.name, File, LogDir]),
                                     Acc
                             end
                     end, 0, LogFiles),
@@ -2110,7 +2098,8 @@ do_check_checkpoint(S)
     MaxMB =
         case re:run(atom_to_list(S#state.name), "bootstrap_") of
             nomatch ->
-                gmt_config:get_config_value_i(brick_check_checkpoint_max_mb,5);
+                {ok, MB} = application:get_env(gdss, brick_check_checkpoint_max_mb),
+                MB;
             {match, _} ->
                 %% Use a very small value for bootstrap bricks: they
                 %% aren't supposed to be storing very much, and quick
@@ -3138,27 +3127,9 @@ scavenger_get_keys(Name, Fs, {ok, {Rs, true}}, Acc, F_k2d, F_lump, Iters) ->
                        prepend_rs(Name, Rs, Acc), F_k2d, F_lump, Iters + 1).
 
 scavenger_get_many(Name, Key, Flags) ->
-    Retry =
-	case gmt_config_svr:get_config_value_i(scavenger_get_many_retry, 5) of
-	    {ok, Retry0} ->
-		Retry0;
-	    _ ->
-		5
-	end,
-    Max =
-	case gmt_config_svr:get_config_value_i(scavenger_get_many_max, 1000) of
-	    {ok, Max0} ->
-		Max0;
-	    _ ->
-		1000
-	end,
-    TimeOut =
-	case gmt_config_svr:get_config_value_i(scavenger_get_many_timeout, 5000) of
-	    {ok, T0} ->
-		T0;
-	    _ ->
-		5000
-	end,
+    {ok, Retry} = application:get_env(gdss, scavenger_get_many_retry),
+    {ok, Max} = application:get_env(gdss, scavenger_get_many_max),
+    {ok, TimeOut} = application:get_env(gdss, scavenger_get_many_timeout),
     scavenger_get_many_retry(Name, Key, Flags, Max, TimeOut, Retry).
 
 
@@ -3199,7 +3170,7 @@ copy_one_hunk(SA, FH, Key, SeqNum, Offset, Fread_blob) ->
                            (SA#scav.wal_mod):read_hunk_summary(
                              FH, SeqNum, Offset, 0, Fread_blob)
                    end,
-            if not is_binary(Blob) -> ?APPLOG_ALERT(?APPLOG_APPM_049,"DEBUG: Blob = ~P\n", [Blob, 10]); true -> ok end,
+            if not is_binary(Blob) -> ?ELOG_ERROR("DEBUG: Blob = ~P", [Blob, 10]); true -> ok end,
             true = is_binary(Blob),
             if SA#scav.destructive == true ->
                     case (SA#scav.wal_mod):write_hunk(

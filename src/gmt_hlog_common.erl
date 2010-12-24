@@ -18,8 +18,6 @@
 %%%-------------------------------------------------------------------
 
 -module(gmt_hlog_common).
--include("applog.hrl").
-
 
 -behaviour(gen_server).
 
@@ -79,14 +77,14 @@
           dirty_buffer_wait               :: non_neg_integer(),        % seconds
           short_long_same_dev_p           :: boolean(),
           first_writeback                 :: boolean()
-                                             }).
+         }).
 
 -record(wb, {
           exactly_count = 0           :: non_neg_integer(),
           exactly_ts = []             :: list(eee()),
           relocate_count = 0          :: non_neg_integer(),
           relocate_ts = []            :: list(eee())
-                                         }).
+         }).
 
 -type orddict() :: list().
 
@@ -203,7 +201,10 @@ init(PropList) ->
                 %% without GDSS app running, and there's only one of
                 %% these things per app.
                 {ok, TRef} = timer:send_interval(1000, do_async_writeback),
-                {ok, SupressScavenger} = gmt_config_svr:get_config_value_boolean(brick_scavenger_suppress, proplists:is_defined(suppress_scavenger, PropList)),
+                SupressScavenger = prop_or_application_env_bool(
+                                     brick_scavenger_suppress,
+                                     suppress_scavenger, PropList,
+                                     false),
                 ScavengerTRef =
                     case SupressScavenger of
                         false ->
@@ -212,8 +213,7 @@ init(PropList) ->
                         true ->
                             undefined
                     end,
-                {ok, DirtySec} = gmt_config_svr:get_config_value_i(
-                                   brick_dirty_buffer_wait, 60),
+                {ok, DirtySec} = application:get_env(gdss, brick_dirty_buffer_wait),
                 SameDevP = short_long_same_dev_p(LogDir),
 
                 {ok, #state{name = CName, hlog_pid = Log, hlog_name = CName,
@@ -230,9 +230,26 @@ init(PropList) ->
         end
     catch
         _X:_Y ->
-            ?APPLOG_ALERT(?APPLOG_APPM_076,"~s: init error: ~p ~p at ~p\n",
-                          [?MODULE, _X, _Y, erlang:get_stacktrace()]),
+            ?ELOG_ERROR("init error: ~p ~p at ~p",
+                        [_X, _Y, erlang:get_stacktrace()]),
             ignore
+    end.
+
+prop_or_application_env_bool(ConfName, PropName, PropList, Default) ->
+    gmt_util:boolean_ify(
+      prop_or_application_env(ConfName, PropName, PropList, Default)).
+
+prop_or_application_env(ConfName, PropName, PropList, Default) ->
+    case proplists:get_value(PropName, PropList, not_in_list) of
+        not_in_list ->
+            case application:get_env(gdss, ConfName) of
+                undefined ->
+                    Default;
+                {ok, Res} ->
+                    Res
+            end;
+        Prop ->
+            Prop
     end.
 
 %%--------------------------------------------------------------------
@@ -328,8 +345,8 @@ handle_info(do_async_writeback, #state{async_writeback_pid = Pid, async_writebac
   when is_pid(Pid) ->
     if Reqs =:= [] ->
             %% Last async writeback proc hasn't finished yet.
-            ?APPLOG_WARNING(?APPLOG_APPM_077,"~s: async writeback proc ~p hasn't finished yet\n",
-                            [?MODULE, Pid]);
+            ?ELOG_WARNING("async writeback proc ~p hasn't finished yet",
+                          [Pid]);
        true ->
             %% don't warn if in progress due to an external request
             noop
@@ -356,10 +373,8 @@ handle_info({async_writeback_finished, Pid, NewSeqNum, NewOffset},
 handle_info(start_daily_scavenger, State) ->
     timer:sleep(2*1000),
     {ok, ScavengerTRef} = schedule_next_daily_scavenger(),
-    Percent = gmt_config:get_config_value_i(
-                brick_skip_live_percentage_greater_than, 90),
-    WorkDir = gmt_config:get_config_value(
-                brick_scavenger_temp_dir, "/tmp"),
+    {ok, Percent} = application:get_env(gdss, brick_skip_live_percentage_greater_than),
+    {ok, WorkDir} = application:get_env(gdss, brick_scavenger_temp_dir),
     PropList = [destructive,
                 {skip_live_percentage_greater_than, Percent},
                 {work_dir, WorkDir}],
@@ -381,8 +396,8 @@ handle_info({'DOWN', Ref, _, _, _}, #state{reg_dict = Dict} = State) ->
 handle_info({'EXIT', Pid, Reason}, #state{hlog_pid = Pid} = State) ->
     {stop,Reason,State#state{hlog_pid = undefined}};
 handle_info(_Info, State) ->
-    ?APPLOG_ALERT(?APPLOG_APPM_078,"~s:handle_info: ~p got msg ~p\n",
-                  [?MODULE, self(), _Info]),
+    ?ELOG_ERROR("~p got msg ~p",
+                [self(), _Info]),
     {noreply, State}.
 
 %%--------------------------------------------------------------------
@@ -540,10 +555,9 @@ do_metadata_hunk_writeback(OldSeqNum, OldOffset, StopSeqNum, StopOffset, S_ro)->
                           %% This should never happen.
                           QQQPath = "/tmp/foo.QQQbummer."++integer_to_list(element(3,now())),
                           file:write_file(QQQPath, term_to_binary([{args, [OldSeqNum, OldOffset, StopSeqNum, StopOffset, S_ro]}, {h, H}, {wb, WB}, {info, process_info(self())}])),
-                          ?APPLOG_WARNING(?APPLOG_APPM_079,"DBG: See ~p\n", [QQQPath]),
-                          ?APPLOG_WARNING(?APPLOG_APPM_080,
-                                          "DBG: ~p ~p wanted blob size ~p but got ~p\n",
-                                          [H#hunk_summ.seq,H#hunk_summ.off,BLen,size(UBlob)]);
+                          ?ELOG_WARNING("DBG: See ~p", [QQQPath]),
+                          ?ELOG_WARNING("DBG: ~p ~p wanted blob size ~p but got ~p",
+                                        [H#hunk_summ.seq,H#hunk_summ.off,BLen,size(UBlob)]);
                      true ->
                           ok
                   end,
@@ -567,8 +581,7 @@ do_metadata_hunk_writeback(OldSeqNum, OldOffset, StopSeqNum, StopOffset, S_ro)->
 
     if ErrList == [] ->
             if not is_record(WB2, wb) -> % Sanity check
-                    ?APPLOG_ALERT(?APPLOG_APPM_081,"~s: fold term: ~p\n",
-                                  [?MODULE, WB2]);
+                    ?ELOG_ERROR("fold term: ~p", [WB2]);
                true ->
                     ok
             end,
@@ -589,7 +602,7 @@ do_metadata_hunk_writeback(OldSeqNum, OldOffset, StopSeqNum, StopOffset, S_ro)->
             %%   missing data, and life is good.  If a brick's init +
             %%   WAL scan hits the missing data, it can crash to cause
             %%   a failure that can be repaired later.
-            ?APPLOG_WARNING(?APPLOG_APPM_082,"~s: ErrList = ~p\n", [?MODULE, ErrList]),
+            ?ELOG_WARNING("ErrList = ~p", [ErrList]),
             ErrStr = lists:flatten(io_lib:format("~P", [ErrList, 25])),
             gmt_util:set_alarm({?MODULE, ErrStr},
                                "Potential data-corrupting error occurred, "
@@ -748,9 +761,7 @@ spawn_future_tasks_after_dirty_buffer_wait(EndSeqNum, EndOffset, S) ->
     %% Advancing the common log's sequence number isn't really a
     %% future task, but doing it asyncly is a good idea.
     spawn(fun() ->
-                  {ok, MaxMB} = gmt_config_svr:get_config_value_i(
-                                  brick_max_log_size_mb, 100),
-                                                %if EndOffset > MaxMB * 1024 * 1024 ->
+                  {ok, MaxMB} = application:get_env(gdss, brick_max_log_size_mb),
                   if EndOffset > MaxMB * 1024 * 1024 div 2 ->
                           ?DBG_TLOGx({spawn_future_tasks_after_dirty_buffer_wait, advance,1}),
                           %% NOTE: not checking for success or failure
@@ -835,9 +846,8 @@ copy_parts(ToDos, #state{hlog_dir = HLogDir} = _S) ->
                       Acc + size(Bin)
                   catch
                       _X:_Y ->
-                          ?APPLOG_ALERT(?APPLOG_APPM_083,
-                                        "~s: copy_parts ~p ~p ~p: ~p ~p\n",
-                                        [?MODULE, SeqNum, ByteOffset, NumBytes, _X, _Y]),
+                          ?ELOG_ERROR("copy_parts ~p ~p ~p: ~p ~p",
+                                      [SeqNum, ByteOffset, NumBytes, _X, _Y]),
                           exit({copy_parts, _X, _Y})
                   after begin
                             erlang:garbage_collect(),
@@ -894,9 +904,8 @@ start_scavenger_commonlog(PropList0) ->
             ErrNds = [{Br, node()} || Br <- ErrBricks],
             Msg = "Scavenger may not execute until all bricks are running.",
             [gmt_util:set_alarm({scavenger, T}, Msg) || T <- ErrNds],
-            ?APPLOG_ALERT(?APPLOG_APPM_084,"Bricks ~p are not available, scavenger "
-                          "aborted\n",
-                          [ErrNds]),
+            ?ELOG_ERROR("Bricks ~p are not available, scavenger aborted",
+                        [ErrNds]),
             {error, ErrNds}
     end.
 
@@ -921,13 +930,12 @@ do_start_scavenger_commonlog2(Bricks, PropList) ->
                         N when N >= 0, N =< 100 -> N;
                         _                       -> 100 % Examine all files
                     end,
-    ThrLimit = 600*1000*1000,
     ThrottleBytes = case proplists:get_value(throttle_bytes, PropList) of
                         T when is_integer(T), T >= 0 ->
                             T;
-                        _ -> element(
-                               2, gmt_config_svr:get_config_value_i(
-                                    brick_scavenger_throttle_bytes, ThrLimit))
+                        _ ->
+                            {ok, T} = application:get_env(gdss, brick_scavenger_throttle_bytes),
+                            T
                     end,
     SorterSize = proplists:get_value(sorter_size, PropList, 16*1024*1024),
     WorkDir = proplists:get_value(work_dir, PropList, "./scavenger-work-dir"),
@@ -1007,8 +1015,8 @@ link_catch_shutdowns(Fun) ->
                Fine == exclusive_wait_exit ->
             ok; % smart_exceptions
         X:Y ->
-            ?APPLOG_ALERT(?APPLOG_APPM_085,"Scavenger ~p error: ~p ~p @ ~p\n",
-                          [self(), X, Y, erlang:get_stacktrace()])
+            ?ELOG_ERROR("Scavenger ~p error: ~p ~p @ ~p",
+                        [self(), X, Y, erlang:get_stacktrace()])
     end.
 
 scav_resumeok_path(WorkDir) ->
@@ -1052,8 +1060,7 @@ stop_scavenger_commonlog() ->
 scav_check_shutdown() ->
     case scav_stop_signal_p() of
         true ->
-            ?APPLOG_INFO(?APPLOG_APPM_086,
-                         "SCAV: pid ~p received shutdown request\n", [self()]),
+            ?ELOG_INFO("SCAV: pid ~p received shutdown request", [self()]),
             exit(stopping_on_shutdown_request);
         false ->
             ok
@@ -1173,9 +1180,9 @@ scavenger_commonlog(SA) ->
                         erlang:garbage_collect(),
                         [{brick_ets:temp_path_to_seqnum(Path2), Bytes}|Acc]
                     catch Err1:Err2 ->
-                            ?APPLOG_ALERT(?APPLOG_APPM_109, "SCAV: ~p error processing ~s: ~p ~p at ~p\n",
-                                     [SA#scav.name, Path, Err1, Err2,
-                                      erlang:get_stacktrace()]),
+                            ?ELOG_ERROR("SCAV: ~p error processing ~s: ~p ~p at ~p",
+                                        [SA#scav.name, Path, Err1, Err2,
+                                         erlang:get_stacktrace()]),
                             exit(abort)
                     end
             end,
@@ -1396,7 +1403,7 @@ update_locations_on_brick(Brick, NewLocs) ->
     end.
 
 scavenge_one_seq_file_fun(TempDir, SA, Fread_blob, Finfolog) ->
-    {ok, SleepTimeSec} = gmt_config_svr:get_config_value_i(brick_dirty_buffer_wait, 60),
+    {ok, SleepTimeSec} = application:get_env(gdss, brick_dirty_buffer_wait),
     fun({SeqNum, Bytes}, {SeqNums, Hs, Bs, Es}) ->
             scav_check_shutdown(),
 
@@ -1456,7 +1463,7 @@ scavenge_one_seq_file_fun(TempDir, SA, Fread_blob, Finfolog) ->
                                           timer:sleep(SleepTimeSec*1000),
                                           brick_ets:delete_seq(SA, SeqNum)
                                   end);
-                       UpRes ->
+                        UpRes ->
                             Finfolog(
                               "SCAV: ~p sequence ~p: UpRes ~p\n",
                               [SA#scav.name, SeqNum, UpRes])
@@ -1465,8 +1472,8 @@ scavenge_one_seq_file_fun(TempDir, SA, Fread_blob, Finfolog) ->
                     Finfolog("SCAV: zero errors for sequence ~p\n",
                              [SeqNum]);
                Errs > 0 ->
-                       ?E_ERROR("SCAV: ~p sequence ~p: ~p errors\n",
-                                [SA#scav.name, SeqNum, Errs]);
+                    ?E_ERROR("SCAV: ~p sequence ~p: ~p errors\n",
+                             [SA#scav.name, SeqNum, Errs]);
                true ->
                     ok
             end,
@@ -1477,7 +1484,7 @@ scavenge_one_seq_file_fun(TempDir, SA, Fread_blob, Finfolog) ->
 
 schedule_next_daily_scavenger() ->
     NowSecs = calendar:time_to_seconds(time()),
-    StartStr = gmt_config:get_config_value(brick_scavenger_start_time, "3:00"),
+    {ok, StartStr} = application:get_env(gdss, brick_scavenger_start_time),
     StartSecs = calendar:time_to_seconds(parse_hh_mm(StartStr)),
     WaitSecs = if NowSecs < StartSecs ->
                        (StartSecs - NowSecs);
@@ -1499,9 +1506,8 @@ do_sequence_file_is_bad(SeqNum, Offset, S) ->
       SeqNum, Offset),
     LocalBricks = do_get_all_registrations(S),
     if SeqNum == CurSeqNum ->
-            ?APPLOG_WARNING(?APPLOG_APPM_087,
-                            "Fatal error: common log: current sequence file is bad: ~p\n",
-                            [SeqNum]),
+            ?ELOG_WARNING("Fatal error: common log: current sequence file is bad: ~p",
+                          [SeqNum]),
             spawn(fun() -> application:stop(gdss) end),
             timer:sleep(200),
             exit({current_sequence_is_bad, SeqNum});

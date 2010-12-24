@@ -36,6 +36,33 @@
              , brick_itimer
              , brick_ticket
              , gmt_hlog, gmt_hlog_local, gmt_hlog_common
-            ]}
- ]
-}.
+            ]},
+  {env, [{brick_check_checkpoint_max_mb, 5}
+         , {brick_check_checkpoint_throttle_bytes, 1000000}
+         , {brick_default_data_dir, "."}
+         , {brick_dirty_buffer_wait, 60}
+         , {brick_do_op_too_old_timeout, 1500}
+         , {brick_expiration_processor, "[]."}
+         , {brick_max_log_size_mb, 100}
+         , {brick_max_primers, 200}
+         , {brick_mbox_high_water, 500}
+         , {brick_mbox_low_water, 100}
+         , {brick_mbox_repair_high_water, 1500}
+         , {brick_mbox_repair_overload_resume_interval, 300}
+         , {brick_preprocess_method, ""}
+         , {brick_repair_max_bytes, 65000000}
+         , {brick_repair_max_primers, 7}
+         , {brick_scavenger_start_time, "3:00"}
+         , {brick_scavenger_suppress, false}
+         , {brick_scavenger_temp_dir, "/tmp"}
+         , {brick_scavenger_throttle_bytes, 600000000}
+         , {brick_server_default_timeout, 5000}
+         , {brick_skip_live_percentage_greater_than, 90}
+         , {brick_sync_interval_msec, 500}
+         , {debug_check_hunk_blob, false}
+         , {debug_check_hunk_summ, false}
+         , {scavenger_get_many_max, 1000}
+         , {scavenger_get_many_retry, 5}
+         , {scavenger_get_many_timeout, 5000}
+        ]}
+ ]}.
