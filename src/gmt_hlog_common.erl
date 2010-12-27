@@ -1135,9 +1135,8 @@ scavenger_commonlog(SA) ->
                        end, List),
                      dict:new()
              end,
-    [{Br, ok} =
-         {Br, brick_ets:scavenger_get_keys(Br, Fs, FirstKey, F_k2d, F_lump)}
-     || Br <- SA#scav.bricks],
+    [ ok = brick_ets:scavenger_get_keys(Br, Fs, FirstKey, F_k2d, F_lump)
+      || Br <- SA#scav.bricks ],
     Finfolog("SCAV: ~p finished step 1\n", [SA#scav.name]),
     scav_check_shutdown(),
 
