@@ -2334,11 +2334,6 @@ retry_dirty_key_ops(S) ->
                                 %% timer:sleep(5*1000), exit(asdlkfasdf);
                                 NewToDos = TDs ++ ToDos,
                                 case OrigReply of
-                                    %% Dialyzer says this clause is impossible.
-                                    %% 12 Sept 2008.
-                                    {reply, Reply, NewInterimS} ->
-                                        gen_server:reply(From, Reply),
-                                        {NewInterimS, NewToDos};
                                     {noreply, NewInterimS} ->
                                         {NewInterimS, NewToDos}
                                 end;
@@ -2732,7 +2727,8 @@ sequence_file_is_bad_common(LogDir, WalMod, _Log, Name, SeqNum, Offset) ->
                        "rename ~s or ~s to ~s failed: ~p\n",
                        [Name, SeqNum, Offset, OldPath1, OldPath2,
                         NewPath, Reason])
-    end.
+    end,
+    ok.
 
 %%
 %% Write-ahead log helper functions
@@ -2806,9 +2802,7 @@ wal_write_metadata_term(Term, S) ->
       [term_to_binary(Term)], []).
 
 wal_sync(Pid, WalMod) when is_pid(Pid) ->
-    WalMod:sync(Pid);
-wal_sync(S, WalMod) when is_record(S, state) ->
-    WalMod:sync(S#state.log).
+    WalMod:sync(Pid).
 
 wal_purge_recs_by_seqnum(SeqNum, Offset, S) ->
     ?E_ERROR("A bad log sequence file, ~p number ~p, has been detected "
