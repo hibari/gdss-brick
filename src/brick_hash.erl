@@ -232,7 +232,7 @@
 -type chash_r() :: #chash{}.
 
 %% QQQ Re-write call sig!
--type brick() :: {atom(),atom()}.
+-type brick() :: {atom(),node()}.
 -type bricklist() :: [brick()].
 -type chainlist() ::  [{atom(),bricklist()}].
 -type phase() ::  pre | migrating | post | phase_unused | unused.

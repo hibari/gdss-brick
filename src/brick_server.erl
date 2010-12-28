@@ -456,7 +456,7 @@
 -type do_list() :: list(do1_op() | {ssf, binary(), flags_list()}).
 -type do_op() :: {do, brick_bp:nowtime(), do_list(), flags_list()}.
 -type global_hash_r() :: #g_hash_r{}.
--type node_name() :: atom().
+-type node_name() :: node().
 -type prop_list() :: list(atom() | {atom(), term()}).
 -type rw_key_tuple() :: {read | write, term()}.
 -type serial_number() :: no_serial | repair_overload | integer().
