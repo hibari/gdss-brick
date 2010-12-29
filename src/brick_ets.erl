@@ -232,7 +232,8 @@ sync_stats(Server, Seconds) when seconds >= 0 ->
     gen_server:call(Server, {sync_stats, Seconds}).
 
 brick_name2data_dir(ServerName) ->
-    "hlog." ++ atom_to_list(ServerName).
+    {ok, FileDir} = application:get_env(gdss, brick_default_data_dir),
+    filename:join([FileDir, "hlog." ++ atom_to_list(ServerName)]).
 
 %%%----------------------------------------------------------------------
 %%% Callback functions from gen_server

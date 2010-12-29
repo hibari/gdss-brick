@@ -1430,7 +1430,8 @@ do_sync_longterm_asyncly(From, S) ->
       end).
 
 log_name2data_dir(ServerName) ->
-    "hlog." ++ atom_to_list(ServerName).
+    {ok, FileDir} = application:get_env(gdss, brick_default_data_dir),
+    filename:join([FileDir, "hlog." ++ atom_to_list(ServerName)]).
 
 log_name2reg_name(Name) ->
     list_to_atom(atom_to_list(Name) ++ "_hlog").
