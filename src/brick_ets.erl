@@ -1606,8 +1606,7 @@ my_delete(State, Key, ExpTime) when State#state.do_logging == true ->
     %% Logging is in effect.  Save key in list of keys for later
     %% addition to dirty_keys list.
     Mods = State#state.thisdo_mods,
-    State#state{thisdo_mods = [{delete, Key, ExpTime}|Mods]
-               };
+    State#state{thisdo_mods = [{delete, Key, ExpTime}|Mods]};
 my_delete(State, Key, ExpTime) ->
     my_delete_ignore_logging(State, Key, ExpTime),
     Mods = State#state.thisdo_mods,
