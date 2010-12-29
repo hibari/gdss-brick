@@ -241,9 +241,8 @@
 -spec read_hunk(server(), seqnum(), offset(), lenhintORxformfun()) -> {ok, binary()} | no_return().
 -spec read_hunk(server(), seqnum(), offset(), lenhint(), xformfun()) -> {ok, binary()} | no_return().
 
-%% seqnum() | atom() because if 1st arg is a file handle, 2nd arg is ignored.
--spec read_hunk_summary(dirname() | file:fd(), seqnum() | atom(), offset()) -> #hunk_summ{} | eof | {error, term()}.
--spec read_hunk_summary(dirname() | file:fd(), seqnum() | atom(), offset(), lenhint(), xformfun()) -> term().
+-spec read_hunk_summary(dirname(), seqnum(), offset()) -> #hunk_summ{} | eof | {error, term()};
+                       (file:fd(), seqnum_unused, offset()) -> #hunk_summ{} | eof | {error, term()}.
 
 -spec read_hunk_summ_ll(file:fd(), offset()) -> {ok, #hunk_summ{}} | eof | {bof, offset()} | {error, term(), term()}.
 -spec read_hunk_summ_ll(file:fd(), offset(), lenhint()) -> {ok, #hunk_summ{}} | eof | {bof, offset()} | {error, term(), term()}.
