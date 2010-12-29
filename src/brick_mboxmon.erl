@@ -113,9 +113,7 @@ init([]) ->
 %%                                      {stop, Reason, State}
 %% Description: Handling call messages
 %%--------------------------------------------------------------------
-handle_call(Request, From, State) ->
-    io:format("DEBUG: ~s:handle_call: unknown Request ~w from ~w\n",
-              [?MODULE, Request, From]),
+handle_call(_Request, _From, State) ->
     Reply = unknown_call,
     {reply, Reply, State, ?MY_TIMEOUT}.
 

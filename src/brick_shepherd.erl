@@ -269,9 +269,7 @@ handle_call({delete_do_not_restart_brick, Brick}, _From, State) ->
                             State#state.do_not_restart_list -- [Brick]}};
 handle_call({list_do_not_restart_bricks}, _From, State) ->
     {reply, State#state.do_not_restart_list, State};
-handle_call(Request, From, State) ->
-    io:format("DEBUG: ~s:handle_call: unknown Request ~w from ~w\n",
-              [?MODULE, Request, From]),
+handle_call(_Request, _From, State) ->
     Reply = unknown_call,
     {reply, Reply, State}.
 
@@ -281,8 +279,7 @@ handle_call(Request, From, State) ->
 %%                                      {stop, Reason, State}
 %% Description: Handling cast messages
 %%--------------------------------------------------------------------
-handle_cast(Msg, State) ->
-    io:format("DEBUG: ~s:handle_cast: unknown Msg ~w\n", [?MODULE, Msg]),
+handle_cast(_Msg, State) ->
     {noreply, State}.
 
 %%--------------------------------------------------------------------

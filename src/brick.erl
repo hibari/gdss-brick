@@ -47,25 +47,16 @@ start(_Type, StartArgs) ->
     gmt_cinfo_basic:register(),
     brick_cinfo:register(),
 
-    io:format("DEBUG: ~s:start(~p, ~p)\n", [?MODULE, _Type, StartArgs]),
-    io:format("DEBUG: ~s: application:start_type() = ~p\n",
-              [?MODULE, application:start_type()]),
-
     case brick_sup:start_link(StartArgs) of
         {ok, Pid} ->
-            io:format("DEBUG: ~s:start_phase: self() = ~p, sup pid = ~p\n",
-                      [?MODULE, self(), Pid]),
             {ok, Pid};
         Error ->
-            io:format("DEBUG: ~s:start bummer: ~w\n", [?MODULE, Error]),
             Error
     end.
 
 %% Lesser-used callbacks....
 
 start_phase(_Phase, _StartType, _PhaseArgs) ->
-    io:format("DEBUG: ~s:start_phase(~p, ~p, ~p)\n",
-              [?MODULE, _Phase, _StartType, _PhaseArgs]),
     ok.
 
 prep_stop(State) ->
@@ -90,8 +81,6 @@ prep_stop(State) ->
     State.
 
 config_change(_Changed, _New, _Removed) ->
-    io:format("DEBUG: ~s:config_change(~p, ~p, ~p)\n",
-              [?MODULE, _Changed, _New, _Removed]),
     ok.
 
 
@@ -100,7 +89,6 @@ config_change(_Changed, _New, _Removed) ->
 %% Returns: any
 %%----------------------------------------------------------------------
 stop(_State) ->
-    io:format("DEBUG: ~s:stop(~p)\n", [?MODULE, _State]),
     ok.
 
 %%%----------------------------------------------------------------------
