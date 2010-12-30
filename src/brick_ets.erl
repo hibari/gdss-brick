@@ -151,7 +151,7 @@
                                                   % replay when log sync is done.
           %% n_log_replay = 0,
           log :: pid(),                           % disk_log for data mod cmds
-          thisdo_mods :: [atom()],                % List of mods by this 'do'
+          thisdo_mods :: [tuple()],               % List of mods by this 'do'
           check_pid :: pid(),                     % Pid of checkpoint helper
           check_lastseqnum :: seqnum(),           % integer() seq # of last checkpoint
           ctab :: table_name(),                   % ETS table for cache

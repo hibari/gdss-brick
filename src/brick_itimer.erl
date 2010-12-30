@@ -46,7 +46,7 @@
 -define(SERVER, ?MODULE).
 
 -record(state, {
-          interval_d                    % key: interval size, val: pid
+          interval_d=dict:new() :: dict() % key: interval size, val: pid
          }).
 
 %%%===================================================================
@@ -54,9 +54,9 @@
 %%%===================================================================
 
 -spec start_link() -> ignore | {error, term()} | {ok,pid()}.
--spec send_interval(integer(),any()) -> any().
--spec send_interval(integer(),pid(),any()) -> any().
--spec cancel(_) -> any().
+-spec send_interval(integer(),term()) -> any().
+-spec send_interval(integer(),pid(),term()) -> any().
+-spec cancel(term()) -> any().
 
 
 %%--------------------------------------------------------------------
@@ -97,8 +97,7 @@ dump() ->
 %% @end
 %%--------------------------------------------------------------------
 init([]) ->
-    IntD = dict:new(),
-    {ok, #state{interval_d = IntD}}.
+    {ok, #state{}}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -194,7 +193,8 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
-do_send_interval(From, Interval, Pid, Msg, #state{interval_d = IntD} = S) ->
+-spec do_send_interval(pid(), integer(), pid(), term(), #state{}) -> #state{}.
+do_send_interval(From, Interval, Pid, Msg, #state{interval_d=IntD}=S) ->
     case dict:find(Interval, IntD) of
         {ok, Server} ->
             Server ! {send_interval, From, Pid, Msg},
@@ -202,18 +202,20 @@ do_send_interval(From, Interval, Pid, Msg, #state{interval_d = IntD} = S) ->
         error ->
             Server = start_interval_server(Interval),
             NewIntD = dict:store(Interval, Server, IntD),
-            do_send_interval(From,
-                             Interval, Pid, Msg, S#state{interval_d = NewIntD})
+            do_send_interval(From, Interval, Pid, Msg, S#state{interval_d=NewIntD})
     end.
 
+-spec start_interval_server(integer()) -> pid().
 start_interval_server(Interval) ->
     spawn_link(?MODULE, start_interval_loop, [Interval]).
 
+-spec start_interval_loop(integer()) -> no_return().
 start_interval_loop(Interval) ->
     put(my_interval, Interval),
     timer:send_interval(Interval, tick),
     interval_loop([]).
 
+-spec interval_loop([{pid(), term(), term()}]) -> no_return().
 interval_loop(Clients) ->
     receive
         tick ->

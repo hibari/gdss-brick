@@ -325,6 +325,7 @@ do_water_report(Type, RepairingP, WaterBrick, Num, ThrottleBrick) ->
 %% think that this extra process isn't required?  This would be a good
 %% refactoring exercise for a developer who's new to Erlang?
 
+-spec start_water_report_loop(pid(), atom(), atom()) -> no_return().
 start_water_report_loop(ParentPid, ThrottleBrick, RegName) ->
     %% Use registered name to make certain that there are only one
     %% of these running per throttled brick.
