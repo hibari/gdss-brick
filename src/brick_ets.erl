@@ -205,7 +205,7 @@
 -spec make_info_log_fun(list()) -> fun((_,_) -> 'ok').
 -spec really_cheap_exclusion(atom(),fun(),fun()) -> fun().
 -spec scavenger_get_keys(brick_server:brick_name(),brick_server:flags_list_many(),
-                         key() | ?BRICK__GET_MANY_FIRST,
+                         key(),
                          function(), function()) -> ok.
 -spec sequence_file_is_bad_common(nonempty_string(), atom(), pid(), atom(),integer(),integer()) -> ok.
 -spec storetuple_make(key(), ts(), term(), integer(), exp_time(), flags_list()) -> store_tuple().
@@ -1138,7 +1138,7 @@ drop_prefixes(Xs, Prefix, PrefixLen) ->
 %%
 %% NOTE: We are *supposed* to return our results in reversed order.
 
--spec get_many2(key() | ?BRICK__GET_MANY_LAST, any(), any(), any(), any(), any(), any())
+-spec get_many2(key(), any(), any(), any(), any(), any(), any())
                -> {{list(extern_tuple()), boolean()}, any()}.
 get_many2('$end_of_table', _MaxNum, _MaxBytes, _ResultFlavor, _BPref, Acc, State) ->
     {{Acc, false}, State};

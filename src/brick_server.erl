@@ -492,7 +492,7 @@
 -type setmyrepair_reply() :: ok | {error, term(), term()}.
 
 -type serial() :: integer().
--type sweep_key() :: key() | ?BRICK__GET_MANY_LAST | ?BRICK__GET_MANY_FIRST.
+-type sweep_key() :: key().
 -type stage() :: top
                | priming_value_blobs
                | {notify_down_old, brick_bp:nowtime()}
@@ -507,8 +507,6 @@
                 , max_keys                        :: non_neg_integer()              % Max keys to send at once
                 , max_bytes                       :: non_neg_integer()              % Max bytes to send at once
                 , key = ?BRICK__GET_MANY_FIRST    :: key()                          % Key to resume repair
-                                                   | ?BRICK__GET_MANY_LAST
-                                                   | ?BRICK__GET_MANY_FIRST
                 , last_repair_serial              :: serial()                       % Serial # of last sent
                 , final_repair_serial             :: serial()                       % Serial # of final repair sent
                 , values_sent = 0                 :: non_neg_integer()
@@ -592,7 +590,7 @@
         , num_phase2_replies                 :: integer()                     % integer()
         , phase2_needed_replies              :: integer()                     % integer()
         , phase2_del_thisdo_mods             :: list()                        % list(Thisdo_Mods)
-        , val_prime_lastkey                  :: bin_key() | ?BRICK__GET_MANY_LAST % binary() | '$end_of_table'?
+        , val_prime_lastkey                  :: binary() | ?BRICK__GET_MANY_LAST % binary() | '$end_of_table'?
         }).
 
 -record(state,
@@ -816,31 +814,31 @@ delete(ServerName, Node, Key, Flags, Timeout)
         Else  -> Else
     end.
 
-%% @spec (brick_name(), node_name(), io_list() | ?BRICK__GET_MANY_FIRST, integer())
+%% @spec (brick_name(), node_name(), key(), integer())
 %%    -> zzz_getmany_reply()
 %% @equiv getmany(ServerName, Node, Key, MaxNum, [], DefaultTimeout)
 %% @doc Get many Key/Value pairs from a brick, up to MaxNum.
 
--spec get_many(brick_name(), node_name(), key() | ?BRICK__GET_MANY_FIRST, integer()) -> getmany_reply().
+-spec get_many(brick_name(), node_name(), key(), integer()) -> getmany_reply().
 get_many(ServerName, Node, Key, MaxNum) ->
     get_many(ServerName, Node, Key, MaxNum, [], foo_timeout()).
 
-%% @spec (brick_name(), node_name(), io_list() | ?BRICK__GET_MANY_FIRST, integer(), prop_list() | timeout())
+%% @spec (brick_name(), node_name(), key(), integer(), prop_list() | timeout())
 %%    -> zzz_getmany_reply()
 %% @equiv getmany(ServerName, Node, Key, MaxNum, [], DefaultTimeoutOrFlags)
 %% @doc Get many Key/Value pairs from a brick, up to MaxNum.
 
--spec get_many(brick_name(), node_name(), key() | ?BRICK__GET_MANY_FIRST, integer(), flags_list() | timeout()) -> getmany_reply().
+-spec get_many(brick_name(), node_name(), key(), integer(), flags_list() | timeout()) -> getmany_reply().
 get_many(ServerName, Node, Key, MaxNum, Flags) when is_list(Flags) ->
     get_many(ServerName, Node, Key, MaxNum, Flags, foo_timeout());
 get_many(ServerName, Node, Key, MaxNum, Timeout) when is_integer(Timeout) ->
     get_many(ServerName, Node, Key, MaxNum, [], Timeout).
 
-%% @spec (brick_name(), node_name(), io_list() | ?BRICK__GET_MANY_FIRST, integer(), prop_list(), timeout())
+%% @spec (brick_name(), node_name(), key(), integer(), prop_list(), timeout())
 %%    -> zzz_getmany_reply()
 %% @doc Get many Key/Value pairs from a brick, up to MaxNum.
 
--spec get_many(brick_name(), node_name(), key() | ?BRICK__GET_MANY_FIRST, integer(), flags_list(), timeout()) -> getmany_reply().
+-spec get_many(brick_name(), node_name(), key(), integer(), flags_list(), timeout()) -> getmany_reply().
 get_many(ServerName, Node, Key, MaxNum, Flags, Timeout)
   when not is_list(Node), is_integer(MaxNum),
        is_list(Flags), is_integer(Timeout) ->
@@ -849,11 +847,11 @@ get_many(ServerName, Node, Key, MaxNum, Flags, Timeout)
         Else  -> Else
     end.
 
-%% @spec (brick_name(), node_name(), io_list() | ?BRICK__GET_MANY_FIRST, integer(), prop_list(), prop_list(), timeout())
+%% @spec (brick_name(), node_name(), key(), integer(), prop_list(), prop_list(), timeout())
 %%    -> zzz_getmany_reply()
 %% @doc Get many Key/Value pairs from a brick, up to MaxNum.
 
--spec get_many(brick_name(), node_name(), key() | ?BRICK__GET_MANY_FIRST, integer(), flags_list(), prop_list(), timeout()) -> getmany_reply().
+-spec get_many(brick_name(), node_name(), key(), integer(), flags_list(), prop_list(), timeout()) -> getmany_reply().
 get_many(ServerName, Node, Key, MaxNum, Flags, DoFlags, Timeout)
   when not is_list(Node), is_integer(MaxNum),
        is_list(Flags), is_list(DoFlags), is_integer(Timeout) ->
@@ -877,7 +875,8 @@ do(ServerName, Node, DoList) ->
 %% @equiv do(ServerName, Node, DoList, [], DefaultTimeoutOrFlags)
 %% @doc Send a list of do ops to a brick.
 
--spec do(brick_name(), node_name(), do_list(), prop_list() | timeout()) -> do_reply().
+-spec do(brick_name(), node_name(), do_list(), timeout()) -> do_reply();
+        (brick_name(), node_name(), {'do', brick_bp:nowtime(), do_list(), prop_list()}, timeout()) -> do_reply().
 do(ServerName, Node, {do, _SentAt, DoList, DoFlags}, Timeout)
   when not is_list(Node), is_list(DoList), is_list(DoFlags),
        is_integer(Timeout) ->
@@ -2563,14 +2562,14 @@ make_delete(Key, Flags) ->
 %% @spec (term(), integer()) -> do_op()
 %% @equiv make_get_many(Key, MaxNum, [])
 
--spec make_get_many(key() | ?BRICK__GET_MANY_FIRST, integer()) -> get_many().
+-spec make_get_many(key(), integer()) -> get_many().
 make_get_many(Key, MaxNum) ->
     make_get_many(Key, MaxNum, []).
 
 %% @spec (term(), integer(), prop_list()) -> do_op()
 %% @doc Create an "get_many" do op (see encode_op_flags() for valid flags).
 
--spec make_get_many(key() | ?BRICK__GET_MANY_FIRST, integer(), flags_list_many()) -> get_many().
+-spec make_get_many(key(), integer(), flags_list_many()) -> get_many().
 make_get_many(Key, MaxNum, Flags) ->
     make_op2(get_many, Key, [{max_num, MaxNum}|Flags]).
 
@@ -2677,7 +2676,7 @@ make_resum_quota(KeyArg) ->
 %% @spec (atom(), term(), prop_list()) -> do_op()
 %% @doc Create a 2-argument do op (see encode_op_flags() for valid flags).
 
--spec make_op2(atom(), key() | ?BRICK__GET_MANY_FIRST, flags_or_fun_list()) ->
+-spec make_op2(atom(), key(), flags_or_fun_list()) ->
                       {atom(), binary(), flags_or_fun_list()}.
 make_op2(OpName, Key, Flags) ->
     OpKey = if Key == ?BRICK__GET_MANY_FIRST -> Key;

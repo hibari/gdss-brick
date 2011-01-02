@@ -25,8 +25,8 @@
 %%      is very slightly different.
 
 -type do_flags_list():: [] | [sync_override].
--type key()          :: binary() | iolist().  % Differs from UBF contract
--type bin_key()      :: binary().
+-type key()          :: binary() | iolist() | '$start_of_table' | '$end_of_table'.  % Differs from UBF contract
+-type bin_key()      :: binary() | '$start_of_table' | '$end_of_table'.
 -type table_name()   :: atom().
 -type time_t()       :: integer().
 -type ts()           :: non_neg_integer().
