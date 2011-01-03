@@ -3001,7 +3001,7 @@ do_check_expiry(S) ->
     (S#state.do_expiry_fun)(S#state.name, KeysTs),
     S.
 
--spec expiry_iter_keys(table_name(), integer(), {integer(), key()}) -> list().
+-spec expiry_iter_keys(table_name(), integer(), {integer(), key()} | '$end_of_table') -> list().
 expiry_iter_keys(_ETab, _Now, '$end_of_table') ->
     [];
 expiry_iter_keys(_ETab, Now, {ExpTime, _Key}) when ExpTime > Now ->

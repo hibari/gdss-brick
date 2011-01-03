@@ -31,6 +31,7 @@
 -type time_t()       :: integer().
 -type ts()           :: non_neg_integer().
 -type val()          :: binary() | iolist().  % Differs from UBF contract
+-type val_impl()     :: val() | '$disk_remains_constant/$' | {'$value_switch-a-roo/$', val(), val()}.
 
 -type exp_time()     :: time_t().
 -type do_op_flag0()  :: {testset, ts()} |
@@ -62,7 +63,7 @@
 -type delete()       :: {delete,  bin_key(),                          flags_list()}.
 -type get()          :: {get,     bin_key(),                          flags_list()}.
 -type get_many()     :: {get_many,bin_key(),                          flags_list()}.
--type replace()      :: {replace, bin_key(), ts(), val(), exp_time(), flags_list()}.
+-type replace()      :: {replace, bin_key(), ts(), val_impl(), exp_time(), flags_list()}.
 %% set() is a built-in type now, must use a different name for this type.
 -type 'set__'()      :: {set,     bin_key(), ts(), val(), exp_time(), flags_list()}.
 

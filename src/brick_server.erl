@@ -689,7 +689,7 @@ add(ServerName, Node, Key, Value, ExpTime, Flags, Timeout)
 %% @equiv replace(ServerName, Node, Key, Value, 0, [], DefaultTimeout)
 %% @doc Replace a Key/Value pair in a brick, failing if Key does not already exist.
 
--spec replace(brick_name(), node_name(), key(), val()) -> replace_reply().
+-spec replace(brick_name(), node_name(), key(), val_impl()) -> replace_reply().
 replace(ServerName, Node, Key, Value) ->
     replace(ServerName, Node, Key, Value, 0, [], foo_timeout()).
 
@@ -698,7 +698,7 @@ replace(ServerName, Node, Key, Value) ->
 %% @equiv replace(ServerName, Node, Key, Value, 0, Flags, DefaultTimeoutOrFlags)
 %% @doc Replace a Key/Value pair in a brick, failing if Key does not already exist.
 
--spec replace(brick_name(), node_name(), key(), val(), flags_list0() | timeout()) -> replace_reply().
+-spec replace(brick_name(), node_name(), key(), val_impl(), flags_list0() | timeout()) -> replace_reply().
 replace(ServerName, Node, Key, Value, Flags) when is_list(Flags) ->
     replace(ServerName, Node, Key, Value, 0, Flags, foo_timeout());
 replace(ServerName, Node, Key, Value, Timeout) when is_integer(Timeout) ->
@@ -708,7 +708,7 @@ replace(ServerName, Node, Key, Value, Timeout) when is_integer(Timeout) ->
 %%    -> zzz_add_reply()
 %% @doc Replace a Key/Value pair in a brick, failing if Key does not already exist.
 
--spec replace(brick_name(), node_name(), key(), val(), integer(), flags_list(), timeout()) -> replace_reply().
+-spec replace(brick_name(), node_name(), key(), val_impl(), integer(), flags_list(), timeout()) -> replace_reply().
 replace(ServerName, Node, Key, Value, ExpTime, Flags, Timeout)
   when not is_list(Node) ->
     case do(ServerName, Node, [make_replace(Key, Value, ExpTime, Flags)],
@@ -2492,21 +2492,21 @@ make_add(Key, TStamp, Value, ExpTime, Flags) ->
 %% @spec (term(), term()) -> do_op()
 %% @equiv make_replace(Key, Value, 0, [])
 
--spec make_replace(key(), val() | ?VALUE_REMAINS_CONSTANT) -> replace().
+-spec make_replace(key(), val_impl()) -> replace().
 make_replace(Key, Value) ->
     make_replace(Key, Value, 0, []).
 
 %% @spec (term(), term(), integer(), prop_list()) -> do_op()
 %% @doc Create an "replace" do op (see encode_op_flags() for valid flags).
 
--spec make_replace(key(), val() | ?VALUE_REMAINS_CONSTANT, exp_time(), flags_list()) -> replace().
+-spec make_replace(key(), val_impl(), exp_time(), flags_list()) -> replace().
 make_replace(Key, Value, ExpTime, Flags) ->
     make_op5(replace, Key, Value, ExpTime, Flags).
 
 %% @spec (term(), integer(), term(), integer(), prop_list()) -> do_op()
 %% @doc Create an "replace" do op (see encode_op_flags() for valid flags).
 
--spec make_replace(key(), integer(), val() | ?VALUE_REMAINS_CONSTANT, exp_time(), flags_list()) -> replace().
+-spec make_replace(key(), integer(), val_impl(), exp_time(), flags_list()) -> replace().
 make_replace(Key, TStamp, Value, ExpTime, Flags) ->
     make_op6(replace, Key, TStamp, Value, ExpTime, Flags).
 
@@ -2687,7 +2687,7 @@ make_op2(OpName, Key, Flags) ->
 %% @spec (atom(), term(), term(), integer(), prop_list()) -> do_op()
 %% @doc Create a 5-argument do op (see encode_op_flags() for valid flags).
 
--spec make_op5(atom(), key(), val() | ?VALUE_REMAINS_CONSTANT, exp_time(), flags_or_fun_list()) ->
+-spec make_op5(atom(), key(), val_impl(), exp_time(), flags_or_fun_list()) ->
                       {atom(), binary(), integer(), val(), exp_time(), flags_or_fun_list()}.
 make_op5(OpName, Key, Value0, ExpTime, Flags) ->
     TStamp = make_timestamp(),
@@ -2698,7 +2698,7 @@ make_op5(OpName, Key, Value0, ExpTime, Flags) ->
 %% @spec (atom(), term(), integer(), term(), integer(), prop_list()) -> do_op()
 %% @doc Create a 6-argument do op (see encode_op_flags() for valid flags).
 
--spec make_op6(atom(), key(), integer(), val() | ?VALUE_REMAINS_CONSTANT, exp_time(), flags_or_fun_list()) ->
+-spec make_op6(atom(), key(), integer(), val_impl(), exp_time(), flags_or_fun_list()) ->
                       {atom(), binary(), integer(), val(), exp_time(), flags_or_fun_list()}.
 make_op6(OpName, Key, TStamp, Value0, ExpTime, Flags) ->
     EFlags = encode_op_flags(Flags),
@@ -2744,8 +2744,8 @@ encode_op_flags([Fun|T]) when is_function(Fun, 4) ->
 encode_op_flags([]) ->
     [].
 
-%% @spec (iolist() | VALUE_REMAINS_CONSTANT) ->
-%%        iolist() | VALUE_REMAINS_CONSTANT
+%% @spec (iolist() | VALUE_REMAINS_CONSTANT | {VALUE_SWITCHAROO, _, _}) ->
+%%        iolist() | VALUE_REMAINS_CONSTANT | {VALUE_SWITCHAROO, _, _}
 
 check_value_type(Val) ->
     case (catch iolist_size(Val)) of
