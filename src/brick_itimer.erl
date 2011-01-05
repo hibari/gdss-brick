@@ -140,10 +140,10 @@ handle_call({cancel, MRef}, _From, State) ->
 %% @end
 %%--------------------------------------------------------------------
 handle_cast(dump, State) ->
-    [begin
-         ?E_INFO("~s: dump: interval ~p, pid ~p\n", [?MODULE, Interval, Pid]),
-         Pid ! dump
-     end || {Interval, Pid} <- dict:to_list(State#state.interval_d)],
+    _ = [begin
+             ?E_INFO("~s: dump: interval ~p, pid ~p\n", [?MODULE, Interval, Pid]),
+             Pid ! dump
+         end || {Interval, Pid} <- dict:to_list(State#state.interval_d)],
     {noreply, State};
 handle_cast(_Msg, State) ->
     ?E_ERROR("~s: handle_cast: ~P\n", [?MODULE, _Msg, 20]),
@@ -175,7 +175,7 @@ handle_info(_Info, State) ->
 %% @end
 %%--------------------------------------------------------------------
 terminate(_Reason, State) ->
-    [Pid ! stop || {_I, Pid} <- dict:to_list(State#state.interval_d)],
+    _ = [Pid ! stop || {_I, Pid} <- dict:to_list(State#state.interval_d)],
     ok.
 
 %%--------------------------------------------------------------------
@@ -212,14 +212,14 @@ start_interval_server(Interval) ->
 -spec start_interval_loop(integer()) -> no_return().
 start_interval_loop(Interval) ->
     put(my_interval, Interval),
-    timer:send_interval(Interval, tick),
+    {ok, _} = timer:send_interval(Interval, tick),
     interval_loop([]).
 
 -spec interval_loop([{pid(), term(), term()}]) -> no_return().
 interval_loop(Clients) ->
     receive
         tick ->
-            [catch (Pid ! Msg) || {Pid, Msg, _MRef} <- Clients],
+            _ = [catch (Pid ! Msg) || {Pid, Msg, _MRef} <- Clients],
             ?MODULE:interval_loop(Clients);
         {send_interval, From, Pid, Msg} ->
             case gmt_util:make_monitor(Pid) of

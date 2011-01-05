@@ -94,7 +94,7 @@ is_pid_repairing(Pid) when is_pid(Pid) ->
 %%--------------------------------------------------------------------
 init([]) ->
     process_flag(trap_exit, true),
-    net_kernel:monitor_nodes(true, [{node_type, visible}, nodedown_reason]),
+    ok = net_kernel:monitor_nodes(true, [{node_type, visible}, nodedown_reason]),
     {ok, RepairHigh} = application:get_env(gdss, brick_mbox_repair_high_water),
     {ok, High} = application:get_env(gdss, brick_mbox_high_water),
     {ok, Low} = application:get_env(gdss, brick_mbox_low_water),
@@ -227,12 +227,12 @@ check_mboxes(Bricks, S) ->
             [];
         Rs ->
             BrickMap = make_brick_map(),
-            [set_repair_overload(Brick, N, S#state.repair_high_water) ||
-                {above, Brick, true, N} <- Rs],
-            [report_mbox_above_water(Brick, RepairingP, BrickMap, N) ||
-                {above, Brick, RepairingP, N} <- Rs],
-            [report_mbox_below_water(Brick, BrickMap, N) ||
-                {below, Brick, N} <- Rs],
+            _ = [set_repair_overload(Brick, N, S#state.repair_high_water)
+                 || {above, Brick, true, N} <- Rs],
+            _ = [report_mbox_above_water(Brick, RepairingP, BrickMap, N)
+                 || {above, Brick, RepairingP, N} <- Rs],
+            _ = [report_mbox_below_water(Brick, BrickMap, N)
+                 || {below, Brick, N} <- Rs],
             Rs
     end.
 
@@ -394,8 +394,8 @@ set_repair_overload(Brick, N, RepairHigh) ->
                       repair_overload ->
                           ?E_ERROR("~p: Change brick ~p to pre_init status\n",
                                    [ResumeName, Brick]),
-                          brick_server:chain_set_my_repair_state(
-                            Brick, node(), pre_init);
+                          ok = brick_server:chain_set_my_repair_state(
+                                 Brick, node(), pre_init);
                       _ ->
                           ok
                   end,

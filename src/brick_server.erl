@@ -1065,7 +1065,7 @@ checkpoint_bricks_and_wait(Node) when is_atom(Node) ->
     checkpoint_bricks_and_wait(
       [{Br, Node} || Br <- brick_shepherd:list_bricks(Node)]);
 checkpoint_bricks_and_wait(BrickList) when is_list (BrickList) ->
-    checkpoint_bricks(BrickList),
+    _ = checkpoint_bricks(BrickList),
     poll_checkpointing_bricks(BrickList).
 
 %% @spec (brick_name(), node_name(), prop_list())
@@ -2124,13 +2124,15 @@ handle_cast({sync_down_the_chain, Options, From, ReplyTag, Acc}, State) ->
        true                             -> ok
     end,
     if CS#chain_r.downstream == undefined ->
-            From ! {ReplyTag, lists:reverse(NewAcc)};
+            From ! {ReplyTag, lists:reverse(NewAcc)},
+            ok;
        CS#chain_r.downstream /= undefined,
        StopOffTail_p, CS#chain_r.official_tail == true ->
-            From ! {ReplyTag, lists:reverse(NewAcc)};
+            From ! {ReplyTag, lists:reverse(NewAcc)},
+            ok;
        true ->
-            gen_server:cast(CS#chain_r.downstream,
-                        {sync_down_the_chain, Options, From, ReplyTag, NewAcc})
+            ok = gen_server:cast(CS#chain_r.downstream,
+                                 {sync_down_the_chain, Options, From, ReplyTag, NewAcc})
     end,
     {noreply, State};
 handle_cast({ch_sweep_from_other, ChainHeadPid, ChainName, Thisdo_Mods,
@@ -5015,7 +5017,7 @@ sweep_move_or_keep3(LastKey, MoveDict, Thisdo_Mods, S) ->
                                     [{Mods_0, Brick}|Acc]
                             end
                     end, [], MoveDictList_1),
-    lists:map(
+    lists:foreach(
       fun({Mods_0, Brick}) ->
               Mods = if PropDelay == 0 -> Mods_0;
                         true           -> [{log_directive, map_sleep,
@@ -5937,32 +5939,32 @@ bz_debug_check_todos(ToDos, #state{bz_debug_check_hunk_summ = true,
   when is_list(ToDos) ->
     Is = [element(3, X) || X <- ToDos,
                            element(1, X) == insert andalso size(X) == 3],
-    [try
-         put(bz_debug_justincase, I),
-         FH = bz_debug_get_fh(SeqNum),
-         if CheckBlob == false ->
-                 HS = gmt_hlog:read_hunk_summary(FH, SeqNum, Offset, 100,
-                                                 fun(X, _) -> X end),
-                 SeqNum = HS#hunk_summ.seq,
-                 Offset = HS#hunk_summ.off;
-            true ->
-                 true = gmt_hlog:read_hunk_summary(FH, SeqNum, Offset,
-                                                   BlobSize, fun bz_debug_chk/2)
-         end
-     catch E1:E2 ->
-             ImplStatus = get_implementation_status(S),
-             case proplists:get_value(do_sync, ImplStatus)
-                  andalso proplists:get_value(do_logging, ImplStatus) of
-                 true ->
-                     exit({bz_check, E1, E2, get(bz_debug_justincase),
-                           erlang:get_stacktrace()});
-                 _ ->
-                     %% Either do_sync or do_logging = false can cause
-                     %% race problems.
-                     ok
+    _ = [try
+             put(bz_debug_justincase, I),
+             FH = bz_debug_get_fh(SeqNum),
+             if CheckBlob == false ->
+                     HS = gmt_hlog:read_hunk_summary(FH, SeqNum, Offset, 100,
+                                                     fun(X, _) -> X end),
+                     SeqNum = HS#hunk_summ.seq,
+                     Offset = HS#hunk_summ.off;
+                true ->
+                     true = gmt_hlog:read_hunk_summary(FH, SeqNum, Offset,
+                                                       BlobSize, fun bz_debug_chk/2)
              end
-     end || {_Key, _TS, {SeqNum, Offset}, BlobSize} = I <- Is,
-            SeqNum /= 0],
+         catch E1:E2 ->
+                 ImplStatus = get_implementation_status(S),
+                 case proplists:get_value(do_sync, ImplStatus)
+                     andalso proplists:get_value(do_logging, ImplStatus) of
+                     true ->
+                         exit({bz_check, E1, E2, get(bz_debug_justincase),
+                               erlang:get_stacktrace()});
+                     _ ->
+                         %% Either do_sync or do_logging = false can cause
+                         %% race problems.
+                         ok
+                 end
+         end || {_Key, _TS, {SeqNum, Offset}, BlobSize} = I <- Is,
+                SeqNum /= 0],
     ok;
 bz_debug_check_todos(_, _S) ->
     ok.                                         % e.g. {plog_sweep, ...} tuple
@@ -5972,7 +5974,7 @@ bz_debug_get_fh(SeqNum) ->
         {SeqNum, FH} ->
             FH;
         {_Other, OtherFH} ->
-            file:close(OtherFH),
+            ok = file:close(OtherFH),
             {ok, FH} = gmt_hlog:open_log_file("hlog.commonLogServer", SeqNum,
                                               [read,raw,binary]),
             put(bz_debug_get_fh, {SeqNum, FH}),

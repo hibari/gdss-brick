@@ -785,7 +785,7 @@ verify_chain_list(ChainList, ZeroLengthOK) ->
 
 verify_chain_list_2(ChainList, ZeroLengthOK)
   when is_list(ChainList), length(ChainList) > 0 ->
-    lists:map(
+    lists:foreach(
       fun({ChainName, ChainMembers}) when is_atom(ChainName) ->
               SortedChainMembers = lists:sort(ChainMembers),
               if length(ChainMembers) < 1, not ZeroLengthOK ->
@@ -798,7 +798,7 @@ verify_chain_list_2(ChainList, ZeroLengthOK)
                   _        -> exit({error, duplicate_bricks_in_chain})
               end,
               %% Check for valid 2-tuples for brick name.
-              lists:map(
+              lists:foreach(
                 fun({Br, Nd}) when is_atom(Br), is_atom(Nd) ->
                         ok;
                    (X) ->

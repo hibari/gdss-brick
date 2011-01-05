@@ -73,11 +73,11 @@ prep_stop(State) ->
                     brick_shepherd:add_do_not_restart_brick(Br, node()),
                     brick_shepherd:stop_brick(Br)
             end,
-    [catch Fstop(Br) || Br <- FirstBricks],
+    _ = [catch Fstop(Br) || Br <- FirstBricks],
     timer:sleep(2000),
 
     %% Finally, shut down any bootstrap bricks.
-    [catch Fstop(Br) || Br <- BootstrapBricks],
+    _ = [catch Fstop(Br) || Br <- BootstrapBricks],
     State.
 
 config_change(_Changed, _New, _Removed) ->

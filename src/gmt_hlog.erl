@@ -938,7 +938,7 @@ read_hunk_summary(Dir, N, Offset, HunkLenHint, XformFun)
                              [X, Y, N, Offset, HunkLenHint, erlang:get_stacktrace()]),
                     {error, {X, Y}}
             after
-                file:close(FH)
+                ok = file:close(FH)
             end;
         Err ->
             Err
@@ -1012,7 +1012,7 @@ fold2(ShortLong, Dir, Fun, FiltFun, InitialAcc) ->
                       Err = {seq, N, err, Y},
                       {Acc00, [Err|ErrList]}
               after
-                  file:close(FH)
+                  ok = file:close(FH)
               end
       end, {InitialAcc, []}, SeqNums).
 
@@ -1138,7 +1138,7 @@ create_new_log_file(Dir, N)
     catch
         X:Y ->
             %% cleanup
-            file:close(FH),
+            ok = file:close(FH),
             %% exit with a similiar error
             erlang:error({X,Y})
     end.
@@ -1198,7 +1198,7 @@ my_pread(FH, Offset, Len, LenExtra) when Len < 0 ->
 my_pread2(FH, Offset, Len, LenExtra) ->
     case get(pread_hack) of
         {FH, _BinOff, eof} ->
-            my_pread_miss(FH, Offset, Len + LenExtra),
+            _ = my_pread_miss(FH, Offset, Len + LenExtra),
             case get(pread_hack) of % This Offset is probably not the old one.
                 {_, _, eof} ->
                     eof; % Avoid infinite loop: new offset is also at/past eof.
@@ -1228,10 +1228,10 @@ my_pread2(FH, Offset, Len, LenExtra) ->
                     end
             end;
         undefined ->
-            my_pread_miss(FH, Offset, Len + LenExtra),
+            _ = my_pread_miss(FH, Offset, Len + LenExtra),
             my_pread(FH, Offset, Len, 0);
         {OtherFH, _, _} when OtherFH /= FH ->
-            my_pread_miss(FH, Offset, Len + LenExtra),
+            _ = my_pread_miss(FH, Offset, Len + LenExtra),
             my_pread(FH, Offset, Len, 0);
         {_, _, Res} ->
             Res
@@ -1264,14 +1264,13 @@ hunk_header_v1() ->
 %% !@#$! Leave this as last func, Emacs mode indentation gets confused.
 
 create_longterm_dirs(Dir, H1_Size, H2_Size) ->
-    [begin
-         Tmp = longterm_dir(Dir, N1, N2),
-         Path = lists:sublist(Tmp, length(Tmp) - 2),
-         file:make_dir(Path)
-     end || N1 <- lists:seq(1, H1_Size),
-            N2 <- [0]],
-    [file:make_dir(longterm_dir(Dir, N1, N2)) || N1 <- lists:seq(1, H1_Size),
-                                                 N2 <- lists:seq(1, H2_Size)],
+    _ = [begin
+             Tmp = longterm_dir(Dir, N1, N2),
+             Path = lists:sublist(Tmp, length(Tmp) - 2),
+             file:make_dir(Path)
+         end || N1 <- lists:seq(1, H1_Size), N2 <- [0]],
+    _ = [file:make_dir(longterm_dir(Dir, N1, N2))
+         || N1 <- lists:seq(1, H1_Size), N2 <- lists:seq(1, H2_Size)],
     ok.
 
 md5_checksum_ok_p(Su) ->
@@ -1331,24 +1330,24 @@ spawn_sync_asyncly(Froms, S) ->
               %% Warning: [write] => truncate file.
               Path = "././" ++ S#state.dir,
               {ok, FH} = open_log_file(Path, S#state.cur_seqS, [append]),
-              try
-                  {ok, FI} = file:read_file_info(Path),
-                  if FI#file_info.size == 0 ->
-                          ?E_ERROR("fsync ~s, size 0\n", [Path]);
-                     true ->
-                          ok
+              _ = try
+                      {ok, FI} = file:read_file_info(Path),
+                      if FI#file_info.size == 0 ->
+                              ?E_ERROR("fsync ~s, size 0\n", [Path]);
+                         true ->
+                              ok
+                      end,
+                      ?DBG_GENx({spawn_sync_asyncly, S#state.dir, after_open_log_file}),
+                      Res = file:sync(FH),
+                      debug_sleep(S#state.debug_sync_sleep),
+                      ?DBG_GENx({spawn_sync_asyncly, S#state.dir, after_sync}),
+                      ?DBG_GENx({spawn_sync_asyncly, S#state.dir, froms, Froms}),
+                      [gen_server:reply(
+                         From, {Res, S#state.cur_seqS, S#state.cur_offS}) ||
+                          From <- Froms]
+                  after
+                      ok = file:close(FH)
                   end,
-                  ?DBG_GENx({spawn_sync_asyncly, S#state.dir, after_open_log_file}),
-                  Res = file:sync(FH),
-                  debug_sleep(S#state.debug_sync_sleep),
-                  ?DBG_GENx({spawn_sync_asyncly, S#state.dir, after_sync}),
-                  ?DBG_GENx({spawn_sync_asyncly, S#state.dir, froms, Froms}),
-                  [gen_server:reply(
-                     From, {Res, S#state.cur_seqS, S#state.cur_offS}) ||
-                      From <- Froms]
-              after
-                  file:close(FH)
-              end,
               MSec = timer:now_diff(now(), Start) div 1000,
               if MSec > 200 ->
                       ?ELOG_INFO("~s sync was ~p msec for ~p callers\n",
@@ -1422,7 +1421,7 @@ do_sync_longterm_asyncly(From, S) ->
                           _:_ ->
                               gen_server:reply(From, {retrylater, S#state.cur_seqL, S#state.cur_offL})
                       after
-                          file:close(FH)
+                          ok = file:close(FH)
                       end;
                   Err ->
                       gen_server:reply(From, {Err, S#state.cur_seqL, S#state.cur_offL})

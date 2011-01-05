@@ -368,7 +368,7 @@ handle_info({async_writeback_finished, Pid, NewSeqNum, NewOffset},
                        State
                end,
     %% reply to callers
-    [ gen_server:reply(From, ok) || From <- Reqs ],
+    _ = [ gen_server:reply(From, ok) || From <- Reqs ],
     {noreply, NewState#state{async_writeback_reqs = []}};
 handle_info(start_daily_scavenger, State) ->
     timer:sleep(2*1000),
@@ -384,9 +384,9 @@ handle_info(start_daily_scavenger, State) ->
 handle_info({'DOWN', _Ref, _, Pid, Reason},
             #state{async_writeback_pid = Pid, async_writeback_reqs = Reqs} = State) ->
     %% schedule next round
-    schedule_async_writeback(State),
+    _ = schedule_async_writeback(State),
     %% if any, reply to callers with error
-    [ gen_server:reply(From, {error,Reason}) || From <- Reqs ],
+    _ = [ gen_server:reply(From, {error,Reason}) || From <- Reqs ],
     {noreply, State#state{async_writeback_pid = undefined, async_writeback_reqs = []}};
 handle_info({'DOWN', Ref, _, _, _}, #state{reg_dict = Dict} = State) ->
     NewDict = orddict:filter(fun(_K, V) when V /= Ref -> true;
@@ -412,17 +412,17 @@ handle_info(_Info, State) ->
 %% @end
 %%--------------------------------------------------------------------
 terminate(_Reason, #state{hlog_pid=HLogPid,tref=TRef,scavenger_tref=ScavengerTRef}) ->
-    if ScavengerTRef =/= undefined ->
-            timer:cancel(ScavengerTRef);
-       true ->
-            noop
-    end,
-    timer:cancel(TRef),
-    if HLogPid =/= undefined ->
-            gmt_hlog:stop(HLogPid);
-       true ->
-            noop
-    end,
+    _ = if ScavengerTRef =/= undefined ->
+                timer:cancel(ScavengerTRef);
+           true ->
+                noop
+        end,
+    _ = timer:cancel(TRef),
+    _ = if HLogPid =/= undefined ->
+                gmt_hlog:stop(HLogPid);
+           true ->
+                noop
+        end,
     ok.
 
 %%--------------------------------------------------------------------
@@ -519,7 +519,8 @@ do_sync_writeback(S) ->
     %% seconds from now.  We'll cheat by simply recording this
     %% particular writeback that many seconds in the future.
     if Count1 + Bytes2 > 0 ->
-            spawn_future_tasks_after_dirty_buffer_wait(EndSeqNum, EndOffset, S);
+            _ = spawn_future_tasks_after_dirty_buffer_wait(EndSeqNum, EndOffset, S),
+            ok;
        true ->
             ok
     end,
@@ -554,7 +555,7 @@ do_metadata_hunk_writeback(OldSeqNum, OldOffset, StopSeqNum, StopOffset, S_ro)->
                   if size(UBlob) /= BLen ->
                           %% This should never happen.
                           QQQPath = "/tmp/foo.QQQbummer."++integer_to_list(element(3,now())),
-                          file:write_file(QQQPath, term_to_binary([{args, [OldSeqNum, OldOffset, StopSeqNum, StopOffset, S_ro]}, {h, H}, {wb, WB}, {info, process_info(self())}])),
+                          ok = file:write_file(QQQPath, term_to_binary([{args, [OldSeqNum, OldOffset, StopSeqNum, StopOffset, S_ro]}, {h, H}, {wb, WB}, {info, process_info(self())}])),
                           ?ELOG_WARNING("DBG: See ~p", [QQQPath]),
                           ?ELOG_WARNING("DBG: ~p ~p wanted blob size ~p but got ~p",
                                         [H#hunk_summ.seq,H#hunk_summ.off,BLen,size(UBlob)]);
@@ -713,13 +714,13 @@ write_back_to_local_log([] = AllTs, SeqNum, FH_pos, LogFH,
 
 check_hlog_header(FH) ->
     FileHeader = gmt_hlog:file_header_version_1(),
-    file:position(FH, {bof, 0}),
+    {ok, 0} = file:position(FH, {bof, 0}),
     case file:read(FH, erlang:iolist_size(FileHeader)) of
         %% Kosher cases only
         {ok, FileHeader} ->
             ok;
         eof -> % File is 0 bytes or at least smaller than header
-            file:position(FH, {bof, 0}),
+            {ok, 0} = file:position(FH, {bof, 0}),
             ok = file:write(FH, FileHeader),
             created
     end.
@@ -728,8 +729,8 @@ open_log_file_mkdir(Dir, SeqNum, Options) when SeqNum > 0 ->
     case gmt_hlog:open_log_file(Dir, SeqNum, Options) of
         {error, enoent} ->
             io:format("HRM, e ~p ~p, ", [Dir, SeqNum]),
-            file:make_dir(Dir), % FIX later: ICKY assumption!! SeqNum > 0.
-            file:make_dir(Dir ++ "/s"), % FIX later: ICKY assumption!!
+            ok = file:make_dir(Dir), % FIX later: ICKY assumption!! SeqNum > 0.
+            ok = file:make_dir(Dir ++ "/s"), % FIX later: ICKY assumption!!
             ?DBG_TLOGx({open_log_file_mkdir, Dir}),
             open_log_file_mkdir(Dir, SeqNum, Options);
         Res ->
@@ -766,7 +767,8 @@ spawn_future_tasks_after_dirty_buffer_wait(EndSeqNum, EndOffset, S) ->
                           ?DBG_TLOGx({spawn_future_tasks_after_dirty_buffer_wait, advance,1}),
                           %% NOTE: not checking for success or failure
                           %% ... it doesn't matter
-                          _ = gmt_hlog:advance_seqnum(S#state.hlog_pid, 1);
+                          _ = gmt_hlog:advance_seqnum(S#state.hlog_pid, 1),
+                          ok;
                      true ->
                           ok
                   end,
@@ -775,7 +777,8 @@ spawn_future_tasks_after_dirty_buffer_wait(EndSeqNum, EndOffset, S) ->
                   ok = write_flush_file(EndSeqNum, EndOffset, S),
 
                   if EndSeqNum > S#state.last_seqnum ->
-                          clean_old_seqnums(EndSeqNum, S);
+                          _ = clean_old_seqnums(EndSeqNum, S),
+                          ok;
                      true ->
                           ok
                   end,
@@ -788,12 +791,12 @@ clean_old_seqnums(EndSeqNum, S) ->
                     N < EndSeqNum],
     if S#state.short_long_same_dev_p ->
             ?DBG_TLOGx({clean_old_seqnums, same, OldSeqs}),
-            [gmt_hlog:move_seq_to_longterm(S#state.hlog_pid, N) ||
-                N <- OldSeqs];
+            _ = [gmt_hlog:move_seq_to_longterm(S#state.hlog_pid, N) ||
+                    N <- OldSeqs];
        true ->
             ?DBG_TLOGx({clean_old_seqnums, diff, OldSeqs}),
-            [file:delete(gmt_hlog:log_file_path(S#state.hlog_dir, N)) ||
-                N <- OldSeqs],
+            _ = [file:delete(gmt_hlog:log_file_path(S#state.hlog_dir, N)) ||
+                    N <- OldSeqs],
             ?DBG_TLOGx({clean_old_seqnums, del_major_done})
     end.
 
@@ -851,7 +854,7 @@ copy_parts(ToDos, #state{hlog_dir = HLogDir} = _S) ->
                           exit({copy_parts, _X, _Y})
                   after begin
                             erlang:garbage_collect(),
-                            [catch file:close(erase(X)) || X <- [srcfh___,dstfh___]]
+                            _ = [catch file:close(erase(X)) || X <- [srcfh___,dstfh___]]
                         end
                   end
           end, 0, ToDos),
@@ -895,7 +898,7 @@ start_scavenger_commonlog(PropList0) ->
     case [Br || {Br, error} <- BrOpts] of
         [] ->
             BrNds = [{Br, node()} || Br <- RegBricks],
-            [gmt_util:clear_alarm({scavenger, T}) || T <- BrNds],
+            _ = [gmt_util:clear_alarm({scavenger, T}) || T <- BrNds],
             Bigs = [Br || {Br, Os} <- BrOpts,
                           proplists:get_value(bigdata_dir, Os, false) /= false],
             Finfolog("SCAV: start with ~p\n", [Bigs]),
@@ -903,7 +906,7 @@ start_scavenger_commonlog(PropList0) ->
         ErrBricks ->
             ErrNds = [{Br, node()} || Br <- ErrBricks],
             Msg = "Scavenger may not execute until all bricks are running.",
-            [gmt_util:set_alarm({scavenger, T}, Msg) || T <- ErrNds],
+            _ = [gmt_util:set_alarm({scavenger, T}, Msg) || T <- ErrNds],
             ?ELOG_ERROR("Bricks ~p are not available, scavenger aborted",
                         [ErrNds]),
             {error, ErrNds}
@@ -985,7 +988,7 @@ resume_scavenger_commonlog(WorkDir, Phase10Func) ->
             Finfolog("SCAV: resuming at sequence ~p\n",
                      [if TmpList4 == [] -> []; true -> hd(TmpList4) end]),
             Fdoit = fun() ->
-                            scav_exit_if_someone_else(Finfolog),
+                            _ = scav_exit_if_someone_else(Finfolog),
                             Phase10Func(SA, Finfolog, TempDir, TmpList4,
                                         Bytes1, Del1, BytesBefore)
                     end,
@@ -1086,13 +1089,13 @@ scavenger_commonlog(SA) ->
                       end,
 
     %% Step -1: Make certain we're the only scavenger running.
-    if SA#scav.exclusive_p -> scav_exit_if_someone_else(Finfolog);
+    if SA#scav.exclusive_p -> _ = scav_exit_if_someone_else(Finfolog), ok;
        true                -> ok
     end,
 
     %% Step 0: Set up.
     TempDir = SA#scav.work_dir,
-    os:cmd("/bin/rm -rf " ++ TempDir),
+    _ = os:cmd("/bin/rm -rf " ++ TempDir),
     {ok, TempDir} = {file:make_dir(TempDir), TempDir},
     scav_check_shutdown(),
 
@@ -1135,8 +1138,8 @@ scavenger_commonlog(SA) ->
                        end, List),
                      dict:new()
              end,
-    [ ok = brick_ets:scavenger_get_keys(Br, Fs, FirstKey, F_k2d, F_lump)
-      || Br <- SA#scav.bricks ],
+    _ = [ ok = brick_ets:scavenger_get_keys(Br, Fs, FirstKey, F_k2d, F_lump)
+          || Br <- SA#scav.bricks ],
     Finfolog("SCAV: ~p finished step 1\n", [SA#scav.name]),
     scav_check_shutdown(),
 
@@ -1308,7 +1311,7 @@ scavenger_commonlog_bottom10(SA0, Finfolog, TempDir, TmpList4, Bytes1,
     %% doing destructive things like deleting files, so we need to
     %% delete those files here.
     DeadPaths = proplists:get_value(dead_paths, SA#scav.options),
-    [brick_ets:delete_seq(SA, SeqNum) || {SeqNum, _Path} <- DeadPaths],
+    _ = [brick_ets:delete_seq(SA, SeqNum) || {SeqNum, _Path} <- DeadPaths],
 
     %% Step 10: Copy hunks to a new long-term sequence.  Advance the
     %% long-term counter to avoid chance of writing to the same
@@ -1340,7 +1343,7 @@ scavenger_commonlog_bottom10(SA0, Finfolog, TempDir, TmpList4, Bytes1,
              [OptsNoDead,
               Del1, Bytes1, length(TmpList4),
               Hunks, Bytes, Errs, BytesBefore - Bytes]),
-    if SA#scav.destructive == true -> os:cmd("/bin/rm -rf " ++ TempDir);
+    if SA#scav.destructive == true -> _ = os:cmd("/bin/rm -rf " ++ TempDir), ok;
        true                        -> ok
     end,
     ?DBG_TLOGx({scavenger_start, SA#scav.name, done}),
@@ -1444,9 +1447,9 @@ scavenge_one_seq_file_fun(TempDir, SA, Fread_blob, Finfolog) ->
                      ({live_bytes, _}, Acc) ->
                           Acc
                   end, {0, 0, 0}, DInLog),
-            file:close(FH),
-            disk_log:close(DInLog),
-            disk_log:close(DOutLog),
+            ok = file:close(FH),
+            ok = disk_log:close(DInLog),
+            ok = disk_log:close(DOutLog),
             if Errs == 0, SA#scav.destructive == true ->
                     Finfolog("SCAV: Updating locations for sequence ~p (~p)\n",
                              [SeqNum, Bytes == Bytes__]),
@@ -1476,7 +1479,7 @@ scavenge_one_seq_file_fun(TempDir, SA, Fread_blob, Finfolog) ->
                true ->
                     ok
             end,
-            disk_log:close(DOutLog),
+            ok = disk_log:close(DOutLog),
 
             {tl(SeqNums), Hs + Hunks, Bs + Bytes, Es + Errs}
     end.
@@ -1511,12 +1514,12 @@ do_sequence_file_is_bad(SeqNum, Offset, S) ->
             timer:sleep(200),
             exit({current_sequence_is_bad, SeqNum});
        true ->
-            [begin
-                 brick_ets:append_external_bad_sequence_file(Brick, SeqNum),
-                 spawn(fun() -> brick_server:common_log_sequence_file_is_bad(
-                                  Brick, node(), SeqNum)
-                       end)
-             end || Brick <- LocalBricks],
+            _ = [begin
+                     brick_ets:append_external_bad_sequence_file(Brick, SeqNum),
+                     spawn(fun() -> brick_server:common_log_sequence_file_is_bad(
+                                      Brick, node(), SeqNum)
+                           end)
+                 end || Brick <- LocalBricks],
             S
     end.
 

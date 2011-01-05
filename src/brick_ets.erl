@@ -478,10 +478,10 @@ handle_info({sync_done, Pid, LastLogSerial}, State)
     ?DBG_TLOGx({sync_done, State#state.name, logging_op_q, State#state.logging_op_q}),
     {LQI_List, State2} =
         pull_items_out_of_logging_queue(LastLogSerial, State),
-    [ok = map_mods_into_ets(DoOpList, State2) ||
-        #log_q{thisdo_mods = DoOpList} <- LQI_List],
-    [ok = clear_dirty_tab(DoOpList, State2) ||
-        #log_q{thisdo_mods = DoOpList} <- LQI_List],
+    _ = [ok = map_mods_into_ets(DoOpList, State2) ||
+            #log_q{thisdo_mods = DoOpList} <- LQI_List],
+    _ = [ok = clear_dirty_tab(DoOpList, State2) ||
+            #log_q{thisdo_mods = DoOpList} <- LQI_List],
     ToDos = [{chain_send_downstream, LQI#log_q.logging_serial,
               LQI#log_q.doflags, LQI#log_q.from, LQI#log_q.reply,
               LQI#log_q.thisdo_mods}
@@ -578,11 +578,11 @@ handle_info(do_init_second_half, State) ->
     %%       But if we're in standalone mode, then there's no one to repair
     %%       the missing keys, which could make us regret deleting keys
     %%       as many keys as we are doing here.
-    [begin {Purged, _S} = purge_recs_by_seqnum(SeqNum, true, State),
-           ?E_INFO("~s: purged ~p keys from sequence ~p\n",
-                   [State#state.name, Purged, SeqNum]),
-           Purged
-     end || SeqNum <- read_external_bad_sequence_file(State#state.name)],
+    _ = [begin {Purged, _S} = purge_recs_by_seqnum(SeqNum, true, State),
+               ?E_INFO("~s: purged ~p keys from sequence ~p\n",
+                       [State#state.name, Purged, SeqNum]),
+               Purged
+         end || SeqNum <- read_external_bad_sequence_file(State#state.name)],
 
     %% For recently bigdata_dir files, sync them all in a big safety blatt.
     %% ... Except that it also seems to have the potential to slam the
@@ -1858,13 +1858,13 @@ checkpoint_start(S_ro, DoneLogSeq, ParentPid, Options) ->
     DelAll = term_to_binary([{delete_all_table_items}]),
     {_, Bin1} = (S_ro#state.wal_mod):create_hunk(?LOGTYPE_METADATA,
                                                  [DelAll], []),
-    file:write(CheckFH, Bin1),
+    ok = file:write(CheckFH, Bin1),
 
     %% Dump data from the private metadata table.
     MDs = term_to_binary([{md_insert, T} ||
                              T <- ets:tab2list(S_ro#state.mdtab)]),
     {_, Bin2} = (S_ro#state.wal_mod):create_hunk(?LOGTYPE_METADATA, [MDs], []),
-    file:write(CheckFH, Bin2),
+    ok = file:write(CheckFH, Bin2),
 
     %% Dump all the "normal" data.
     ThrottleSvr = case proplists:get_value(throttle_bytes, Options) of
@@ -1923,20 +1923,22 @@ checkpoint_start(S_ro, DoneLogSeq, ParentPid, Options) ->
                           timer:sleep(5*1000),
                           ?DBG_TLOGx({checkpoint, S_ro#state.name, async_delete,
                                       OldSeqs}),
-                          [_ = file:delete((S_ro#state.wal_mod):log_file_path(
-                                             Dir, X, Suffix)) ||
-                              X <- OldSeqs, Suffix <- ["HLOG"]],
+                          _ = [_ = file:delete((S_ro#state.wal_mod):log_file_path(
+                                                 Dir, X, Suffix))
+                               || X <- OldSeqs, Suffix <- ["HLOG"]],
                           unlink(ParentPid),
                           exit(normal)
-                  end);
+                  end),
+            ok;
        true ->
             Finfolog("checkpoint: ~p: moving ~p log "
                      "files to long-term archive\n",
                      [S_ro#state.name, length(OldSeqs)]),
-            [(S_ro#state.wal_mod):move_seq_to_longterm(S_ro#state.log, X) ||
-                X <- OldSeqs],
+            _ = [(S_ro#state.wal_mod):move_seq_to_longterm(S_ro#state.log, X)
+                 || X <- OldSeqs],
             _ = file:delete((S_ro#state.wal_mod):log_file_path(
-                              Dir,S_ro#state.check_lastseqnum))
+                              Dir,S_ro#state.check_lastseqnum)),
+            ok
     end,
 
     %% All "bad-sequence" processing is done at brick startup.  (Bad
@@ -1949,7 +1951,7 @@ checkpoint_start(S_ro, DoneLogSeq, ParentPid, Options) ->
     %% notification.  If that race happens, it's possible to forget
     %% about that sequence file, but someone we'll re-discover the
     %% error ourselves at some future time.
-    delete_external_bad_sequence_file(S_ro#state.name),
+    ok = delete_external_bad_sequence_file(S_ro#state.name),
 
     if is_pid(ThrottleSvr) ->
             brick_ticket:stop(ThrottleSvr);
@@ -1973,14 +1975,14 @@ dump_items(Tab, WalMod, Log) ->
 dump_items2('$end_of_table', _Tab, WalMod, LogFH, _AccNum, Acc) ->
     {_, Bin} = WalMod:create_hunk(?LOGTYPE_METADATA,
                                   [term_to_binary(lists:reverse(Acc))], []),
-    file:write(LogFH, Bin),
+    ok = file:write(LogFH, Bin),
     ok;
 dump_items2(Key, Tab, WalMod, LogFH, AccNum, Acc)
   when AccNum > 200 ->
     {Bytes, Bin} = WalMod:create_hunk(?LOGTYPE_METADATA,
                                       [term_to_binary(lists:reverse(Acc))], []),
     ok = get_bw_ticket(Bytes),
-    file:write(LogFH, Bin),
+    ok = file:write(LogFH, Bin),
     dump_items2(Key, Tab, WalMod, LogFH, 0, []);
 dump_items2(Key, Tab, WalMod, LogFH, AccNum, Acc) ->
     [ST] = ets:lookup(Tab, Key),
@@ -2039,7 +2041,8 @@ sync_pid_loop(SPA) ->
                 {syncpid_stats, SPA#syncpid_arg.name, DiffMS, ms, length(L)},
             ?DBG_GEN("DBG: SPA ~p sync_done at ~p,~p, my last serial = ~p\n",
                      [SPA#syncpid_arg.name, _X, _Y, LastSerial]),
-            SPA#syncpid_arg.parent_pid ! {sync_done, self(), LastSerial};
+            SPA#syncpid_arg.parent_pid ! {sync_done, self(), LastSerial},
+            ok;
        true ->
             ok
     end,
@@ -2949,18 +2952,20 @@ accumulate_maybe(Key, ST, Acc) ->
 squidflash_doit(KsRaws, DoOp, From, ParentPid, FakeS) ->
     Me = self(),
     KRV_Refs = [{X, make_ref()} || X <- KsRaws],
-    [catch gmt_parallel_limit:enqueue(
-       brick_primer_limit,
-       fun() ->
-               catch squidflash_prime1(Key, RawVal, ValLen, Me, FakeS),
-               Me ! Ref,
-               exit(normal)
-       end) || {{Key, RawVal, ValLen}, Ref} <- KRV_Refs],
-    [receive
-         Ref -> ok
-     after 10000 ->                             % should be impossible, but...
-             ok
-     end || {_, Ref} <- KRV_Refs],
+    _ = [catch gmt_parallel_limit:enqueue(
+                 brick_primer_limit,
+                 fun() ->
+                         catch squidflash_prime1(Key, RawVal, ValLen, Me, FakeS),
+                         Me ! Ref,
+                         exit(normal)
+                 end)
+         || {{Key, RawVal, ValLen}, Ref} <- KRV_Refs],
+    _ = [receive
+             Ref -> ok
+         after 10000 ->  % should be impossible, but...
+                 ok
+         end
+         || {_, Ref} <- KRV_Refs],
     %% TODO: This is also an ugly kludge ... hide it somewhere at
     %% least?  The alternative is to have a handle_call() ->
     %% handle_cast() conversion doodad ... this is lazier.
@@ -3219,9 +3224,9 @@ scavenge_one_seq_file_fun(TempDir, SA, Fread_blob, Finfolog) ->
                                  ({live_bytes, _}, Acc) ->
                                       Acc
                               end, {0, 0, 0}, DInLog),
-            file:close(FH),
-            disk_log:close(DInLog),
-            disk_log:close(DOutLog),
+            ok = file:close(FH),
+            ok = disk_log:close(DInLog),
+            ok = disk_log:close(DOutLog),
             ?E_INFO("SCAV: ~p middle of step 10\n", [SA#scav.name]),
             if Errs == 0, SA#scav.destructive == true ->
                     {ok, DOutLog} = disk_log:open([{name, DOutPath},
@@ -3244,7 +3249,7 @@ scavenge_one_seq_file_fun(TempDir, SA, Fread_blob, Finfolog) ->
                true ->
                     ok
             end,
-            disk_log:close(DOutLog),
+            ok = disk_log:close(DOutLog),
             {Hs + Hunks, Bs + Bytes, Es + Errs}
     end.
 
@@ -3307,16 +3312,16 @@ file_output_fun(Log) ->
 
 sort_test0() ->
     {ok, TmpLog} = disk_log:open([{name, foo}, {file, "/tmp/footest"}]),
-    [disk_log:log(TmpLog, {xo, X, Y}) || X <- lists:seq(1, 50),
-                                         Y <- lists:seq(1,100)],
-    disk_log:close(TmpLog),
+    _ = [disk_log:log(TmpLog, {xo, X, Y})
+         || X <- lists:seq(1, 50), Y <- lists:seq(1,100)],
+    ok = disk_log:close(TmpLog),
     {ok, InLog} = disk_log:open([{name, in}, {file, "/tmp/footest"}, {mode, read_only}]),
     {ok, OutLog} = disk_log:open([{name, out}, {file, "/tmp/footest.out"}]),
     X = file_sorter:sort(file_input_fun(InLog, start), file_output_fun(OutLog),
                          [{format, term},
                           {order, fun({_,_,A}, {_,_,B}) -> A < B end}]),
-    disk_log:close(InLog),
-    disk_log:close(OutLog),
+    ok = disk_log:close(InLog),
+    ok = disk_log:close(OutLog),
     X.
 
 %%
@@ -3777,5 +3782,5 @@ X = WalMod:fold(
                       blah
               end
       end, unused),
-    file:close(OutFH),
+    ok = file:close(OutFH),
     X.
