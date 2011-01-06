@@ -60,7 +60,7 @@ init([]) ->
     %% Child_spec = [Name, {M, F, A},
     %%               Restart, Shutdown_time, Type, Modules_used]
 
-    {ok, MaxMB} = application:get_env(gdss, brick_max_log_size_mb),
+    {ok, MaxMB} = application:get_env(gdss_brick, brick_max_log_size_mb),
     CommonLogArgs = [[{common_log_name, ?GMT_HLOG_COMMON_LOG_NAME},
                       {file_len_limit, MaxMB * 1024*1024}]],
     CommonLog =
@@ -75,11 +75,11 @@ init([]) ->
     BrickMboxMon =
         {brick_mboxmon, {brick_mboxmon, start_link, []},
          permanent, 2000, worker, [brick_mboxmon]},
-    {ok, Rate} = application:get_env(gdss, brick_check_checkpoint_throttle_bytes),
+    {ok, Rate} = application:get_env(gdss_brick, brick_check_checkpoint_throttle_bytes),
     BrickCPThrottle =
         {brick_cp_throttle, {brick_ticket, start_link, [cp_throttle, Rate]},
          permanent, 2000, worker, [brick_ticket]},
-    {ok, PrimerRate} = application:get_env(gdss, brick_max_primers),
+    {ok, PrimerRate} = application:get_env(gdss_brick, brick_max_primers),
 
     BrickPrimerThrottle =
         {brick_primer_limit, {gmt_parallel_limit, start_link,

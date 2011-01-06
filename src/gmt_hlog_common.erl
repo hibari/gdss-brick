@@ -213,7 +213,7 @@ init(PropList) ->
                         true ->
                             undefined
                     end,
-                {ok, DirtySec} = application:get_env(gdss, brick_dirty_buffer_wait),
+                {ok, DirtySec} = application:get_env(gdss_brick, brick_dirty_buffer_wait),
                 SameDevP = short_long_same_dev_p(LogDir),
 
                 {ok, #state{name = CName, hlog_pid = Log, hlog_name = CName,
@@ -242,7 +242,7 @@ prop_or_application_env_bool(ConfName, PropName, PropList, Default) ->
 prop_or_application_env(ConfName, PropName, PropList, Default) ->
     case proplists:get_value(PropName, PropList, not_in_list) of
         not_in_list ->
-            case application:get_env(gdss, ConfName) of
+            case application:get_env(gdss_brick, ConfName) of
                 undefined ->
                     Default;
                 {ok, Res} ->
@@ -373,8 +373,8 @@ handle_info({async_writeback_finished, Pid, NewSeqNum, NewOffset},
 handle_info(start_daily_scavenger, State) ->
     timer:sleep(2*1000),
     {ok, ScavengerTRef} = schedule_next_daily_scavenger(),
-    {ok, Percent} = application:get_env(gdss, brick_skip_live_percentage_greater_than),
-    {ok, WorkDir} = application:get_env(gdss, brick_scavenger_temp_dir),
+    {ok, Percent} = application:get_env(gdss_brick, brick_skip_live_percentage_greater_than),
+    {ok, WorkDir} = application:get_env(gdss_brick, brick_scavenger_temp_dir),
     PropList = [destructive,
                 {skip_live_percentage_greater_than, Percent},
                 {work_dir, WorkDir}],
@@ -762,7 +762,7 @@ spawn_future_tasks_after_dirty_buffer_wait(EndSeqNum, EndOffset, S) ->
     %% Advancing the common log's sequence number isn't really a
     %% future task, but doing it asyncly is a good idea.
     spawn(fun() ->
-                  {ok, MaxMB} = application:get_env(gdss, brick_max_log_size_mb),
+                  {ok, MaxMB} = application:get_env(gdss_brick, brick_max_log_size_mb),
                   if EndOffset > MaxMB * 1024 * 1024 div 2 ->
                           ?DBG_TLOGx({spawn_future_tasks_after_dirty_buffer_wait, advance,1}),
                           %% NOTE: not checking for success or failure
@@ -937,7 +937,7 @@ do_start_scavenger_commonlog2(Bricks, PropList) ->
                         T when is_integer(T), T >= 0 ->
                             T;
                         _ ->
-                            {ok, T} = application:get_env(gdss, brick_scavenger_throttle_bytes),
+                            {ok, T} = application:get_env(gdss_brick, brick_scavenger_throttle_bytes),
                             T
                     end,
     SorterSize = proplists:get_value(sorter_size, PropList, 16*1024*1024),
@@ -1405,7 +1405,7 @@ update_locations_on_brick(Brick, NewLocs) ->
     end.
 
 scavenge_one_seq_file_fun(TempDir, SA, Fread_blob, Finfolog) ->
-    {ok, SleepTimeSec} = application:get_env(gdss, brick_dirty_buffer_wait),
+    {ok, SleepTimeSec} = application:get_env(gdss_brick, brick_dirty_buffer_wait),
     fun({SeqNum, Bytes}, {SeqNums, Hs, Bs, Es}) ->
             scav_check_shutdown(),
 
@@ -1486,7 +1486,7 @@ scavenge_one_seq_file_fun(TempDir, SA, Fread_blob, Finfolog) ->
 
 schedule_next_daily_scavenger() ->
     NowSecs = calendar:time_to_seconds(time()),
-    {ok, StartStr} = application:get_env(gdss, brick_scavenger_start_time),
+    {ok, StartStr} = application:get_env(gdss_brick, brick_scavenger_start_time),
     StartSecs = calendar:time_to_seconds(parse_hh_mm(StartStr)),
     WaitSecs = if NowSecs < StartSecs ->
                        (StartSecs - NowSecs);
@@ -1510,7 +1510,7 @@ do_sequence_file_is_bad(SeqNum, Offset, S) ->
     if SeqNum == CurSeqNum ->
             ?ELOG_WARNING("Fatal error: common log: current sequence file is bad: ~p",
                           [SeqNum]),
-            spawn(fun() -> application:stop(gdss) end),
+            spawn(fun() -> application:stop(gdss_brick) end),
             timer:sleep(200),
             exit({current_sequence_is_bad, SeqNum});
        true ->

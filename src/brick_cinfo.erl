@@ -42,7 +42,7 @@ cluster_info_generator_funs() ->
     ].
 
 application_status(C) ->
-    RunP = lists:keymember(gdss, 1, application:which_applications()),
+    RunP = lists:keymember(gdss_brick, 1, application:which_applications()),
     cluster_info:format(C, " GDSS application running: ~p\n", [RunP]).
 
 local_brick_status(C) ->
@@ -55,9 +55,7 @@ ntp_peers(C) ->
     cluster_info:send(C, os:cmd("ntpq -p")).
 
 package_version(C) ->
-    cluster_info:send(C, os:cmd("sh -c \"egrep 'echo.*HOME' "
-                                "/etc/init.d/tcl /etc/init.d/ert "
-                                "/etc/init.d/gdss\"")).
+    cluster_info:send(C, os:cmd("unknown")).
 
 partition_detector(C) ->
     Mod = partition_detector_server,

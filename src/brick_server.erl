@@ -1428,7 +1428,7 @@ init([ServerName, Options]) ->
     BadPid = spawn(fun() -> ok end),            % Will die very shortly
     PreprocList =
         try
-            case application:get_env(gdss, brick_preprocess_method) of
+            case application:get_env(gdss_brick, brick_preprocess_method) of
                 {ok, "none"} ->
                     [];
                 {ok, "ssf_only"} ->
@@ -1450,8 +1450,8 @@ init([ServerName, Options]) ->
     ThrottleTab = ets:new(throttle_tab_name(ServerName),
                           [public, named_table, ordered_set]),
 
-    {ok, BZsumm} = application:get_env(gdss, debug_check_hunk_summ),
-    {ok, BZblob} = application:get_env(gdss, debug_check_hunk_blob),
+    {ok, BZsumm} = application:get_env(gdss_brick, debug_check_hunk_summ),
+    {ok, BZblob} = application:get_env(gdss_brick, debug_check_hunk_blob),
     if BZsumm orelse BZblob ->
             ?E_WARNING("NOTE: debug_check_hunk_summ = ~p, debug_check_hunk_blob = ~p\n", [BZsumm, BZblob]);
        true ->
@@ -5749,7 +5749,7 @@ prop_or_application_env_i(ConfName, PropName, PropList, Default) ->
 prop_or_application_env(ConfName, PropName, PropList, Default) ->
     case proplists:get_value(PropName, PropList, not_in_list) of
         not_in_list ->
-            case application:get_env(gdss, ConfName) of
+            case application:get_env(gdss_brick, ConfName) of
                 undefined ->
                     Default;
                 {ok, Res} ->
@@ -5885,7 +5885,7 @@ replace_file_sync(PermPath, Suffix, WriteFun) ->
     ok = file:rename(TmpPath, PermPath).
 
 get_do_op_too_old_timeout(S) ->
-    {ok, MSec} = application:get_env(gdss, brick_do_op_too_old_timeout),
+    {ok, MSec} = application:get_env(gdss_brick, brick_do_op_too_old_timeout),
     S#state{do_op_too_old_usec = MSec * 1000}.
 
 %% @doc Force all changes to #chain_r.my_repair_state to also tell the pingee.
@@ -5990,7 +5990,7 @@ bz_debug_chk(Su, FH) ->
 
 
 foo_timeout() ->
-    {ok, MilliSec} = application:get_env(gdss, brick_server_default_timeout),
+    {ok, MilliSec} = application:get_env(gdss_brick, brick_server_default_timeout),
     MilliSec.
 
 

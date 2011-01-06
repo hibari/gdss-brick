@@ -223,7 +223,7 @@ is_shepherd_pid_alive({ShepTime, Pid}) ->
 %% Description: Initiates the server
 %%--------------------------------------------------------------------
 init([]) ->
-    {ok, DefDataDir} = application:get_env(gdss, brick_default_data_dir),
+    {ok, DefDataDir} = application:get_env(gdss_brick, brick_default_data_dir),
 
     Os = [{default_data_dir, DefDataDir}],
     {ok, #state{do_not_restart_list = [],

@@ -232,7 +232,7 @@ sync_stats(Server, Seconds) when seconds >= 0 ->
     gen_server:call(Server, {sync_stats, Seconds}).
 
 brick_name2data_dir(ServerName) ->
-    {ok, FileDir} = application:get_env(gdss, brick_default_data_dir),
+    {ok, FileDir} = application:get_env(gdss_brick, brick_default_data_dir),
     filename:join([FileDir, "hlog." ++ atom_to_list(ServerName)]).
 
 %%%----------------------------------------------------------------------
@@ -265,7 +265,7 @@ init([ServerName, Options]) ->
     MaxLogSize =
         case proplists:get_value(max_log_size, Options) of
             undefined ->
-                {ok, M} = application:get_env(gdss, brick_max_log_size_mb),
+                {ok, M} = application:get_env(gdss_brick, brick_max_log_size_mb),
                 M * 1024 * 1024;
             M ->
                 M * 1024 * 1024
@@ -294,7 +294,7 @@ init([ServerName, Options]) ->
 
     DefaultExpFun = fun delete_keys_immediately/2,
     DoExpFun =
-        case application:get_env(gdss, brick_expiration_processor) of
+        case application:get_env(gdss_brick, brick_expiration_processor) of
             {ok, "["++_ = ExpConfig} ->
                 case brick_server:get_tabprop_via_str(ServerName, ExpConfig) of
                     undefined -> DefaultExpFun;
@@ -2019,7 +2019,7 @@ read_checkpoint_num(Dir) ->
 sync_pid_start(SPA) ->
     process_flag(priority, high),
     link(SPA#syncpid_arg.wal_pid),      % share fate
-    {ok, Interval} = application:get_env(gdss, brick_sync_interval_msec),
+    {ok, Interval} = application:get_env(gdss_brick, brick_sync_interval_msec),
     brick_itimer:send_interval(Interval, force_sync),
     sync_pid_loop(SPA).
 
@@ -2101,7 +2101,7 @@ do_check_checkpoint(S)
     MaxMB =
         case re:run(atom_to_list(S#state.name), "bootstrap_") of
             nomatch ->
-                {ok, MB} = application:get_env(gdss, brick_check_checkpoint_max_mb),
+                {ok, MB} = application:get_env(gdss_brick, brick_check_checkpoint_max_mb),
                 MB;
             {match, _} ->
                 %% Use a very small value for bootstrap bricks: they
@@ -3126,9 +3126,9 @@ scavenger_get_keys(Name, Fs, {ok, {Rs, true}}, Acc, F_k2d, F_lump, Iters) ->
                        prepend_rs(Name, Rs, Acc), F_k2d, F_lump, Iters + 1).
 
 scavenger_get_many(Name, Key, Flags) ->
-    {ok, Retry} = application:get_env(gdss, scavenger_get_many_retry),
-    {ok, Max} = application:get_env(gdss, scavenger_get_many_max),
-    {ok, TimeOut} = application:get_env(gdss, scavenger_get_many_timeout),
+    {ok, Retry} = application:get_env(gdss_brick, scavenger_get_many_retry),
+    {ok, Max} = application:get_env(gdss_brick, scavenger_get_many_max),
+    {ok, TimeOut} = application:get_env(gdss_brick, scavenger_get_many_timeout),
     scavenger_get_many_retry(Name, Key, Flags, Max, TimeOut, Retry).
 
 

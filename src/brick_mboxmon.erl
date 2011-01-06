@@ -95,9 +95,9 @@ is_pid_repairing(Pid) when is_pid(Pid) ->
 init([]) ->
     process_flag(trap_exit, true),
     ok = net_kernel:monitor_nodes(true, [{node_type, visible}, nodedown_reason]),
-    {ok, RepairHigh} = application:get_env(gdss, brick_mbox_repair_high_water),
-    {ok, High} = application:get_env(gdss, brick_mbox_high_water),
-    {ok, Low} = application:get_env(gdss, brick_mbox_low_water),
+    {ok, RepairHigh} = application:get_env(gdss_brick, brick_mbox_repair_high_water),
+    {ok, High} = application:get_env(gdss_brick, brick_mbox_high_water),
+    {ok, Low} = application:get_env(gdss_brick, brick_mbox_low_water),
     {ok, #state{repair_high_water = RepairHigh,
                 high_water = High,
                 low_water = Low,
@@ -363,7 +363,7 @@ get_mbox_size(Brick) ->
 
 set_repair_overload(Brick, N, RepairHigh) ->
     ?E_INFO("~s: Brick ~p mailbox at ~p > ~p\n", [?MODULE, Brick, N, RepairHigh]),
-    {ok, ResumeSecs} = application:get_env(gdss, brick_mbox_repair_overload_resume_interval),
+    {ok, ResumeSecs} = application:get_env(gdss_brick, brick_mbox_repair_overload_resume_interval),
     %% The overloaded brick is running on this node, so we're able to
     %% call brick_server:set_repair_overload_key().
     brick_server:set_repair_overload_key(Brick),
