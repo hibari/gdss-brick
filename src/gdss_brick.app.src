@@ -41,7 +41,7 @@
          , {brick_check_checkpoint_throttle_bytes, 1000000}
          , {brick_default_data_dir, "."}
          , {brick_dirty_buffer_wait, 60}
-         , {brick_do_op_too_old_timeout, 1500}
+         , {brick_do_op_too_old_timeout, 3000}
          , {brick_expiration_processor, "[]."}
          , {brick_max_log_size_mb, 100}
          , {brick_max_primers, 200}
@@ -65,4 +65,139 @@
          , {scavenger_get_many_retry, 5}
          , {scavenger_get_many_timeout, 5000}
         ]}
+  %%
+  %% brick_check_checkpoint_max_mb
+  %%   The number of MBs written since the last checkpoint. This is
+  %%   the threshold at which the new checkpoint operation will start.
+  %%
+  %%   The value should be larger than a single checkpoint dump, which
+  %%   is directly related to the number of keys in the table and the
+  %%   length of each key (to avoid checkpointing every 30 seconds)
+  %%   and smaller than the maximum amount of time to wait for a brick
+  %%   to start, given that the hardware's disks are capable of N
+  %%   MBytes per second and the Hibari can only read some number of
+  %%   MBytes per second.
+  %%
+  %% brick_check_checkpoint_throttle_bytes
+  %%   It is possible to overwhelm disks with too much I/O checkpoint
+  %%   operations that will interfere with regular operations. This is
+  %%   the number of bytes per second that multiple software bricks
+  %%   executing checkpoints simultaneously will restrict themselves
+  %%   to.
+  %%
+  %% brick_default_data_dir
+  %%   TODO
+  %%
+  %% brick_dirty_buffer_wait
+  %%   The maximum time an OS virtual memory dirty memory page will
+  %%   remain dirty (in seconds).
+  %%
+  %%   Changes to this attribute
+  %%   or to
+  %%      /proc/sys/vm/dirty_writeback_centisecs
+  %%   or to
+  %%      /proc/sys/vm/dirty_expire_centisecs
+  %%   or to the XFS-specific VM settings must be coordinated.
+  %%
+  %%   The default is 60 seconds which is two times the defaults for
+  %%   RedHat EL 4.x and 5.x kernels.
+  %%
+  %% brick_do_op_too_old_timeout
+  %%   The timeout in milliseconds for a brick to consider a client's
+  %%   request "too old". Requests that are too old will be silently
+  %%   ignored.
+  %%
+  %% brick_expiration_processor
+  %%   Specifies the brick key expiration method. If an attribute is
+  %%   not present, the default expiration method is the table
+  %%   properties list only.
+  %%
+  %% brick_max_log_size_mb
+  %%   In MB, the maximum size of any individual file in the
+  %%   transaction write-ahead log.
+  %%
+  %% brick_max_primers
+  %%   TODO
+  %%
+  %% brick_mbox_high_water
+  %%   High water mark for the number of messages queued for a brick's
+  %%   processing. To disable congestion control set this number to
+  %%   zero (0).
+  %%
+  %% brick_mbox_low_water
+  %%   Low water mark for the number of messages queued for a brick's
+  %%   processing. To disable congestion control set this number to
+  %%   zero (0).
+  %%
+  %% brick_mbox_repair_high_water
+  %%   High water mark for the number of messages queued for a brick's
+  %%   processing while under repair. Repair will be halted if this
+  %%   high water mark is reached. To disable congestion control set
+  %%   this number to zero (0).
+  %%
+  %% brick_mbox_repair_overload_resume_interval
+  %%   After overload condition, the number (in seconds) to wait
+  %%   before attempting to resume a brick repair.
+  %%
+  %% brick_preprocess_method
+  %%   Specifies the brick key preprocessing method. If this attribute
+  %%   is not present all bricks use the default table properties list
+  %%   only.  If none, all bricks use no preprocessors. If ssf_only,
+  %%   all bricks use SSF preprocessor only
+  %%
+  %% brick_repair_max_bytes
+  %%   The maximum number of value blob bytes per repair round.
+  %%
+  %% brick_repair_max_primers
+  %%   Maximum number of parallel repair primer processes.
+  %%
+  %% brick_scavenger_start_time
+  %%   The scavenger daily start time in hh:mm where hh is in hours
+  %%   greater than, or equal to zero and less than 23.
+  %%
+  %% brick_scavenger_suppress
+  %%   TODO
+  %%
+  %% brick_scavenger_temp_dir
+  %%   The temporary directory used by the scavenger for data
+  %%   sorting. It is used by scavenger for temporary swapping.  The
+  %%   work directory will be unconditionally removed by "rm -rf" at
+  %%   the start of the scavenger and then created.  Any parent
+  %%   directories are not automatically created and therefore must
+  %%   exist.  Up to tens of gigabytes of scratch space may be
+  %%   required.
+  %%
+  %% brick_scavenger_throttle_bytes
+  %%   Scavenger disk bandwidth throttle in bytes per seconds.
+  %%
+  %% brick_server_default_timeout
+  %%   TODO
+  %%
+  %% brick_skip_live_percentage_greater_than
+  %%   For the daily scavenger run, specify threshold for which data
+  %%   files with "live" data greater than this percentage will be
+  %%   ignored. A value of 0 will skip all files, 100 will skip no
+  %%   files.
+  %%
+  %% brick_sync_interval_msec
+  %%   A loose upper bound on the interval between brick fsync
+  %%   requests for its main transaction log.
+  %%
+  %%   WARNING: Do not set this value to be too small.
+  %%
+  %% debug_check_hunk_blob
+  %%   TODO
+  %%
+  %% debug_check_hunk_summ
+  %%   TOOD
+  %%
+  %% scavenger_get_many_max
+  %%   TODO
+  %%
+  %% scavenger_get_many_retry
+  %%   TODO
+  %%
+  %% scavenger_get_many_timeout
+  %%   TODO
+  %%
  ]}.
