@@ -1951,7 +1951,7 @@ checkpoint_start(S_ro, DoneLogSeq, ParentPid, Options) ->
     %% notification.  If that race happens, it's possible to forget
     %% about that sequence file, but someone we'll re-discover the
     %% error ourselves at some future time.
-    ok = delete_external_bad_sequence_file(S_ro#state.name),
+    _ = delete_external_bad_sequence_file(S_ro#state.name),
 
     if is_pid(ThrottleSvr) ->
             brick_ticket:stop(ThrottleSvr);
