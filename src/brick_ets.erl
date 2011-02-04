@@ -139,6 +139,7 @@
           n_add = 0 :: non_neg_integer(),
           n_replace = 0 :: non_neg_integer(),
           n_set = 0 :: non_neg_integer(),
+          n_rename = 0 :: non_neg_integer(),
           n_get = 0 :: non_neg_integer(),
           n_get_many = 0 :: non_neg_integer(),
           n_delete = 0 :: non_neg_integer(),
@@ -643,6 +644,7 @@ do_status(S) ->
           {n_add, S#state.n_add},
           {n_replace, S#state.n_replace},
           {n_set, S#state.n_set},
+          {n_rename, S#state.n_rename},
           {n_get, S#state.n_get},
           {n_get_many, S#state.n_get_many},
           {n_delete, S#state.n_delete},
@@ -743,6 +745,10 @@ do_dolist([{set, Key, TStamp, Value, ExpTime, Flags}|T], State, DoFlags, Acc) ->
     {Res, NewState} = set_key(Key, TStamp, Value, ExpTime, Flags, State),
     N_set = NewState#state.n_set,
     do_dolist(T, NewState#state{n_set = N_set + 1}, DoFlags, [Res|Acc]);
+do_dolist([{rename, Key, TStamp, OldKey, ExpTime, Flags}|T], State, DoFlags, Acc) ->
+    {Res, NewState} = rename_key(Key, TStamp, OldKey, ExpTime, Flags, State),
+    N_rename = NewState#state.n_rename,
+    do_dolist(T, NewState#state{n_rename = N_rename + 1}, DoFlags, [Res|Acc]);
 do_dolist([{get, Key, Flags}|T], State, DoFlags, Acc) ->
     Res = get_key(Key, Flags, State),
     N_get = State#state.n_get,
@@ -812,6 +818,23 @@ do_txnlist([{set, _Key, _TStamp, _Value, _ExpTime, Flags} = H|T], State,
        true ->
             Err = invalid_flag_present,
             do_txnlist(T, State, [Err|Acc], false, N+1, DoFlags, [{N, Err}|ErrAcc])
+    end;
+do_txnlist([{rename, Key, _TStamp, OldKey, _ExpTime, Flags} = H|T], State,
+           Acc, Good, N, DoFlags, ErrAcc) ->
+    case key_exists_p(Key, proplists:delete(testset,Flags), State) of
+        {Key, TS, _, _, _, _} ->
+            Err = {key_exists, TS},
+            do_txnlist(T, State, [Err|Acc], false, N+1, DoFlags, [{N,Err}|ErrAcc]);
+        _ ->
+            case key_exists_p(OldKey, Flags, State) of
+                {OldKey, _, _, _, _, _} ->
+                    do_txnlist(T, State, [H|Acc], Good, N+1, DoFlags, ErrAcc);
+                {ts_error, _} = Err ->
+                    do_txnlist(T, State, [Err|Acc], false, N+1, DoFlags, [{N, Err}|ErrAcc]);
+                _ ->
+                    Err = key_not_exist,
+                    do_txnlist(T, State, [Err|Acc], false, N+1, DoFlags, [{N, Err}|ErrAcc])
+            end
     end;
 do_txnlist([{Primitive, Key, Flags} = H|T], State,
            Acc, Good, N, DoFlags, ErrAcc)
@@ -951,6 +974,32 @@ set_key(Key, TStamp, Value, ExpTime, Flags, State) ->
         _X ->
             NewState = my_insert(State, Key, TStamp, Value, ExpTime, Flags),
             {ok, NewState}
+    end.
+
+rename_key(Key, TStamp, OldKey, ExpTime, Flags, State) ->
+    case key_exists_p(Key, proplists:delete(testset,Flags), State, false) of
+        {Key, TS, _, _, _, _} ->
+            {{key_exists, TS}, State};
+        _ ->
+            case key_exists_p(OldKey, Flags, State, false) of
+                {OldKey, TS, _Value, _ValueLen, _PreviousExp, _} ->
+                    rename_key2(Key, TStamp, OldKey, ExpTime, Flags, State, TS);
+                {ts_error, _} = Err ->
+                    {Err, State};
+                _ ->
+                    {key_not_exist, State}
+            end
+    end.
+
+rename_key2(Key, TStamp, OldKey, ExpTime, Flags, State, TS) ->
+    if
+        TStamp > TS ->
+            Value = {?KEY_SWITCHAROO, OldKey},
+            NewState = my_insert(State, Key, TStamp, Value, ExpTime, Flags),
+            NewState1 = my_delete(NewState, OldKey, 0),
+            {ok, NewState1};
+        true ->
+            {{ts_error, TS}, State}
     end.
 
 get_key(Key, Flags, State) ->
@@ -1522,6 +1571,7 @@ my_insert2(S, Key, TStamp, Value, ExpTime, Flags) ->
     Mod =
         case Value of
             ?VALUE_REMAINS_CONSTANT ->
+                %% @TODO - value_in_ram support?
                 [ST] = my_lookup(S, Key, false),
                 CurVal = storetuple_val(ST),
                 CurValLen = storetuple_vallen(ST),
@@ -1535,6 +1585,7 @@ my_insert2(S, Key, TStamp, Value, ExpTime, Flags) ->
                  storetuple_make(Key, TStamp, CurVal, CurValLen, ExpTime,
                                  Flags)};
             {?VALUE_SWITCHAROO, OldVal, NewVal} ->
+                %% @TODO - value_in_ram support?
                 %% NOTE: If testset has been specified, it has already
                 %%       been validated and stripped from Flags.
                 [ST] = my_lookup(S, Key, false),
@@ -1553,6 +1604,14 @@ my_insert2(S, Key, TStamp, Value, ExpTime, Flags) ->
                         %% change what we scribble to the local log.
                         {log_noop}
                 end;
+            {?KEY_SWITCHAROO, OldKey} ->
+                %% @TODO - value_in_ram support?
+                [ST] = my_lookup(S, OldKey, false),
+                Val = storetuple_val(ST),
+                ValLen = storetuple_vallen(ST),
+                {insert_constant_value,
+                 storetuple_make(Key, TStamp, Val, ValLen, ExpTime,
+                                 Flags)};
             _ ->
                 Val = gmt_util:bin_ify(Value),
                 UseRamP = lists:member(value_in_ram, Flags),

@@ -354,17 +354,22 @@
 
 %% External exports
 -export([start_link/2, stop/1, dump_state/1]).
--export([add/4, add/5, add/7, replace/4, replace/5, replace/7,
-         set/4, set/5, set/7, get/3, get/4, get/5,
-         delete/3, delete/4, get_many/4, get_many/5, get_many/6, get_many/7,
+-export([add/4, add/5, add/7,
+         replace/4, replace/5, replace/7,
+         set/4, set/5, set/7,
+         rename/4, rename/5, rename/7,
+         get/3, get/4, get/5,
+         delete/3, delete/4,
+         get_many/4, get_many/5, get_many/6, get_many/7,
          do/3, do/4, do/5]).
 
 %% Quota management
 -export([get_quota/3, set_quota/5, resum_quota/3]).
 
 -export([make_add/2, make_add/4, make_add/5,
-         make_set/2, make_set/4, make_set/5,
          make_replace/2, make_replace/4, make_replace/5,
+         make_set/2, make_set/4, make_set/5,
+         make_rename/2, make_rename/4, make_rename/5,
          make_get/1, make_get/2,
          make_delete/1, make_delete/2,
          make_txn/0,
@@ -471,8 +476,9 @@
 -type do_reply() :: list() | {txn_fail, list()} | {wrong_brick, term()}.
 -type syncdown_reply() :: list({state_r(), node_name()}).
 -type add_reply() :: {key_exists, integer()} | {ts_error, ts()} | ok.
--type set_reply() :: {ts_error, ts()} | ok.
 -type replace_reply() :: {ts_error, ts()} | key_not_exist | ok.
+-type set_reply() :: {ts_error, ts()} | ok.
+-type rename_reply() :: {key_exists, integer()} | {ts_error, ts()} | key_not_exist | ok.
 -type quota_reply() :: {ts_error, ts()} | ok.
 -type get_reply() :: {ts_error, ts()} | key_not_exist |
                      {ok, ts()} | {ok, ts(), flags_list()} | {ok, ts(), val()} |
@@ -745,6 +751,44 @@ set(ServerName, Node, Key, Value, Timeout) when is_integer(Timeout) ->
 set(ServerName, Node, Key, Value, ExpTime, Flags, Timeout)
   when not is_list(Node) ->                     % Assume a list of nodes
     case do(ServerName, Node, [make_set(Key, Value, ExpTime, Flags)],
+            Timeout) of
+        [Res] -> Res;
+        Else  -> Else
+    end.
+
+%% @spec (brick_name(), node_name(), io_list(), io_list())
+%%    -> zzz_add_reply()
+%% @equiv rename(ServerName, Node, Key, OldKey, 0, [], DefaultTimeout)
+
+%% @doc Rename a OldKey/Value pair to Key/Value pair in a brick,
+%% failing if OldKey does not already exist or if Key already exists.
+
+-spec rename(brick_name(), node_name(), key(), key()) -> rename_reply().
+rename(ServerName, Node, Key, OldKey) ->
+    rename(ServerName, Node, Key, OldKey, 0, [], foo_timeout()).
+
+%% @spec (brick_name(), node_name(), io_list(), io_list(), prop_list() | timeout())
+%%    -> zzz_add_reply()
+%% @equiv rename(ServerName, Node, Key, OldKey, 0, Flags, DefaultTimeoutOrFlags)
+
+%% @doc Rename a OldKey/Value pair to Key/Value pair in a brick,
+%% failing if OldKey does not already exist or if Key already exists.
+
+-spec rename(brick_name(), node_name(), key(), key(), flags_list0() | timeout()) -> rename_reply().
+rename(ServerName, Node, Key, OldKey, Flags) when is_list(Flags) ->
+    rename(ServerName, Node, Key, OldKey, 0, Flags, foo_timeout());
+rename(ServerName, Node, Key, OldKey, Timeout) when is_integer(Timeout) ->
+    rename(ServerName, Node, Key, OldKey, 0, [], Timeout).
+
+%% @spec (brick_name(), node_name(), io_list(), io_list(), integer(), prop_list(), timeout())
+%%    -> zzz_add_reply()
+%% @doc Rename a OldKey/Value pair to Key/Value pair in a brick,
+%% failing if OldKey does not already exist or if Key already exists.
+
+-spec rename(brick_name(), node_name(), key(), key(), integer(), flags_list(), timeout()) -> rename_reply().
+rename(ServerName, Node, Key, OldKey, ExpTime, Flags, Timeout)
+  when not is_list(Node) ->
+    case do(ServerName, Node, [make_rename(Key, OldKey, ExpTime, Flags)],
             Timeout) of
         [Res] -> Res;
         Else  -> Else
@@ -2533,6 +2577,27 @@ make_set(Key, Value, ExpTime, Flags) ->
 make_set(Key, TStamp, Value, ExpTime, Flags) ->
     make_op6(set, Key, TStamp, Value, ExpTime, Flags).
 
+%% @spec (term(), term()) -> do_op()
+%% @equiv make_rename(Key, OldKey, 0, [])
+
+-spec make_rename(key(), key()) -> rename().
+make_rename(Key, OldKey) ->
+    make_rename(Key, OldKey, 0, []).
+
+%% @spec (term(), term(), integer(), prop_list()) -> do_op()
+%% @doc Create an "rename" do op (see encode_op_flags() for valid flags).
+
+-spec make_rename(key(), key(), exp_time(), flags_list()) -> rename().
+make_rename(Key, OldKey, ExpTime, Flags) ->
+    make_op5(rename, Key, OldKey, ExpTime, Flags).
+
+%% @spec (term(), integer(), term(), integer(), prop_list()) -> do_op()
+%% @doc Create an "rename" do op (see encode_op_flags() for valid flags).
+
+-spec make_rename(key(), integer(), key(), exp_time(), flags_list()) -> rename().
+make_rename(Key, TStamp, OldKey, ExpTime, Flags) ->
+    make_op6(rename, Key, TStamp, OldKey, ExpTime, Flags).
+
 %% @spec (term()) -> do_op()
 %% @equiv make_get(Key, [])
 
@@ -2843,7 +2908,7 @@ harvest_do_keys(DoList, S) ->
 %% them in <tt>{read|write, term()}</tt> form.
 
 harvest_do_keys([{OpName, Key, _, _, _, _}|T], Acc, S)
-  when OpName == add; OpName == replace; OpName == set ->
+  when OpName == add; OpName == replace; OpName == set; OpName == rename ->
     harvest_do_keys(T, [{write, Key}|Acc], S);
 harvest_do_keys([{delete, Key, _}|T], Acc, S) ->
     harvest_do_keys(T, [{write, Key}|Acc], S);
@@ -5448,7 +5513,7 @@ quotas_pre_enforce_quota2(DoList, S) ->
                   Check = check_key_for_quota_root(Key, S),
                   if Check /= not_found andalso
                      (OpName == add orelse OpName == replace orelse
-                      OpName == set orelse OpName == delete) ->
+                      OpName == set orelse OpName == rename orelse OpName == delete) ->
                           {ok, QPrefix, QuotaTuple0} = Check,
                           QuotaTuple =
                               case orddict:find(QPrefix, QDict) of
@@ -5518,7 +5583,7 @@ quota_more_ops(DoOp, OpName, Key, QPrefix, QTS,
     case KeyRecList of
         [] ->
             NotExistOp = make_get(Key, [must_not_exist]),
-            if OpName == add ; OpName == replace ; OpName == set ->
+            if OpName == add ; OpName == replace ; OpName == set ; OpName == rename ->
                     %% Adding a key that doesn't exist, so calculating
                     %% new quota usage is easy.
                     NewVal = element(4, DoOp),
@@ -5663,7 +5728,7 @@ ssf_impl_details(S) when is_record(S, state) ->
     impl_details(S).
 
 get_op_flags({OpName, _, _, _, _, Flags})
-  when OpName == add ; OpName == replace ; OpName == set ->
+  when OpName == add ; OpName == replace ; OpName == set ; OpName == rename ->
     Flags;
 get_op_flags({OpName, _, Flags})
   when OpName == get ; OpName == delete ; OpName == get_many ->
@@ -5672,7 +5737,7 @@ get_op_flags(_) ->
     [].
 
 set_op_flags({OpName, _, _, _, _, _} = Do, NewFlags)
-  when OpName == add ; OpName == replace ; OpName == set ->
+  when OpName == add ; OpName == replace ; OpName == set ; OpName == rename ->
     setelement(6, Do, NewFlags);
 set_op_flags({OpName, _, _} = Do, NewFlags)
   when OpName == get ; OpName == delete ; OpName == get_many ->

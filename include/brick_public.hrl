@@ -26,10 +26,14 @@
 
 %% Used by scavenger to re-locate a bigdata_dir value hunk.  This is
 %% the magic atom to use.  For more security despite the obscurity,
-%% we'll require that the client give the correct current hunk location,
-%% which is a piece of data that's harder to leak out of the system.
-%% (Sssh!  Don't tell anyone about the 'get_many_raw_storetuples' flag!)
+%% we'll require that the client give the correct current hunk
+%% location, which is a piece of data that's harder to leak out of the
+%% system.  (Sssh!  Don't tell anyone about the
+%% 'get_many_raw_storetuples' flag!)
 -define(VALUE_SWITCHAROO, '$value_switch-a-roo/$').
+
+%% Used to rename a oldkey/value pair to a newkey/value pair.
+-define(KEY_SWITCHAROO, '$key_switch-a-roo/$').
 
 -define(BRICK__SMALLEST_KEY, <<>>).
 -define(BRICK__BIGGEST_KEY,  <<255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255>>). % list_to_binary(lists:duplicate(255, 255)).
