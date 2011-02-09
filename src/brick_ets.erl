@@ -789,9 +789,9 @@ do_txnlist([{add, Key, _TStamp, _Value, _ExpTime, Flags} = H|T], State,
     case key_exists_p(Key, Flags, State) of
         {Key, TS, _, _, _, _} ->
             Err = {key_exists, TS},
-            do_txnlist(T, State, [Err|Acc], false, N+1, DoFlags, [{N,Err}|ErrAcc]);
+            do_txnlist(T, State, [Err|Acc], false, N+1, DoFlags, [{N, Err}|ErrAcc]);
         {ts_error, _} = Err ->
-            do_txnlist(T, State, [Err|Acc], false, N+1, DoFlags, [{N,Err}|ErrAcc]);
+            do_txnlist(T, State, [Err|Acc], false, N+1, DoFlags, [{N, Err}|ErrAcc]);
         _ ->
             do_txnlist(T, State, [H|Acc], Good, N+1, DoFlags, ErrAcc)
     end;
@@ -819,16 +819,19 @@ do_txnlist([{set, _Key, _TStamp, _Value, _ExpTime, Flags} = H|T], State,
             Err = invalid_flag_present,
             do_txnlist(T, State, [Err|Acc], false, N+1, DoFlags, [{N, Err}|ErrAcc])
     end;
-do_txnlist([{rename, Key, _TStamp, OldKey, _ExpTime, Flags} = H|T], State,
-           Acc, Good, N, DoFlags, ErrAcc) ->
+do_txnlist([{rename, Key, _TStamp, OldKey, _ExpTime, Flags} = _H|T], State,
+           Acc, _Good, N, DoFlags, ErrAcc) ->
     case key_exists_p(Key, proplists:delete(testset,Flags), State) of
         {Key, TS, _, _, _, _} ->
             Err = {key_exists, TS},
-            do_txnlist(T, State, [Err|Acc], false, N+1, DoFlags, [{N,Err}|ErrAcc]);
+            do_txnlist(T, State, [Err|Acc], false, N+1, DoFlags, [{N, Err}|ErrAcc]);
         _ ->
             case key_exists_p(OldKey, Flags, State) of
                 {OldKey, _, _, _, _, _} ->
-                    do_txnlist(T, State, [H|Acc], Good, N+1, DoFlags, ErrAcc);
+                    %% @TODO disable server implementation until further notice
+                    %% do_txnlist(T, State, [H|Acc], Good, N+1, DoFlags, ErrAcc);
+                    Err = {key_exists, 0},
+                    do_txnlist(T, State, [Err|Acc], false, N+1, DoFlags, [{N, Err}|ErrAcc]);
                 {ts_error, _} = Err ->
                     do_txnlist(T, State, [Err|Acc], false, N+1, DoFlags, [{N, Err}|ErrAcc]);
                 _ ->
@@ -991,13 +994,15 @@ rename_key(Key, TStamp, OldKey, ExpTime, Flags, State) ->
             end
     end.
 
-rename_key2(Key, TStamp, OldKey, ExpTime, Flags, State, TS) ->
+rename_key2(_Key, TStamp, _OldKey, _ExpTime, _Flags, State, TS) ->
     if
         TStamp > TS ->
-            Value = {?KEY_SWITCHAROO, OldKey},
-            NewState = my_insert(State, Key, TStamp, Value, ExpTime, Flags),
-            NewState1 = my_delete(NewState, OldKey, 0),
-            {ok, NewState1};
+            %% @TODO disable server implementation until further notice
+            %% Value = {?KEY_SWITCHAROO, OldKey},
+            %% NewState = my_insert(State, Key, TStamp, Value, ExpTime, Flags),
+            %% NewState1 = my_delete(NewState, OldKey, 0),
+            %% {ok, NewState1};
+            {{key_exists, 0}, State};
         true ->
             {{ts_error, TS}, State}
     end.
