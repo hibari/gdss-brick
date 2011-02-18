@@ -47,9 +47,7 @@
                         must_not_exist |
                         value_in_ram |
                         %% Sent by server, should not be sent by client.
-                        {val_len, integer()} |
-                        {quota_items | quota_bytes |
-                         quota_items_used | quota_bytes_used, integer()}.
+                        {val_len, integer()}.
 -type do_op_flag()   :: do_op_flag0() |
                         %% Section: Flags that pass through brick and are
                         %%          stored with key.

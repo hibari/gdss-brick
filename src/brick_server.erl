@@ -363,9 +363,6 @@
          get_many/4, get_many/5, get_many/6, get_many/7,
          do/3, do/4, do/5]).
 
-%% Quota management
--export([get_quota/3, set_quota/5, resum_quota/3]).
-
 -export([make_add/2, make_add/4, make_add/5,
          make_replace/2, make_replace/4, make_replace/5,
          make_set/2, make_set/4, make_set/5,
@@ -373,18 +370,15 @@
          make_get/1, make_get/2,
          make_delete/1, make_delete/2,
          make_txn/0,
-         make_next_op_is_silent/0,
          make_get_many/2, make_get_many/3,
-         make_ssf/2,
-         make_get_quota/1, make_set_quota/3, make_resum_quota/1]).
+         make_ssf/2]).
 -export([make_op2/3, make_op5/5, make_op6/6]).  % Use wisely, Grasshopper.
 -export([make_timestamp/0, make_now/1, get_op_ts/1]).   % Use wisely, Grasshopper.
 
 %% Server-side fun helper functions
--export([ssf_peek/3, ssf_peek_many/4, ssf_check_quota_root/2,
-         ssf_impl_details/1]).
+-export([ssf_peek/3, ssf_peek_many/4, ssf_impl_details/1]).
 %% Server-side preprocess functions (export for "fun Mod:Name/Arity" usage)
--export([quotas_preprocess/3, ssf_preprocess/3]).
+-export([ssf_preprocess/3]).
 
 %% Chain admin & related API
 -export([chain_role_standalone/2, chain_role_undefined/2,
@@ -479,7 +473,6 @@
 -type replace_reply() :: {ts_error, ts()} | key_not_exist | ok.
 -type set_reply() :: {ts_error, ts()} | ok.
 -type rename_reply() :: {key_exists, integer()} | {ts_error, ts()} | key_not_exist | ok.
--type quota_reply() :: {ts_error, ts()} | ok.
 -type get_reply() :: {ts_error, ts()} | key_not_exist |
                      {ok, ts()} | {ok, ts(), flags_list()} | {ok, ts(), val()} |
                      {ok, ts(), val(), exp_time(), flags_list()}.
@@ -976,67 +969,6 @@ do(ServerName, Node, DoList, DoFlags, Timeout)
             Err2
     end.
 
-%% @spec (brick_name(), node_name(), io_list())
-%%    -> key_not_exist | {quota_root, root(), ts(), val(), exptime(), flags()}
-%% @doc Fetch a quota root's name and status info, if the root exists.
-
--spec get_quota(brick_name(), node_name(), key())
-               -> key_not_exist | {quota_root, key(), ts(), val(), exp_time(), flags_list()}.
-get_quota(ServerName, Node, Key) ->
-    Op = make_get_quota(Key),
-    case do(ServerName, Node, [Op], foo_timeout()*4) of
-        [Res] -> Res;
-        Else  -> Else
-    end.
-
-%% @spec (brick_name(), node_name(), io_list(), integer(), integer()) ->
-%%       zzz_add_reply()
-%% @doc Create or modify a quota root.
-%%
-%% NOTE: If keys already exist "underneath" the quota root, then
-%% creating a quota root with this function will result in incorrect
-%% usage values (zero for both item and byte usage counts).  Use the
-%% recalculate_quota() function to recalculate the usage counts.
-%%
-%% Quota implementation details:
-%% <ul>
-%% <li> Quotas are enforced at a "root" path (similar to an IMAP quota
-%% root). </li>
-%% <li> The longest matching quota root path is chosen.</li>
-%% <li> Nested quota roots are not cumulative (i.e. given roots /foo/
-%% and /foo/bar/, an update to Key /foo/bar/baz will only update usage
-%% sums at root /root/bar/ and will not also update sums at /foo/.) </li>
-%% </ul>
-%%
-%% This fun needs to access ImplMod &amp; ImplState so it cannot be moved
-%% outside of this module easily.
-
--spec set_quota(brick_name(), node_name(), key(), integer(), integer()) ->
-                       quota_reply().
-set_quota(ServerName, Node, Key, Items, Bytes) ->
-    Op = make_set_quota(Key, Items, Bytes),
-    case do(ServerName, Node, [Op], foo_timeout()*4) of
-        [Res] -> Res;
-        Else  -> Else
-    end.
-
-%% @spec (brick_name(), node_name(), binary()) ->
-%%       ok | key_not_exist
-%% @doc Recalculate a quota root's usage sums,  failing if the quota
-%% root does not already exist.
-%%
-%% This fun needs to access ImplMod &amp; ImplState so it cannot be moved
-%% outside of this module easily.
-
--spec resum_quota(brick_name(), node_name(), key()) ->
-                         ok | key_not_exist.
-resum_quota(ServerName, Node, Key) when is_binary(Key) ->
-    Op = make_resum_quota(Key),
-    case do(ServerName, Node, [Op], foo_timeout()*4) of
-        [Res] -> Res;
-        Else  -> Else
-    end.
-
 %% @spec (brick_name(), node_name())
 %%    -> zzz_status_reply()
 %% @doc Request a brick's status.
@@ -1486,7 +1418,7 @@ init([ServerName, Options]) ->
                 end
         catch
             _:_ ->
-                [fun quotas_preprocess/3, fun ssf_preprocess/3]
+                [fun ssf_preprocess/3]
         end,
     ?E_INFO("~s:init preprocess ~p\n", [?MODULE, PreprocList]),
 
@@ -2505,15 +2437,6 @@ code_change(OldVsn, State, Extra) ->
 make_txn() ->
     txn.
 
-%% @spec () -> do_op()
-%% @doc Create a "next op is silent" do op.
-%%
-%% I don't expect that this op should be used by app coders, but it is
-%% legit to use internally, e.g. for quota implementation.
-
-make_next_op_is_silent() ->
-    next_op_is_silent.
-
 %% @spec (term(), term()) -> do_op()
 %% @equiv make_add(Key, Value, 0, [])
 
@@ -2647,98 +2570,6 @@ make_get_many(Key, MaxNum, Flags) ->
                            {ssf, binary(), flags_list()}.
 make_ssf(Key, Fun) when is_function(Fun, 4) ->
     make_op2(ssf, Key, [Fun]).
-
-%% @spec (term()) -> do_op()
-%% @doc Make a "get_quota" do op via ssf.
-
--spec make_get_quota(key()) ->
-                            {ssf, binary(), flags_list()}.
-make_get_quota(Key) ->
-    %% ssf_check_quota_root() won't find the quota root if Key =:= QRoot.
-    %% So we tack on one extra byte so that the check can strip it off again.
-    %% If the key isn't a binary or list-of-bytes, use Key as-is.
-    Key2 = list_to_binary([Key, $z]),
-    F = fun(Key0, _DoOp, _DoFlags, S) ->
-                case ?MODULE:ssf_check_quota_root(Key0, S) of
-                    key_not_exist ->
-                        {ok, [key_not_exist]};
-                    {ok, QRoot, {_K, TS, Val, Exp, Fs}} ->
-                        %% We'll use a custom return value, to avoid confusion
-                        %% with a get() return like {ok, ...}
-                        {ok, [{quota_root, QRoot, TS, Val, Exp, Fs}]}
-                end
-        end,
-    make_ssf(Key2, F).
-
--spec make_set_quota(key(), integer(), integer()) ->
-                            {ssf, binary(), flags_list()}.
-make_set_quota(Key, Items, Bytes) ->
-    Key2 = gmt_util:bin_ify(Key),
-    F = fun(Key0, _DoOp, _DoFlags, S) ->
-                Op = case ssf_peek(Key0, false, S) of
-                         [] ->
-                             make_add(Key0, <<>>, 0,
-                                      [{quota_items, Items},
-                                       {quota_bytes, Bytes},
-                                       {quota_items_used, 0},
-                                       {quota_bytes_used, 0}]);
-                         [{_Key, TS, _Val, _Exp, KeyFlags}] ->
-                             ItemsU = proplists:get_value(quota_items_used,
-                                                          KeyFlags, 0),
-                             BytesU = proplists:get_value(quota_bytes_used,
-                                                          KeyFlags, 0),
-                             Val = ?VALUE_REMAINS_CONSTANT,
-                             make_replace(Key0, Val, 0,
-                                          [{testset, TS},
-                                           {quota_items, Items},
-                                           {quota_bytes, Bytes},
-                                           {quota_items_used, ItemsU},
-                                           {quota_bytes_used, BytesU}])
-                     end,
-                {ok, [Op]}
-        end,
-    make_ssf(Key2, F).
-
--spec make_resum_quota(key()) ->
-                            {ssf, binary(), flags_list()}.
-make_resum_quota(KeyArg) ->
-    Key = gmt_util:bin_ify(KeyArg),
-    Key2 = list_to_binary([Key, $z]),
-    PeekFlags = [{binary_prefix, Key}],
-    Fsum = fun(Key0, S) ->
-                   gmt_loop:do_while(
-                     fun({Is, Bs, K}) ->
-                             {ManyL, MoreP} = ?MODULE:ssf_peek_many(
-                                                 K, 1, PeekFlags, S),
-                             {IsIs, BsBs, LastK} =
-                                 lists:foldl(
-                                   fun({Kk, _TS,_Val,_Exp, Fs}, {Ii, Bb, _}) ->
-                                           B2 = proplists:get_value(val_len,
-                                                                    Fs),
-                                           {Ii + 1, Bb + B2, Kk}
-                                   end, {0, 0, placeholder}, ManyL),
-                             {MoreP, {Is + IsIs, Bs + BsBs, LastK}}
-                     end, {0, 0, Key0})
-           end,
-    F = fun(Key0, _DoOp, _DoFlags, S) ->
-                case ?MODULE:ssf_check_quota_root(Key0, S) of
-                    {ok, QRoot, {_K, TS, _Val, _Exp, QFlags}}
-                      when QRoot == Key ->      % not Key0
-                        Items = proplists:get_value(quota_items, QFlags),
-                        Bytes = proplists:get_value(quota_bytes, QFlags),
-                        {ItemsU, BytesU, _} = Fsum(Key, S), % not Key0
-                        Val = ?VALUE_REMAINS_CONSTANT,
-                        {ok, [make_replace(Key, Val, 0, % not Key0
-                                     [{testset, TS},
-                                      {quota_items, Items},
-                                      {quota_bytes, Bytes},
-                                      {quota_items_used, ItemsU},
-                                      {quota_bytes_used, BytesU}])]};
-                    _X ->
-                        {ok, [key_not_exist]}
-                end
-        end,
-    make_ssf(Key2, F).
 
 %% @spec (atom(), term(), prop_list()) -> do_op()
 %% @doc Create a 2-argument do op (see encode_op_flags() for valid flags).
@@ -2923,61 +2754,8 @@ harvest_do_keys([_|T], Acc, S) ->
 harvest_do_keys([], Acc, _S) ->
     Acc.
 
-%% Non-quota case.
-%% harvest_do_keys_modif(Key, T, Acc, _S) ->
-%%     harvest_do_keys(T, [{write, Key}|Acc]).
-
-%% harvest_do_keys_modif(Key, T, Acc, S) ->
-%%     case check_key_for_quota_root(Key, S) of
-%%      {ok, QuotaRoot} ->
-%%          harvest_do_keys(T, [{write, QuotaRoot}, {write, Key}|Acc], S);
-%%      not_found ->
-%%          harvest_do_keys(T, [{write, Key}|Acc], S)
-%%     end.
-
 throttle_tab_name(Brick) ->
     list_to_atom(atom_to_list(Brick) ++ "_throttle").
-
-check_key_for_quota_root(<<>>, _S) ->
-    not_found;
-check_key_for_quota_root(Key, S) when is_binary(Key), is_record(S, state) ->
-    {ImplMod, ImplState} = impl_details(S),
-    K0 = gmt_util:bin_ify(Key),                 % Should already be bin!
-    %% Remove last byte, in case that byte is a slash.
-    Kminus1 = size(K0) - 1,
-    <<K:Kminus1/binary, _/binary>> = K0,
-    SlashOffsets = find_in_bin_bw(K, $/),
-    lists:foldl(
-      fun(_, {ok, _, _} = Acc) ->
-              Acc;
-         (Offset, not_found) ->
-              Off1 = Offset + 1,
-              <<Prefix:Off1/binary, _/binary>> = Key,
-              case ImplMod:bcb_lookup_key(Prefix, false, ImplState) of
-                  [Tuple] ->
-                      {ok, Prefix, Tuple};
-                  [] ->
-                      not_found
-              end
-      end, not_found, SlashOffsets);
-check_key_for_quota_root(_Key, _Not_a_state_record) ->
-    not_found.
-
-%% bw = backward ... we return list of indexes in reverse
-%%                   (right to left) order.
-
-find_in_bin_bw(B, Char) ->
-    find_in_bin_bw(B, Char, 0, []).
-
-find_in_bin_bw(B, _Char, Offset, Acc) when Offset >= size(B) ->
-    Acc;
-find_in_bin_bw(B, Char, Offset, Acc) ->
-    <<_:Offset/binary, C:8, _/binary>> = B,
-    if Char == C ->
-            find_in_bin_bw(B, Char, Offset + 1, [Offset|Acc]);
-       true ->
-            find_in_bin_bw(B, Char, Offset + 1, Acc)
-    end.
 
 %% @spec (term(), term(), state_r()) -> gen_server_handle_call_reply_tuple()
 %% @doc Call the brick's implementation-specific handle_call() callback func.
@@ -5448,217 +5226,6 @@ make_new_global_hash(OldGH, NewGH, S) ->
 %% @spec (do_list(), proplist(), state_r()) ->
 %%       {ok, do_list(), proplist(), state_r()} | {reply, term(), state_r()}
 %%
-%% @doc Perform the DoList preprocessing required for storage quota
-%% features and enforcement.
-
-quotas_preprocess(DoList, DoFlags, S) when is_record(S, state) ->
-    DoList2 = quotas_pre_op_flags(DoList, S),
-    case quotas_pre_enforce_quota(DoList2, S) of
-        DoList3 when is_list(DoList3) ->
-            {ok, DoList3, DoFlags, S};
-        {quota_error, _} = Error ->
-            {reply, Error, S}
-    end.
-
-quotas_pre_op_flags([H|T], S) ->
-    %% TODO: worthwhile to rewrite using lists:map?
-    Flags0 = get_op_flags(H),
-    Flags1 = lists:map(
-               fun({<<"quota_items">>, N}) -> {quota_items, gmt_util:int_ify(N)};
-                  ({<<"quota_bytes">>, N}) -> {quota_bytes, gmt_util:int_ify(N)};
-                  %% These two should be rare or never used, but include anyway
-                  ({<<"quota_items_used">>, N}) -> {quota_items_used, gmt_util:int_ify(N)};
-                  ({<<"quota_bytes_used">>, N}) -> {quota_bytes_used, gmt_util:int_ify(N)};
-                  (X)                      -> X
-             end, Flags0),
-    if Flags0 == Flags1 ->
-            [H|quotas_pre_op_flags(T, S)];
-       true ->
-            [set_op_flags(H, Flags1)|quotas_pre_op_flags(T, S)]
-    end;
-quotas_pre_op_flags([], _S) ->
-    [].
-
-quotas_pre_enforce_quota(DoList, S) ->
-    case quotas_pre_enforce_quota2(DoList, S) of
-        L when is_list(L) ->
-            DoList2 = lists:reverse(L),
-            if DoList /= DoList2 ->
-                    case DoList2 of
-                        [txn|_] ->
-                            DoList2;
-                        _ ->
-                            [txn|DoList2] % Not a txn, so make it one.
-                    end;
-               true ->
-                    DoList
-            end;
-        {quota_error, _} = Error ->
-            Error
-    end.
-
-quotas_pre_enforce_quota2(DoList, S) ->
-    {ImplMod, ImplState} = impl_details(S),
-    Q_names = [quota_items_used, quota_bytes_used],
-    %%
-    %% Maintain a orddict of "dirty" quota roots.  Otherwise, we won't be
-    %% able to handle properly a do list that has two ops under the same
-    %% quota root.  {sigh}
-    %%
-    case
-        lists:foldl(
-          fun(DoOp, {OpsAcc, QDict, KDict}) when is_tuple(DoOp), size(DoOp) > 2 ->
-                  OpName = element(1, DoOp),
-                  Key = element(2, DoOp),
-                  Check = check_key_for_quota_root(Key, S),
-                  if Check /= not_found andalso
-                     (OpName == add orelse OpName == replace orelse
-                      OpName == set orelse OpName == rename orelse OpName == delete) ->
-                          {ok, QPrefix, QuotaTuple0} = Check,
-                          QuotaTuple =
-                              case orddict:find(QPrefix, QDict) of
-                                  error ->
-                                      QuotaTuple0;
-                                  {ok, QT} ->
-                                      QT
-                              end,
-                          {_QKey, QTS, _QVal, _, QFlags} = QuotaTuple,
-                          {Q_iu, Q_bu, OtherQFlags} =
-                              case proplists:split(QFlags, Q_names) of
-                                  {[[{quota_items_used, X1}],
-                                    [{quota_bytes_used, X2}]], RemFls} ->
-                                      {X1, X2, RemFls};
-                                  {_, RemFls} ->
-                                      %% Oh oh, someone didn't have both
-                                      %% quota used flags like we expected.
-                                      %% TODO: error msg?
-                                      {0, 0, RemFls}
-                              end,
-                          quota_more_ops(DoOp, OpName, Key, QPrefix, QTS,
-                                         Q_iu, Q_bu, OtherQFlags,
-                                         ImplMod, ImplState, OpsAcc,
-                                         QDict, KDict);
-                     true ->
-                          {[DoOp|OpsAcc], QDict, KDict}
-                  end;
-             (DoOp, {OpsAcc, QDict, KDict}) ->
-                  {[DoOp|OpsAcc], QDict, KDict};
-             (_DoOp, {quota_error, _} = Acc) ->
-                  Acc
-          end, {[], orddict:new(), orddict:new()}, DoList) of
-        {L2, _QRootDict, _KeyDict} ->
-            L2;
-        {quota_error, _Stuff} = Res ->
-            Res
-    end.
-
-quota_more_ops(DoOp, OpName, Key, QPrefix, QTS,
-               Q_iu, Q_bu, OtherQFlags, ImplMod, ImplState, OpsAcc,
-               QDict, KDict) ->
-    %%
-    %% Our job is a little trickier in that one or more ops in this
-    %% transaction may involve a dirty key.  We don't know that yet,
-    %% and so processing this txn may be delayed by the underlying
-    %% ImplMod.  Therefore we cannot assume that a quota record will
-    %% stay constant, or that the item we're updating remains
-    %% constant.  Therefore, we make liberal use of 'must_not_exist'
-    %% and 'testset' to make certain that all parties don't change in
-    %% the middle of things.
-    %%
-    %% NOTE: In some cases, we must manufacture the mandatory 'val_len'
-    %%       property that the ImplMod will always provide for us.
-    %%
-    Q_i = proplists:get_value(quota_items, OtherQFlags, 0),
-    Q_b = proplists:get_value(quota_bytes, OtherQFlags, 0),
-    SilentOp = make_next_op_is_silent(),
-    QVal = ?VALUE_REMAINS_CONSTANT,
-    KeyRecList = case orddict:find(Key, KDict) of
-                     error ->
-                         ImplMod:bcb_lookup_key(Key, false, ImplState);
-                     {ok, {delete, _}} ->
-                         [];
-                     {ok, T} ->
-                         [T]
-                 end,
-    case KeyRecList of
-        [] ->
-            NotExistOp = make_get(Key, [must_not_exist]),
-            if OpName == add ; OpName == replace ; OpName == set ; OpName == rename ->
-                    %% Adding a key that doesn't exist, so calculating
-                    %% new quota usage is easy.
-                    NewVal = element(4, DoOp),
-                    NewValLen = gmt_util:io_list_len(NewVal),
-                    NewQ_iu = Q_iu + 1,
-                    NewQ_bu = Q_bu + NewValLen,
-                    if (Q_i > 0 andalso NewQ_iu + 0 > Q_i) %qqq QC test spot: 0
-                       orelse
-                       (Q_b > 0 andalso NewQ_bu > Q_b) ->
-                            {quota_error, QPrefix};
-                       true ->
-                            QFlags = [{quota_items_used, NewQ_iu},
-                                      {quota_bytes_used, NewQ_bu},
-                                      {testset, QTS}|OtherQFlags],
-                            QRootOp2 = make_replace(QPrefix, QVal, 0, QFlags),
-                            QTuple2 = {QPrefix, QTS, QVal, 0, QFlags},
-                            {_Op, Key, KTS, KVal, KExp, KFlags0} = DoOp,
-                            KFlags = [{val_len,
-                                       gmt_util:io_list_len(KVal)}|KFlags0],
-                            KTuple2 = {Key, KTS, KVal, KExp, KFlags},
-                            %% Tricky, this will be reversed eventually...
-                            {[DoOp, NotExistOp, SilentOp,
-                              QRootOp2, SilentOp|OpsAcc],
-                             orddict:store(QPrefix, QTuple2, QDict),
-                             orddict:store(Key, KTuple2, KDict)}
-                    end;
-               OpName == delete ->
-                    %% Deleting a non-existent key.
-                    %% Just verify that the key still doesn't exist.
-                    {[DoOp, NotExistOp, SilentOp|OpsAcc],
-                     QDict, KDict}
-            end;
-        [{_Key, KeyTS, _Val, _Exp, KeyFlags}] ->
-            ExistsOp = make_get(Key, [{testset, KeyTS}]),
-            KeyValLen = proplists:get_value(val_len, KeyFlags),
-            {PlusItem, PlusBytes} =
-                if OpName == delete ->
-                        {0, 0};
-                   true ->
-                        NewVal = element(4, DoOp),
-                        NewValLen = gmt_util:io_list_len(NewVal),
-                        {1, NewValLen}
-                end,
-            NewQ_iu = floor0(Q_iu - 1 + PlusItem),
-            NewQ_bu = floor0(Q_bu - KeyValLen + PlusBytes),
-            if OpName /= delete
-               andalso
-               ((Q_i > 0 andalso NewQ_iu > Q_i)
-                orelse
-                (Q_b > 0 andalso NewQ_bu + 0 > Q_b)) -> % qqq QC test spot: 0
-                    {quota_error, QPrefix};
-               true ->
-                    QFlags = [{quota_items_used, NewQ_iu},
-                              {quota_bytes_used, NewQ_bu},
-                              {testset, QTS}|OtherQFlags],
-                    QRootOp2 = make_replace(QPrefix, QVal, 0, QFlags),
-                    QTuple2 = {QPrefix, QTS, QVal, 0, QFlags},
-                    KTuple2 =
-                        if OpName == delete ->
-                                {delete, Key};
-                           true ->
-                                {_Op, Key, KTS, KVal, KExp, KFlags0} = DoOp,
-                                KFlags = [{val_len,
-                                          gmt_util:io_list_len(KVal)}|KFlags0],
-                                {Key, KTS, KVal, KExp, KFlags}
-                        end,
-                    {[DoOp, ExistsOp, SilentOp, QRootOp2, SilentOp|OpsAcc],
-                     orddict:store(QPrefix, QTuple2, QDict),
-                     orddict:store(Key, KTuple2, KDict)}
-            end
-    end.
-
-%% @spec (do_list(), proplist(), state_r()) ->
-%%       {ok, do_list(), proplist(), state_r()} | {reply, term(), state_r()}
-%%
 %% @doc Perform the DoList preprocessing required for "server-side funs",
 %% funs that are executed on the brick server.
 %%
@@ -5709,46 +5276,12 @@ ssf_peek_many(Key, MaxNum, Flags, S) when is_record(S, state) ->
                                              ImplState),
     {lists:reverse(L), MoreP}.
 
-%% @spec (term(), state_r()) -> key_not_exist | {ok, term(), tuple()}
-%% @doc The ssf interface for the check_key_for_quota_root() function.
-
-ssf_check_quota_root(Key, S) when is_record(S, state) ->
-    case check_key_for_quota_root(Key, S) of
-        not_found ->
-            key_not_exist;
-        Res ->
-            Res
-    end.
-
 %% @spec (state_r()) -> key_not_exist | {term(), term()}
 %% @doc Helper function to return the ImplMod and ImplState terms hidden
 %% inside the server state.
 
 ssf_impl_details(S) when is_record(S, state) ->
     impl_details(S).
-
-get_op_flags({OpName, _, _, _, _, Flags})
-  when OpName == add ; OpName == replace ; OpName == set ; OpName == rename ->
-    Flags;
-get_op_flags({OpName, _, Flags})
-  when OpName == get ; OpName == delete ; OpName == get_many ->
-    Flags;
-get_op_flags(_) ->
-    [].
-
-set_op_flags({OpName, _, _, _, _, _} = Do, NewFlags)
-  when OpName == add ; OpName == replace ; OpName == set ; OpName == rename ->
-    setelement(6, Do, NewFlags);
-set_op_flags({OpName, _, _} = Do, NewFlags)
-  when OpName == get ; OpName == delete ; OpName == get_many ->
-    setelement(3, Do, NewFlags);
-set_op_flags(X, _NewFlags) ->
-    X.
-
-floor0(X) when X > 0 ->
-    X;
-floor0(_) ->
-    0.
 
 preprocess_fold(DoList, DoFlags, Funs, S) ->
     lists:foldl(

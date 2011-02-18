@@ -110,8 +110,6 @@
 %%   pread cache size would fail.
 %% * found bug in optimization added to read_hunk_member_ll() to tweak
 %%   typical brick_ets usage but broke the general case.
-%% * regression in simple_qc:prop_quota1() after removing the original
-%%   bigdata_dir implementation with the gmt_hlog.erl-based impl.
 %% * numerous glitches when refactoring (early Aug 2008) for short-term
 %%   and long term file paths.
 %% * A scribble in the middle of an unchecksummed blob needs extra checking.
