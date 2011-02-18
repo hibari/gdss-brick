@@ -966,7 +966,13 @@ do(ServerName, Node, DoList, DoFlags, Timeout)
         {txn_fail, L} = Err when is_list(L) ->
             Err;
         {wrong_brick, _} = Err2 ->
-            Err2
+            Err2;
+        {too_old, MicroAge} ->
+            %% Too old is treated exactly like a gen_server:call() timeout which
+            %% basically exits the client process with a timeout value. This
+            %% should lead to consistent handling up the call stack.
+            ?E_INFO("~p: do() too_old by ~p usec for ~p\n", [ServerName, MicroAge, DoList]),
+            exit(timeout)
     end.
 
 %% @spec (brick_name(), node_name())
@@ -1643,16 +1649,35 @@ handle_call_do_prescreen(Msg, From, State) ->
                true ->
                     ok
             end,
-            put(handle_call_do_prescreen, NNN+1),
-            %% We have non-repair throttling in effect.  Forward the
-            %% message to ourself, after a small delay.  Exponential
-            %% delay might be better, but it requires more
-            %% bookkeeping.  This gen_server tuple mimicry is a kludge.
-            spawn(fun() ->
-                          timer:sleep(250),
-                          State#state.name ! {'$gen_call', From, Msg}
-                  end),
-            {noreply, State}
+            %% We have non-repair throttling in effect which happens when the message queue
+            %% is long. Forward the message to ourself, after a small delay. Thinking that
+            %% a longish delay will at least give us more time to empty the queue and start
+            %% processing again. What interval is throttling checked?
+            %% NOTE: This gen_server tuple mimicry is a kludge.
+            case is_do_op_too_old(Msg, State) of
+                {true, _} ->
+                    %% op is already too old, so pass to prescreen2 which
+                    %% handles this properly.
+                    put(handle_call_do_prescreen, 0),
+                    handle_call_do_prescreen2(Msg, From, State);
+                false ->
+                    put(handle_call_do_prescreen, NNN+1),
+                    spawn(fun() ->
+                              timer:sleep(200 + random:uniform(200)),
+                              State#state.name ! {'$gen_call', From, Msg}
+                          end),
+                    {noreply, State}
+            end
+    end.
+
+%% Return {true, MicroAge} if the do operation is too_old to be handled, false normally
+-spec is_do_op_too_old(do_op(), state_r()) -> {true, integer()} | false.
+is_do_op_too_old({do, SentAt, _DoList, _DoFlags}, State) ->
+    case timer:now_diff(now(), SentAt) of
+        MicroAge when MicroAge > State#state.do_op_too_old_usec ->
+            {true, MicroAge};
+        _ ->
+            false
     end.
 
 handle_call_do_prescreen2({do, _SentAt, _DoList, _DoFlags} = Msg, From, State)
@@ -1661,7 +1686,7 @@ handle_call_do_prescreen2({do, _SentAt, _DoList, _DoFlags} = Msg, From, State)
     DQI = #dirty_q{from = From, do_op = Msg},
     {noreply,
      State#state{chainstate = CS#chain_r{mig_start_waiters = [DQI|Ws]}}};
-handle_call_do_prescreen2({do, SentAt, _, _} = Msg, From, State) ->
+handle_call_do_prescreen2({do, _, _, _} = Msg, From, State) ->
     case chain_check_my_status(State) of
         ok ->
             CS = State#state.chainstate,
@@ -1672,13 +1697,12 @@ handle_call_do_prescreen2({do, SentAt, _, _} = Msg, From, State) ->
                true ->
                     ok
             end,
-            case timer:now_diff(now(), SentAt) of
-                TooOld when TooOld > State#state.do_op_too_old_usec ->
-                    ?E_DBG(?CAT_OP, "~p: msg ~p too old by ~p usec\n",
-                           [State#state.name, Msg, TooOld]),
+            case is_do_op_too_old(Msg, State) of
+                {true, MicroAge} ->
+                    ?E_DBG(?CAT_OP, "~p: msg ~p too_old by ~p usec\n", [State#state.name, Msg, MicroAge]),
                     NTO = State#state.n_too_old + 1,
-                    {noreply, State#state{n_too_old = NTO}};
-                _ ->
+                    {reply, {too_old, MicroAge}, State#state{n_too_old = NTO}};
+                false ->
                     handle_call_do(Msg, From, State)
             end;
         Err ->
