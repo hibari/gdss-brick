@@ -64,6 +64,7 @@
          , {scavenger_get_many_max, 1000}
          , {scavenger_get_many_retry, 5}
          , {scavenger_get_many_timeout, 5000}
+	 , {scavenger_get_many_sleep, 0}
         ]}
   %%
   %% brick_check_checkpoint_max_mb

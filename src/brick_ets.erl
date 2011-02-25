@@ -3173,42 +3173,47 @@ delete_seq(_, _) ->
     ok.
 
 scavenger_get_keys(Name, Fs, FirstKey, F_k2d, F_lump) ->
-    scavenger_get_keys(Name, Fs,
-                       scavenger_get_many(Name, FirstKey, Fs), [],
-                       F_k2d, F_lump, 1).
+    {ok, Retry} = application:get_env(gdss_brick, scavenger_get_many_retry),
+    {ok, Max} =  application:get_env(gdss_brick, scavenger_get_many_max),
+    {ok, TimeOut} =  application:get_env(gdss_brick, scavenger_get_many_timeout),
+    {ok, Sleep} =  application:get_env(gdss_brick, scavenger_get_many_sleep),
+    GetManyConf = {Max,TimeOut,Retry,Sleep},
+    scavenger_get_keys(Name, Fs, GetManyConf,
+                       scavenger_get_many(Name,FirstKey,Fs,GetManyConf),
+		       [], F_k2d, F_lump, 1).
 
-scavenger_get_keys(Name, Fs, Res, Acc, F_k2d, F_lump, Iters)
+scavenger_get_keys(Name, Fs, GMC, Res, Acc, F_k2d, F_lump, Iters)
   when Iters rem 4 == 0 ->
     foldl_lump(F_k2d, dict:new(), Acc, F_lump, 100*1000),
-    scavenger_get_keys(Name, Fs, Res, [], F_k2d, F_lump, Iters + 1);
-scavenger_get_keys(Name, _Fs, {ok, {Rs, false}}, Acc, F_k2d, F_lump, _Iters) ->
+    scavenger_get_keys(Name, Fs, GMC,
+		       Res, [], F_k2d, F_lump, Iters + 1);
+scavenger_get_keys(Name, _Fs, _GMC,
+		   {ok, {Rs, false}}, Acc, F_k2d, F_lump, _Iters) ->
     foldl_lump(F_k2d, dict:new(), prepend_rs(Name, Rs, Acc), F_lump, 100*1000),
     ok;
-scavenger_get_keys(Name, Fs, {ok, {Rs, true}}, Acc, F_k2d, F_lump, Iters) ->
+scavenger_get_keys(Name, Fs, GMC,
+		   {ok, {Rs, true}}, Acc, F_k2d, F_lump, Iters) ->
     K = storetuple_key(lists:last(Rs)),
-    scavenger_get_keys(Name, Fs, scavenger_get_many(Name, K, Fs),
+    scavenger_get_keys(Name, Fs, GMC,
+		       scavenger_get_many(Name, K, Fs, GMC),
                        prepend_rs(Name, Rs, Acc), F_k2d, F_lump, Iters + 1).
 
-scavenger_get_many(Name, Key, Flags) ->
-    {ok, Retry} = application:get_env(gdss_brick, scavenger_get_many_retry),
-    {ok, Max} = application:get_env(gdss_brick, scavenger_get_many_max),
-    {ok, TimeOut} = application:get_env(gdss_brick, scavenger_get_many_timeout),
-    scavenger_get_many_retry(Name, Key, Flags, Max, TimeOut, Retry).
-
-
-scavenger_get_many_retry(Name, Key, Flags, Max, TimeOut, 0) ->
+scavenger_get_many(Name, Key, Flags, {Max, TimeOut, 0, Sleep}) ->
     [Res] = brick_server:do(Name, node(),
                             [brick_server:make_get_many(Key, Max, Flags)],
                             [ignore_role], TimeOut),
+    timer:sleep(Sleep),
     Res;
-scavenger_get_many_retry(Name, Key, Flags, Max, TimeOut, Retry) ->
+scavenger_get_many(Name, Key, Flags, {Max, TimeOut, Retry, Sleep}) ->
     case catch brick_server:do(Name, node(),
-			       [brick_server:make_get_many(Key, Max, Flags)],
-			       [ignore_role], TimeOut) of
-	[Res] ->
-	    Res;
-	_Err ->
-	    scavenger_get_many_retry(Name, Key, Flags, Max, TimeOut, Retry-1)
+                               [brick_server:make_get_many(Key, Max, Flags)],
+                               [ignore_role], TimeOut) of
+        [Res] ->
+	    timer:sleep(Sleep),
+            Res;
+        _Err ->
+	    timer:sleep(Sleep),
+            scavenger_get_many(Name, Key, Flags, {Max, TimeOut, Retry-1, Sleep})
     end.
 
 prepend_rs(Name, L1, L2) ->
