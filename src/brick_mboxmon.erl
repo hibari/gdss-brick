@@ -192,7 +192,7 @@ make_brick_map() ->
         AdminServer ->
             Tables = brick_admin:get_tables(AdminServer),
             TabsGHs = [{Tab, GH} || Tab <- Tables,
-                                    {ok, _Vers, GH} <- [brick_simple:get_gh(Tab)]],
+                                    {ok, _Vers, GH} <- [brick_simple_client:get_gh(Tab)]],
             %% We need all bricks in all chains, not merely the active bricks.
             GHsChains =
                 lists:flatten(
