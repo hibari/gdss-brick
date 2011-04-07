@@ -40,6 +40,7 @@
                         witness |
                         get_all_attribs |
                         %% Flags for get_many
+                        {max_bytes, integer()} |
                         {max_num, integer()} |
                         {binary_prefix, binary()} |
                         %% hide: get_many_raw_storetuples |
