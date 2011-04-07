@@ -54,7 +54,7 @@
          , {brick_repair_max_primers, 7}
          , {brick_scavenger_start_time, "3:00"}
          , {brick_scavenger_suppress, false}
-         , {brick_scavenger_temp_dir, "/tmp"}
+         , {brick_scavenger_temp_dir, "/tmp/hibari_scavenger"}
          , {brick_scavenger_throttle_bytes, 600000000}
          , {brick_server_default_timeout, 5000}
          , {brick_skip_live_percentage_greater_than, 90}
