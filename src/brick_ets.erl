@@ -795,9 +795,9 @@ do_txnlist([{add, Key, _TStamp, _Value, _ExpTime, Flags} = H|T], State,
         _ ->
             do_txnlist(T, State, [H|Acc], Good, N+1, DoFlags, ErrAcc)
     end;
-do_txnlist([{replace, Key, _TStamp, _Value, _ExpTime, Flags} = H|T], State,
+do_txnlist([{replace, Key, TStamp, Value, _ExpTime, Flags} = H|T], State,
            Acc, Good, N, DoFlags, ErrAcc) ->
-    case key_exists_p(Key, Flags, State) of
+    case key_exists_p(Key, Flags, State, true, TStamp, Value) of
         {Key, _, _, _, _, _} ->
             do_txnlist(T, State, [H|Acc], Good, N+1, DoFlags, ErrAcc);
         {ts_error, _} = Err ->
@@ -806,7 +806,7 @@ do_txnlist([{replace, Key, _TStamp, _Value, _ExpTime, Flags} = H|T], State,
             Err = key_not_exist,
             do_txnlist(T, State, [Err|Acc], false, N+1, DoFlags, [{N, Err}|ErrAcc])
     end;
-do_txnlist([{set, _Key, _TStamp, _Value, _ExpTime, Flags} = H|T], State,
+do_txnlist([{set, Key, TStamp, Value, _ExpTime, Flags} = H|T], State,
            Acc, Good, N, DoFlags, ErrAcc) ->
     Num = lists:foldl(fun(Flag, Sum) -> case check_flaglist(Flag, Flags) of
                                             {true, _} -> Sum + 1;
@@ -814,19 +814,24 @@ do_txnlist([{set, _Key, _TStamp, _Value, _ExpTime, Flags} = H|T], State,
                                         end
                       end, 0, [must_exist, must_not_exist]),
     if Num == 0 ->
-            do_txnlist(T, State, [H|Acc], Good, N+1, DoFlags, ErrAcc);
+            case key_exists_p(Key, Flags, State, false, TStamp, Value) of
+                {ts_error, _} = Err ->
+                    do_txnlist(T, State, [Err|Acc], false, N+1, DoFlags, [{N, Err}|ErrAcc]);
+                _ ->
+                    do_txnlist(T, State, [H|Acc], Good, N+1, DoFlags, ErrAcc)
+            end;
        true ->
             Err = invalid_flag_present,
             do_txnlist(T, State, [Err|Acc], false, N+1, DoFlags, [{N, Err}|ErrAcc])
     end;
-do_txnlist([{rename, Key, _TStamp, OldKey, _ExpTime, Flags} = _H|T], State,
+do_txnlist([{rename, Key, TStamp, OldKey, _ExpTime, Flags} = _H|T], State,
            Acc, _Good, N, DoFlags, ErrAcc) ->
-    case key_exists_p(Key, proplists:delete(testset,Flags), State) of
+    case key_exists_p(Key, proplists:delete(testset,Flags), State, false, TStamp) of
         {Key, TS, _, _, _, _} ->
             Err = {key_exists, TS},
             do_txnlist(T, State, [Err|Acc], false, N+1, DoFlags, [{N, Err}|ErrAcc]);
         _ ->
-            case key_exists_p(OldKey, Flags, State) of
+            case key_exists_p(OldKey, Flags, State, false, TStamp) of
                 {OldKey, _, _, _, _, _} ->
                     %% @TODO disable server implementation until further notice
                     %% do_txnlist(T, State, [H|Acc], Good, N+1, DoFlags, ErrAcc);
@@ -898,26 +903,39 @@ key_exists_p(Key, Flags, State) ->
     key_exists_p(Key, Flags, State, true).
 
 key_exists_p(Key, Flags, State, MustHaveVal_p) ->
+    key_exists_p(Key, Flags, State, MustHaveVal_p, undefined).
+
+key_exists_p(Key, Flags, State, MustHaveVal_p, TStamp) ->
+    key_exists_p(Key, Flags, State, MustHaveVal_p, TStamp, undefined).
+
+key_exists_p(Key, Flags, State, MustHaveVal_p, TStamp, Val) ->
     case my_lookup(State, Key, MustHaveVal_p) of
         [] ->
             false;
         [StoreTuple] ->
-            Key =        storetuple_key(StoreTuple),
+            Key =        storetuple_key(StoreTuple),  %% NOTE: crashes if =/=
             KeyTStamp =  storetuple_ts(StoreTuple),
-            KeyVal =     storetuple_val(StoreTuple),
-            KeyValLen =  storetuple_vallen(StoreTuple),
-            KeyExpTime = storetuple_exptime(StoreTuple),
-            KeyFlags =   storetuple_flags(StoreTuple),
-            case check_flaglist(testset, Flags) of
-                {true, TestSetTStamp} ->
-                    if
-                        KeyTStamp == TestSetTStamp ->
+            case proplists:get_value(testset, Flags, KeyTStamp) of
+                KeyTStamp ->
+                    KeyVal =     storetuple_val(StoreTuple),
+                    KeyValLen =  storetuple_vallen(StoreTuple),
+                    KeyExpTime = storetuple_exptime(StoreTuple),
+                    KeyFlags =   storetuple_flags(StoreTuple),
+
+                    if TStamp =:= undefined orelse TStamp > KeyTStamp ->
                             {Key, KeyTStamp, KeyVal, KeyValLen, KeyExpTime, KeyFlags};
-                        true ->
+                       TStamp =:= KeyTStamp ->
+                            if Val =:= undefined orelse Val =:= KeyVal
+                               orelse element(1, Val) =:= ?VALUE_SWITCHAROO ->
+                                    {Key, KeyTStamp, KeyVal, KeyValLen, KeyExpTime, KeyFlags};
+                               true ->
+                                    {ts_error, KeyTStamp}
+                            end;
+                       true ->
                             {ts_error, KeyTStamp}
                     end;
                 _ ->
-                    {Key, KeyTStamp, KeyVal, KeyValLen, KeyExpTime, KeyFlags}
+                    {ts_error, KeyTStamp}
             end
     end.
 
