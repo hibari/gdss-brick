@@ -247,13 +247,15 @@ handle_call({start_brick, Name, Options}, _From, State) ->
             do_start_brick(Name, Options, State)
     end;
 handle_call({stop_brick, Name}, _From, State) ->
-    Reply = case (catch supervisor:terminate_child(?SUB_BRICK_SUP, Name)) of
-                ok ->
-                    catch supervisor:delete_child(?SUB_BRICK_SUP, Name);
-                Err ->
-                    Err
-            end,
-    {reply, Reply, State};
+    try
+        ok = sup_stop_status(supervisor:terminate_child(?SUB_BRICK_SUP, Name)),
+        ok = sup_stop_status(supervisor:delete_child(?SUB_BRICK_SUP, Name)),
+        ok
+    catch
+        exit:noproc ->
+            ok
+    end,
+    {reply, ok, State};
 handle_call({list_bricks}, _From, State) ->
     Cs = supervisor:which_children(?SUB_BRICK_SUP),
     Reply = [Id || {Id, _Child, _Type, _Modules} <- Cs],
@@ -347,3 +349,6 @@ do_start_brick(Name, Options, S) ->
             end,
     {reply, Reply, S}.
 
+sup_stop_status(ok) ->                 ok;
+sup_stop_status({error, not_found}) -> ok;
+sup_stop_status(X) ->                  X.
