@@ -176,8 +176,9 @@
           syncsum_len = 0 :: integer(),
           syncsum_tref :: reference(),
           do_expiry_fun :: fun(),                 % fun
-          wal_mod :: atom()                       % atom()
-                     }).
+          wal_mod :: atom(),                      % atom()
+          max_log_size = 0 :: non_neg_integer()   % max log size
+         }).
 
 
 -record(syncpid_arg, {
@@ -185,7 +186,7 @@
           wal_pid :: pid(),                     % Pid of wal server.
           wal_mod :: atom(),
           name :: atom()                        % Name of brick
-                  }).
+         }).
 
 -include("brick_specs.hrl").
 -include("gmt_hlog.hrl").
@@ -266,10 +267,18 @@ init([ServerName, Options]) ->
     MaxLogSize =
         case proplists:get_value(max_log_size, Options) of
             undefined ->
-                {ok, M} = application:get_env(gdss_brick, brick_max_log_size_mb),
-                M * 1024 * 1024;
-            M ->
-                M * 1024 * 1024
+                {ok, Max} = application:get_env(gdss_brick, brick_max_log_size_mb),
+                Max * 1024 * 1024;
+            Max ->
+                Max * 1024 * 1024
+        end,
+    MinLogSize =
+        case proplists:get_value(min_log_size, Options) of
+            undefined ->
+                {ok, Min} = application:get_env(gdss_brick, brick_min_log_size_mb),
+                Min * 1024 * 1024;
+            Min ->
+                Min * 1024 * 1024
         end,
     BigDataDir = proplists:get_value(bigdata_dir, Options),
 
@@ -282,7 +291,8 @@ init([ServerName, Options]) ->
     ShadowTabName = list_to_atom(atom_to_list(ServerName) ++ "_shadow"),
 
     {ok, LogPid} = WalMod:start_link([{name, ServerName},
-                                      {file_len_limit, MaxLogSize}]),
+                                      {file_len_max, MaxLogSize},
+                                      {file_len_min, MinLogSize}]),
 
     DirtyTabName = list_to_atom(atom_to_list(ServerName) ++ "_dirty"),
     DirtyTab = ets:new(DirtyTabName, [ordered_set, protected, named_table]),
@@ -318,7 +328,8 @@ init([ServerName, Options]) ->
                     sync_pid = SyncPid,
                     dirty_tab = DirtyTab, wait_on_dirty_q = WaitOnDirty,
                     logging_op_q = LogOpQ, do_expiry_fun = DoExpFun,
-                    wal_mod = WalMod
+                    wal_mod = WalMod,
+                    max_log_size = MaxLogSize - 32 % TODO: remove fudge factor!
                    },
     self() ! do_init_second_half,
     {ok, State0}.
@@ -438,7 +449,7 @@ handle_call({sync_stats, Seconds}, _From, State) ->
     {ok, TRef} = if Seconds > 0 -> brick_itimer:send_interval(Seconds*1000,
                                                               log_sync_stats);
                     true        -> {ok, undefined}
-           end,
+                 end,
     {reply, Seconds, State#state{syncsum_count = 0, syncsum_msec = 0,
                                  syncsum_len = 0, syncsum_tref = TRef}};
 handle_call({set_do_sync, NewValue}, _From, State) ->
@@ -509,7 +520,7 @@ handle_info({'EXIT', Pid, Reason}, State) when Pid == State#state.check_pid ->
             ok;
         {{?MODULE,_,_}, {line, _}, done} ->     % smart exceptions too helpful!
             ok;
-       _ ->
+        _ ->
             ?E_WARNING("checkpoint: pid ~p died with ~p\n", [Pid, Reason])
     end,
     NewState = fold_shadow_into_ctab(State),
@@ -710,7 +721,7 @@ do_do1b(DoKeys0, L, DoFlags, DoOp, From, State, check_dirty)
                                 _Else ->
                                     {noreply_now, State}
                             end;
-                        true ->
+                       true ->
                             {no_dirty_keys, do_do2(L, DoFlags, State)}
                     end
             end
@@ -947,8 +958,12 @@ add_key(Key, TStamp, Value, ExpTime, Flags, State) ->
         {ts_error, _} = Err ->
             {Err, State};
         _ ->
-            NewState = my_insert(State, Key, TStamp, Value, ExpTime, Flags),
-            {ok, NewState}
+            case my_insert(State, Key, TStamp, Value, ExpTime, Flags) of
+                {val_error, _} = Err ->
+                    {Err, State};
+                {ok, _} = Ok ->
+                    Ok
+            end
     end.
 
 replace_key(Key, TStamp, Value, ExpTime, Flags, State) ->
@@ -964,11 +979,19 @@ replace_key(Key, TStamp, Value, ExpTime, Flags, State) ->
 replace_key2(Key, TStamp, Value, ExpTime, Flags, State, TS) ->
     if
         TStamp > TS ->
-            NewState = my_insert(State, Key, TStamp, Value, ExpTime, Flags),
-            {ok, NewState};
+            case my_insert(State, Key, TStamp, Value, ExpTime, Flags) of
+                {val_error, _} = Err ->
+                    {Err, State};
+                {ok, _} = Ok ->
+                    Ok
+            end;
         TStamp == TS, element(1, Value) == ?VALUE_SWITCHAROO ->
-            NewState = my_insert(State, Key, TStamp, Value, ExpTime, Flags),
-            {ok, NewState};
+            case my_insert(State, Key, TStamp, Value, ExpTime, Flags) of
+                {val_error, _} = Err ->
+                    {Err, State};
+                {ok, _} = Ok ->
+                    Ok
+            end;
         TStamp == TS ->
             %% We need to get the val blob.  {sigh}
             {Key, TS, Val, _, _, _} = key_exists_p(Key, Flags, State),
@@ -993,8 +1016,12 @@ set_key(Key, TStamp, Value, ExpTime, Flags, State) ->
         {ts_error, _} = Err ->
             {Err, State};
         _X ->
-            NewState = my_insert(State, Key, TStamp, Value, ExpTime, Flags),
-            {ok, NewState}
+            case my_insert(State, Key, TStamp, Value, ExpTime, Flags) of
+                {val_error, _} = Err ->
+                    {Err, State};
+                {ok, _} = Ok ->
+                    Ok
+            end
     end.
 
 rename_key(Key, TStamp, OldKey, ExpTime, Flags, State) ->
@@ -1016,10 +1043,6 @@ rename_key2(_Key, TStamp, _OldKey, _ExpTime, _Flags, State, TS) ->
     if
         TStamp > TS ->
             %% @TODO disable server implementation until further notice
-            %% Value = {?KEY_SWITCHAROO, OldKey},
-            %% NewState = my_insert(State, Key, TStamp, Value, ExpTime, Flags),
-            %% NewState1 = my_delete(NewState, OldKey, 0),
-            %% {ok, NewState1};
             {{key_exists, 0}, State};
         true ->
             {{ts_error, TS}, State}
@@ -1123,8 +1146,8 @@ get_many1(Key, Flags, IncreasingOrderP, DoFlags, State) ->
                             fun(T) when element(1, T) =< SweepZ -> true;
                                (_)                              -> false
                             end, Rs),
-                    %io:format("DROP: sweep ~p - ~p\n", [SweepA, SweepZ]),
-                    %io:format("DROP: ~P\n", [[KKK || {KKK, _} <- (Rs -- Rs2)], 10]),
+                                                %io:format("DROP: sweep ~p - ~p\n", [SweepA, SweepZ]),
+                                                %io:format("DROP: ~P\n", [[KKK || {KKK, _} <- (Rs -- Rs2)], 10]),
                     {{Rs2, true}, NewState};
                 _ ->
                     Result
@@ -1589,33 +1612,33 @@ my_insert(State, Key, TStamp, Value, ExpTime, Flags) ->
                end, Flags),
     my_insert2(State, Key, TStamp, Value, ExpTime, Flags2).
 
-my_insert2(S, Key, TStamp, Value, ExpTime, Flags) ->
-    Mods = S#state.thisdo_mods,
-    Mod =
-        case Value of
-            ?VALUE_REMAINS_CONSTANT ->
-                %% @TODO - value_in_ram support?
-                [ST] = my_lookup(S, Key, false),
-                CurVal = storetuple_val(ST),
-                CurValLen = storetuple_vallen(ST),
-                %% This is a royal pain, but I don't see a way around
-                %% this ... we need to avoid reading the value for
-                %% this key *and* avoid sending that value down the
-                %% chain.  For the latter, we need to indicate to the
-                %% downstream that we didn't include the value in this
-                %% update.  {sigh}
-                {insert_constant_value,
-                 storetuple_make(Key, TStamp, CurVal, CurValLen, ExpTime,
-                                 Flags)};
-            {?VALUE_SWITCHAROO, OldVal, NewVal} ->
-                %% @TODO - value_in_ram support?
-                %% NOTE: If testset has been specified, it has already
-                %%       been validated and stripped from Flags.
-                [ST] = my_lookup(S, Key, false),
-                CurVal = storetuple_val(ST),
-                CurValLen = storetuple_vallen(ST),
-                {OldSeq, _} = OldVal,
-                {CurSeq, _} = CurVal,
+my_insert2(#state{thisdo_mods=Mods, max_log_size=MaxLogSize}=S, Key, TStamp, Value, ExpTime, Flags) ->
+    case Value of
+        ?VALUE_REMAINS_CONSTANT ->
+            %% @TODO - value_in_ram support?
+            [ST] = my_lookup(S, Key, false),
+            CurVal = storetuple_val(ST),
+            CurValLen = storetuple_vallen(ST),
+            %% This is a royal pain, but I don't see a way around
+            %% this ... we need to avoid reading the value for
+            %% this key *and* avoid sending that value down the
+            %% chain.  For the latter, we need to indicate to the
+            %% downstream that we didn't include the value in this
+            %% update.  {sigh}
+            Mod = {insert_constant_value,
+                   storetuple_make(Key, TStamp, CurVal, CurValLen, ExpTime,
+                                   Flags)},
+            {ok, S#state{thisdo_mods = [Mod|Mods]}};
+        {?VALUE_SWITCHAROO, OldVal, NewVal} ->
+            %% @TODO - value_in_ram support?
+            %% NOTE: If testset has been specified, it has already
+            %%       been validated and stripped from Flags.
+            [ST] = my_lookup(S, Key, false),
+            CurVal = storetuple_val(ST),
+            CurValLen = storetuple_vallen(ST),
+            {OldSeq, _} = OldVal,
+            {CurSeq, _} = CurVal,
+            Mod =
                 if abs(OldSeq) == abs(CurSeq) ->
                         {insert_constant_value,
                          storetuple_make(Key, TStamp, NewVal, CurValLen,
@@ -1626,28 +1649,36 @@ my_insert2(S, Key, TStamp, Value, ExpTime, Flags) ->
                         %% returned to the client.  However, we can
                         %% change what we scribble to the local log.
                         {log_noop}
-                end;
-            {?KEY_SWITCHAROO, OldKey} ->
-                %% @TODO - value_in_ram support?
-                [ST] = my_lookup(S, OldKey, false),
-                Val = storetuple_val(ST),
-                ValLen = storetuple_vallen(ST),
-                {insert_constant_value,
-                 storetuple_make(Key, TStamp, Val, ValLen, ExpTime,
-                                 Flags)};
-            _ ->
-                Val = gmt_util:bin_ify(Value),
-                UseRamP = lists:member(value_in_ram, Flags),
-                ST = storetuple_make(Key, TStamp, Val, size(Val),
-                                     ExpTime, Flags -- [value_in_ram]),
-                if UseRamP ; S#state.bigdata_dir == undefined ->
-                        {insert_value_into_ram, ST};
-                   true ->
-                        Loc = bigdata_dir_store_val(Key, Value, S),
-                        {insert, ST, storetuple_replace_val(ST, Loc)}
-                end
-        end,
-    S#state{thisdo_mods = [Mod|Mods]}.
+                end,
+            {ok, S#state{thisdo_mods = [Mod|Mods]}};
+        {?KEY_SWITCHAROO, OldKey} ->
+            %% @TODO - value_in_ram support?
+            [ST] = my_lookup(S, OldKey, false),
+            Val = storetuple_val(ST),
+            ValLen = storetuple_vallen(ST),
+            Mod = {insert_constant_value,
+                   storetuple_make(Key, TStamp, Val, ValLen, ExpTime,
+                                   Flags)},
+            {ok, S#state{thisdo_mods = [Mod|Mods]}};
+        _ ->
+            Val = gmt_util:bin_ify(Value),
+            ValSize = byte_size(Val),
+            if ValSize > MaxLogSize ->
+                    {val_error, ValSize};
+               true ->
+                    UseRamP = lists:member(value_in_ram, Flags),
+                    ST = storetuple_make(Key, TStamp, Val, size(Val),
+                                         ExpTime, Flags -- [value_in_ram]),
+                    Mod =
+                        if UseRamP ; S#state.bigdata_dir == undefined ->
+                                {insert_value_into_ram, ST};
+                           true ->
+                                Loc = bigdata_dir_store_val(Key, Value, S),
+                                {insert, ST, storetuple_replace_val(ST, Loc)}
+                        end,
+                    {ok, S#state{thisdo_mods = [Mod|Mods]}}
+            end
+    end.
 
 my_insert_ignore_logging(State, Key, StoreTuple) ->
     delete_prior_expiry(State, Key),
@@ -1899,7 +1930,7 @@ filter_mods_from_upstream(Thisdo_Mods, S) ->
                            {insert_constant_value, NewST};
                       (X) ->
                            X
-              end, Thisdo_Mods),
+                   end, Thisdo_Mods),
     %%?DBG_GEN("WWWW: 2: ~p\n", [Ms]),
     Ms.
 
@@ -2083,8 +2114,8 @@ save_checkpoint_num(Dir, SeqNum) ->
         ok = file:sync(FH),
         ok = file:rename(TmpPath, FinalPath)
     catch X:Y ->
-        ?E_ERROR("Error renaming ~p -> ~p: ~p ~p (~p)\n",
-                 [TmpPath, FinalPath, X, Y, erlang:get_stacktrace()])
+            ?E_ERROR("Error renaming ~p -> ~p: ~p ~p (~p)\n",
+                     [TmpPath, FinalPath, X, Y, erlang:get_stacktrace()])
     after
         ok = file:close(FH)
     end.
@@ -2095,7 +2126,7 @@ read_checkpoint_num(Dir) ->
         {SeqNum, _} = string:to_integer(binary_to_list(Bin)),
         SeqNum
     catch _:_ ->
-        1                                       % Get 'em all
+            1                                       % Get 'em all
     end.
 
 sync_pid_start(SPA) ->
@@ -2281,18 +2312,18 @@ map_mods_into_ets(NotList, _S) when not is_list(NotList) ->
 pull_items_out_of_logging_queue(LastLogSerial, S) ->
     Q = S#state.logging_op_q,
     pull_items_out_of_logging_queue(queue:out(Q), [], Q,
-                                     LastLogSerial, -1, S).
+                                    LastLogSerial, -1, S).
 
 pull_items_out_of_logging_queue({{value, LQI}, NewQ}, Acc, _OldQ,
-                                 LastLogSerial, UpstreamSerial, S)
+                                LastLogSerial, UpstreamSerial, S)
   when is_record(LQI, log_q), LQI#log_q.logging_serial =< LastLogSerial ->
     pull_items_out_of_logging_queue(queue:out(NewQ), [LQI|Acc], NewQ,
-                                     LastLogSerial, UpstreamSerial, S);
+                                    LastLogSerial, UpstreamSerial, S);
 %%
 pull_items_out_of_logging_queue({{value, {upstream_serial, NewUS}}, NewQ}, Acc,
                                 _OldQ, LastLogSerial, _UpstreamSerial, S) ->
     pull_items_out_of_logging_queue(queue:out(NewQ), Acc, NewQ,
-                                     LastLogSerial, NewUS, S);
+                                    LastLogSerial, NewUS, S);
 %%
 pull_items_out_of_logging_queue(_, Acc, Q, _LastLogSerial,
                                 _UpstreamSerial, S) ->
@@ -2484,9 +2515,9 @@ repair_diff_round1([Tuple|Tail] = UpList, MyKey, Unknown, Ds, S) ->
                     gmt_util:set_alarm({debug_alarm, {a_24622, MyKey}},
                                        "Contact Gemini technical support",
                                        fun() -> ok end),
-                            repair_diff_round1(Tail,
-                                               ets:next(S#state.ctab, MyKey),
-                                               Unknown, Ds, S)
+                    repair_diff_round1(Tail,
+                                       ets:next(S#state.ctab, MyKey),
+                                       Unknown, Ds, S)
             end;
         UpKey > MyKey ->
             %% MyKey is unknown upstream, delete it now!
@@ -2569,9 +2600,9 @@ repair_loop([StoreTuple|Tail] = UpList, MyKey, Is, Ds, S) ->
                             end,
                     if UpVal =/= MyVal ->
                             ?E_INFO(
-                              "TODO: Weird, but we got a repair "
-                              "update for ~p with same ts but "
-                              "different values", [UpKey]),
+                               "TODO: Weird, but we got a repair "
+                               "update for ~p with same ts but "
+                               "different values", [UpKey]),
                             throw(hibari_inconceivable_2398223);
                        true ->
                             %% Nothing to do
@@ -2594,7 +2625,7 @@ repair_loop([StoreTuple|Tail] = UpList, MyKey, Is, Ds, S) ->
             MyExpTime  = storetuple_exptime(MyStoreTuple),
             ok = repair_loop_delete(MyKey, MyExpTime, S),
             repair_loop(UpList, ets:next(S#state.ctab, MyKey), Is, Ds + 1, S)
-       end.
+    end.
 
 repair_loop_insert(Tuple, S) ->
     StoreTuple = externtuple_to_storetuple(Tuple),
@@ -2897,16 +2928,16 @@ wal_purge_recs_by_seqnum(SeqNum, Offset, S) ->
              [S#state.name, SeqNum, NumRecs]),
     gmt_util:set_alarm({data_lost, {S#state.name, seq, SeqNum, keys, NumRecs}},
                        "Number of keys lost = " ++ integer_to_list(NumRecs) ++
-                       ", must recover via chain replication.",
+                           ", must recover via chain replication.",
                        fun() -> ok end),
     NumRecs.
 
 wal_scan_failed(ErrList, S) ->
     ?E_WARNING("WAL scan by brick ~p had errors: ~p\n",[S#state.name, ErrList]),
     _Msg = lists:flatten(
-            io_lib:format("Number of keys lost = unknown, must recover "
-                          "via chain replication.  Error detail = ~p.",
-                          [ErrList])),
+             io_lib:format("Number of keys lost = unknown, must recover "
+                           "via chain replication.  Error detail = ~p.",
+                           [ErrList])),
     %% gmt_util:set_alarm({wal_scan, S#state.name}, _Msg, fun() -> ok end),
     ok.
 
@@ -2918,7 +2949,7 @@ flush_gen_server_calls() ->
 flush_gen_cast_calls(S) ->
     receive {'$gen_cast', Msg} ->
             Count = case get(wal_scan_cast_count) of undefined -> 0;
-                                                     N ->         N
+                        N ->         N
                     end,
             if Count < 10 ->
                     ?E_INFO("~p: flushing $gen_cast message: ~P\n",
@@ -3198,22 +3229,22 @@ scavenger_get_keys(Name, Fs, FirstKey, F_k2d, F_lump) ->
     GetManyConf = {Max,TimeOut,Retry,Sleep},
     scavenger_get_keys(Name, Fs, GetManyConf,
                        scavenger_get_many(Name,FirstKey,Fs,GetManyConf),
-		       [], F_k2d, F_lump, 1).
+                       [], F_k2d, F_lump, 1).
 
 scavenger_get_keys(Name, Fs, GMC, Res, Acc, F_k2d, F_lump, Iters)
   when Iters rem 4 == 0 ->
     foldl_lump(F_k2d, dict:new(), Acc, F_lump, 100*1000),
     scavenger_get_keys(Name, Fs, GMC,
-		       Res, [], F_k2d, F_lump, Iters + 1);
+                       Res, [], F_k2d, F_lump, Iters + 1);
 scavenger_get_keys(Name, _Fs, _GMC,
-		   {ok, {Rs, false}}, Acc, F_k2d, F_lump, _Iters) ->
+                   {ok, {Rs, false}}, Acc, F_k2d, F_lump, _Iters) ->
     foldl_lump(F_k2d, dict:new(), prepend_rs(Name, Rs, Acc), F_lump, 100*1000),
     ok;
 scavenger_get_keys(Name, Fs, GMC,
-		   {ok, {Rs, true}}, Acc, F_k2d, F_lump, Iters) ->
+                   {ok, {Rs, true}}, Acc, F_k2d, F_lump, Iters) ->
     K = storetuple_key(lists:last(Rs)),
     scavenger_get_keys(Name, Fs, GMC,
-		       scavenger_get_many(Name, K, Fs, GMC),
+                       scavenger_get_many(Name, K, Fs, GMC),
                        prepend_rs(Name, Rs, Acc), F_k2d, F_lump, Iters + 1).
 
 scavenger_get_many(Name, Key, Flags, {Max, TimeOut, 0, Sleep}) ->
@@ -3227,10 +3258,10 @@ scavenger_get_many(Name, Key, Flags, {Max, TimeOut, Retry, Sleep}) ->
                                [brick_server:make_get_many(Key, Max, Flags)],
                                [ignore_role], TimeOut) of
         [Res] ->
-	    timer:sleep(Sleep),
+            timer:sleep(Sleep),
             Res;
         _Err ->
-	    timer:sleep(Sleep),
+            timer:sleep(Sleep),
             scavenger_get_many(Name, Key, Flags, {Max, TimeOut, Retry-1, Sleep})
     end.
 
@@ -3328,7 +3359,7 @@ scavenge_one_seq_file_fun(TempDir, SA, Fread_blob, Finfolog) ->
                                           timer:sleep(40*1000),
                                           delete_seq(SA, SeqNum)
                                   end);
-                       UpRes ->
+                        UpRes ->
                             Finfolog(
                               "scavenger: ~p sequence ~p: UpRes ~p\n",
                               [SA#scav.name, SeqNum, UpRes])
@@ -3820,17 +3851,17 @@ debug_scan3(Dir, EtsTab, WalMod) ->
                       CB = WalMod:read_hunk_member_ll(FH, H, md5, 1),
                       Mods = binary_to_term(CB),
                       lists:foreach(
-                            fun(T) when element(1, T) == insert ->
-                                    Key = element(1, element(2, T)),
-                                    ets:insert(EtsTab, {Key, x});
-                               (T) when element(1, T) == delete orelse element(1, T) == delete_noexptime ->
-                                    Key = element(1, element(2, T)),
-                                    ets:delete(EtsTab, Key);
-                               (T) when element(1, T) == delete_all_table_items ->
-                                    ets:delete_all_objects(EtsTab);
-                               (_) ->
-                                    blah
-                            end, Mods),
+                        fun(T) when element(1, T) == insert ->
+                                Key = element(1, element(2, T)),
+                                ets:insert(EtsTab, {Key, x});
+                           (T) when element(1, T) == delete orelse element(1, T) == delete_noexptime ->
+                                Key = element(1, element(2, T)),
+                                ets:delete(EtsTab, Key);
+                           (T) when element(1, T) == delete_all_table_items ->
+                                ets:delete_all_objects(EtsTab);
+                           (_) ->
+                                blah
+                        end, Mods),
                       blah;
                  H#hunk_summ.type == ?LOGTYPE_BLOB ->
                       blah;
@@ -3844,13 +3875,13 @@ debug_scan4(Dir, OutFile) ->
 
 debug_scan4(Dir, OutFile, WalMod) ->
     {ok, OutFH} = file:open(OutFile, [write, delayed_write]),
-X = WalMod:fold(
-      shortterm, Dir,
-      fun(H, FH, _Acc) ->
-              if H#hunk_summ.type == ?LOGTYPE_METADATA ->
-                      CB = WalMod:read_hunk_member_ll(FH, H, md5, 1),
-                      Mods = binary_to_term(CB),
-                      lists:foreach(
+    X = WalMod:fold(
+          shortterm, Dir,
+          fun(H, FH, _Acc) ->
+                  if H#hunk_summ.type == ?LOGTYPE_METADATA ->
+                          CB = WalMod:read_hunk_member_ll(FH, H, md5, 1),
+                          Mods = binary_to_term(CB),
+                          lists:foreach(
                             fun(T) when element(1, T) == insert orelse element(1, T) == insert_value_into_ram ->
                                     Key = element(1, element(2, T)),
                                     io:format(OutFH, "i ~p\n", [Key]);
@@ -3862,12 +3893,12 @@ X = WalMod:fold(
                                (T) ->
                                     io:format(OutFH, "? ~p\n", [T])
                             end, Mods),
-                      blah;
-                 H#hunk_summ.type == ?LOGTYPE_BLOB ->
-                      blah;
-                 true ->
-                      blah
-              end
-      end, unused),
+                          blah;
+                     H#hunk_summ.type == ?LOGTYPE_BLOB ->
+                          blah;
+                     true ->
+                          blah
+                  end
+          end, unused),
     ok = file:close(OutFH),
     X.

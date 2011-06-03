@@ -30,6 +30,7 @@
 -type table_name()   :: atom().
 -type time_t()       :: integer().
 -type ts()           :: non_neg_integer().
+-type len()          :: non_neg_integer().
 -type val()          :: binary() | iolist().  % Differs from UBF contract
 -type val_impl()     :: val() | '$disk_remains_constant/$' | {'$value_switch-a-roo/$', val(), val()} | {'$key_switch-a-roo/$', key()}.
 
@@ -48,7 +49,7 @@
                         must_not_exist |
                         value_in_ram |
                         %% Sent by server, should not be sent by client.
-                        {val_len, integer()}.
+                        {val_len, len()}.
 -type do_op_flag()   :: do_op_flag0() |
                         %% Section: Flags that pass through brick and are
                         %%          stored with key.
@@ -90,6 +91,7 @@
 -type do1_res_fail() :: {key_exists, ts()} |
                         key_not_exist |
                         {ts_error, ts()} |
+                        {val_error, len()} |
                         invalid_flag_present |
                         brick_not_available.
 

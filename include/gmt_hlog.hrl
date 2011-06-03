@@ -55,7 +55,6 @@
 -type foldret() :: {foldacc(), list({term(), [{seq, seqnum(), err, term()}]})} | no_return().
 -type hlogtype() :: 'metadata' | 'bigblob' | 'bigblob_longterm'.
 -type incr() :: integer().
--type len() :: non_neg_integer().
 -type lenhint() :: len().
 -type lenhintORxformfun() :: lenhint() | xformfun().
 -type nth() :: non_neg_integer().

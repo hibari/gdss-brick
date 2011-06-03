@@ -44,6 +44,7 @@
          , {brick_do_op_too_old_timeout, 3000}
          , {brick_expiration_processor, "[]."}
          , {brick_max_log_size_mb, 100}
+         , {brick_min_log_size_mb, 100}
          , {brick_max_primers, 200}
          , {brick_mbox_high_water, 500}
          , {brick_mbox_low_water, 100}
@@ -64,7 +65,7 @@
          , {scavenger_get_many_max, 1000}
          , {scavenger_get_many_retry, 5}
          , {scavenger_get_many_timeout, 5000}
-	 , {scavenger_get_many_sleep, 0}
+         , {scavenger_get_many_sleep, 0}
         ]}
   %%
   %% brick_check_checkpoint_max_mb
@@ -115,6 +116,10 @@
   %%
   %% brick_max_log_size_mb
   %%   In MB, the maximum size of any individual file in the
+  %%   transaction write-ahead log.  This upper limit can be exceeded.
+  %%
+  %% brick_min_log_size_mb
+  %%   In MB, the typical minimum size of any individual file in the
   %%   transaction write-ahead log.
   %%
   %% brick_max_primers
@@ -199,6 +204,9 @@
   %%   TODO
   %%
   %% scavenger_get_many_timeout
+  %%   TODO
+  %%
+  %% scavenger_get_many_sleep
   %%   TODO
   %%
  ]}.

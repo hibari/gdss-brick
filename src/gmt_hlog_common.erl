@@ -762,8 +762,8 @@ spawn_future_tasks_after_dirty_buffer_wait(EndSeqNum, EndOffset, S) ->
     %% Advancing the common log's sequence number isn't really a
     %% future task, but doing it asyncly is a good idea.
     spawn(fun() ->
-                  {ok, MaxMB} = application:get_env(gdss_brick, brick_max_log_size_mb),
-                  if EndOffset > MaxMB * 1024 * 1024 div 2 ->
+                  {ok, MinMB} = application:get_env(gdss_brick, brick_min_log_size_mb),
+                  if EndOffset > MinMB * 1024 * 1024 div 2 ->
                           ?DBG_TLOGx({spawn_future_tasks_after_dirty_buffer_wait, advance,1}),
                           %% NOTE: not checking for success or failure
                           %% ... it doesn't matter

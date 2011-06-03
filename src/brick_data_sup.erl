@@ -61,8 +61,10 @@ init([]) ->
     %%               Restart, Shutdown_time, Type, Modules_used]
 
     {ok, MaxMB} = application:get_env(gdss_brick, brick_max_log_size_mb),
+    {ok, MinMB} = application:get_env(gdss_brick, brick_min_log_size_mb),
     CommonLogArgs = [[{common_log_name, ?GMT_HLOG_COMMON_LOG_NAME},
-                      {file_len_limit, MaxMB * 1024*1024}]],
+                      {file_len_max, MaxMB * 1024*1024},
+                      {file_len_min, MinMB * 1024*1024}]],
     CommonLog =
         {common_log, {gmt_hlog_common, start_link, CommonLogArgs},
          permanent, 2000, worker, [gmt_hlog_common]},

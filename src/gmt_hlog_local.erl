@@ -120,7 +120,8 @@
           props                       :: proplist(),
           name                        :: atom(),
           dir                         :: dirname(),                % storage dir
-          file_len_limit              :: len(),
+          file_len_max                :: len(),
+          file_len_min                :: len(),
           common_server               :: servername(),
           common_log                  :: pid() | undefined,
           last_seq=0                  :: seqnum(),
@@ -302,7 +303,8 @@ init(PropList) ->
 
     process_flag(priority, high),
     Dir = log_name2data_dir(Name),
-    FileLenLimit = proplists:get_value(file_len_limit, PropList, 100*1024*1024),
+    FileLenMax = proplists:get_value(file_len_max, PropList, 100*1024*1024),
+    FileLenMin = proplists:get_value(file_len_min, PropList, FileLenMax),
     CServerName = get_or_start_common_log(PropList),
     %%io:format("DBG: ~s: common info: ~p\n", [?MODULE, CServerName]),
     LastSeq = read_last_sequence_number(Dir),
@@ -311,7 +313,9 @@ init(PropList) ->
     catch file:make_dir(Dir),
     catch file:make_dir(Dir ++ "/s"),
     S = #state{props = PropList, name = Name, dir = Dir,
-               file_len_limit = FileLenLimit, common_server = CServerName,
+               file_len_max = FileLenMax,
+               file_len_min = FileLenMin,
+               common_server = CServerName,
                last_seq = LastSeq},
     {_, NewS} = do_advance_seqnum(1, S),
     %%io:format("DBG: ~s: init done\n", [?MODULE]),
@@ -333,7 +337,7 @@ init(PropList) ->
 %%--------------------------------------------------------------------
 handle_call({write_hunk_bytes, LocalLogName, HLogType, Key,
              TypeNum, H_Len, H_Bytes}, _From,
-            #state{last_seq = LastSeq, offset = LastOffset, file_len_limit = FileLenLimit} = State) ->
+            #state{last_seq = LastSeq, offset = LastOffset, file_len_min = FileLenMin} = State) ->
     {Len, Bytes} =
         if HLogType == metadata ->
                 %% This tuple must be sortable by gmt_hlog_common by:
@@ -352,7 +356,7 @@ handle_call({write_hunk_bytes, LocalLogName, HLogType, Key,
             if HLogType == metadata ->
                     Reply = {ok, LastSeq, LastOffset},
                     NewOffset = LastOffset + H_Len,
-                    if NewOffset > FileLenLimit ->
+                    if NewOffset > FileLenMin ->
                             {_, NewState} = do_advance_seqnum(1, State),
                             {reply, Reply, NewState};
                        true ->

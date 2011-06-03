@@ -194,7 +194,7 @@
 %%% Types/Specs/Records
 %%%----------------------------------------------------------------------
 
--type props() :: list({name,servername()} | {file_len_limit,len()} | {long_h1_size,integer()} | {long_h2_size,integer()}).
+-type props() :: list({name,servername()} | {file_len_max,len()} | {file_len_min,len()} | {long_h1_size,integer()} | {long_h2_size,integer()}).
 
 -opaque from() :: {pid(),term()}.
 
@@ -209,7 +209,8 @@
           syncer_advance_reqs=[]      :: list({integer(), from()}),
           debug_write_sleep=0         :: non_neg_integer(),
           debug_sync_sleep=0          :: non_neg_integer(),
-          file_len_limit              :: len(),                    % log file size limit
+          file_len_max                :: len(),                    % log file size max
+          file_len_min                :: len(),                    % log file size min
           long_h1_size                :: integer(),                % longterm dir #1 size
           long_h2_size                :: integer(),                % longterm dir #2 size
           last_seq                    :: integer(),                % last sequence #
@@ -452,7 +453,8 @@ read_bigblob_hunk_blob(Dir, SeqNum, Offset, CheckMD5_p, ValLen) ->
 %%
 %% Property list options:
 %% {name, Name::atom()}
-%% {file_len_limit, Bytes::integer()}
+%% {file_len_max, Bytes::integer()}
+%% {file_len_min, Bytes::integer()}
 %% {long_h1_size, Num::integer()}
 %% {long_h2_size, Num::integer()}
 
@@ -467,7 +469,8 @@ init(PropList) ->
     Dir = log_name2data_dir(Name),
     catch file:make_dir(Dir),
     catch file:make_dir(Dir ++ "/s"), % short term file path
-    LenLim = proplists:get_value(file_len_limit, PropList, 64*1024*1024),
+    LenMax = proplists:get_value(file_len_max, PropList, 64*1024*1024),
+    LenMin = proplists:get_value(file_len_min, PropList, LenMax),
     WriteSleep = proplists:get_value(debug_write_sleep, PropList, 0),
     SyncSleep = proplists:get_value(debug_sync_sleep, PropList, 0),
 
@@ -496,7 +499,8 @@ init(PropList) ->
     {CurFHL, CurOffL} = create_new_log_file(Dir, CurSeqL),
 
     {ok, #state{props = PropList, dir = Dir, name = Name,
-                file_len_limit = LenLim,
+                file_len_max = LenMax,
+                file_len_min = LenMin,
                 long_h1_size = H1_Size, long_h2_size = H2_Size,
                 debug_write_sleep = WriteSleep, debug_sync_sleep = SyncSleep,
                 last_seq = LastSeq + 2,
@@ -698,11 +702,11 @@ write_log_header(FH) ->
 %%       {term(), state_r()}
 
 do_write_hunk(HLogType, _TypeNum, H_Len, H_Bytes,
-              #state{file_len_limit=FileLenLimit}=S) ->
+              #state{file_len_max=FileLenMax, file_len_min=FileLenMin}=S) ->
     debug_sleep(S#state.debug_write_sleep),
     H_Len = iolist_size(H_Bytes), % TODO: This sanity check isn't needed??
-    %% ASSUMPTION: file_len_limit is larger than 32
-    if H_Len > (FileLenLimit - 32) -> % TODO: remove fudge factor!
+    %% ASSUMPTION: file_len_max is larger than 32
+    if H_Len > (FileLenMax - 32) -> % TODO: remove fudge factor!
             {{hunk_too_big, H_Len}, S};
        true ->
             LongTermP = HLogType == bigblob_longterm,
@@ -715,7 +719,7 @@ do_write_hunk(HLogType, _TypeNum, H_Len, H_Bytes,
                          1, S#state.cur_offS}
                 end,
             S2 = if SyncNoProblemP ->
-                         S1 = if (H_Len + CurOffset) > FileLenLimit ->
+                         S1 = if (H_Len + CurOffset) > FileLenMin ->
                                       do_advance_seqnum(Incr, undefined, S);
                                  true ->
                                       S
