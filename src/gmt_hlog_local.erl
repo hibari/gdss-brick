@@ -333,7 +333,7 @@ init(PropList) ->
 %%--------------------------------------------------------------------
 handle_call({write_hunk_bytes, LocalLogName, HLogType, Key,
              TypeNum, H_Len, H_Bytes}, _From,
-            #state{last_seq = LastSeq, offset = LastOffset} = State) ->
+            #state{last_seq = LastSeq, offset = LastOffset, file_len_limit = FileLenLimit} = State) ->
     {Len, Bytes} =
         if HLogType == metadata ->
                 %% This tuple must be sortable by gmt_hlog_common by:
@@ -351,12 +351,12 @@ handle_call({write_hunk_bytes, LocalLogName, HLogType, Key,
         {ok, RemoteSeq, RemoteOff} ->
             if HLogType == metadata ->
                     Reply = {ok, LastSeq, LastOffset},
-                    if LastSeq + H_Len > State#state.file_len_limit ->
+                    NewOffset = LastOffset + H_Len,
+                    if NewOffset > FileLenLimit ->
                             {_, NewState} = do_advance_seqnum(1, State),
                             {reply, Reply, NewState};
                        true ->
-                            {reply, Reply, State#state{
-                                             offset = LastOffset + H_Len}}
+                            {reply, Reply, State#state{offset = NewOffset}}
                     end;
                true ->
                     {reply, {ok, RemoteSeq, RemoteOff}, State}
