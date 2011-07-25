@@ -115,7 +115,7 @@
 %%%
 %%% ctab format:
 %%%    {Key = binary()|term(),         binary is preferred
-%%%     TStamp = bignum(),             whatever make_timestamp() makes
+%%%     TStamp = bignum(),             whatever brick_server:make_timestamp() makes
 %%%     Val = binary()|term(),         binary is preferred
 %%%    }
 %%%    Flags and ExpTime are _not_ stored at this time.
@@ -745,19 +745,23 @@ do_do2(L, DoFlags, State) ->
 do_dolist([], State, _DoFlags, Acc) ->
     {lists:reverse(Acc), State};
 do_dolist([{add, Key, TStamp, Value, ExpTime, Flags}|T], State, DoFlags, Acc) ->
-    {Res, NewState} = add_key(Key, TStamp, Value, ExpTime, Flags, State),
+    if TStamp =:= 0 -> EffTStamp = brick_server:make_timestamp(); true -> EffTStamp = TStamp end,
+    {Res, NewState} = add_key(Key, EffTStamp, Value, ExpTime, Flags, State),
     N_add = NewState#state.n_add,
     do_dolist(T, NewState#state{n_add = N_add + 1}, DoFlags, [Res|Acc]);
 do_dolist([{replace, Key, TStamp, Value, ExpTime, Flags}|T], State, DoFlags, Acc) ->
-    {Res, NewState} = replace_key(Key, TStamp, Value, ExpTime, Flags, State),
+    if TStamp =:= 0 -> EffTStamp = brick_server:make_timestamp(); true -> EffTStamp = TStamp end,
+    {Res, NewState} = replace_key(Key, EffTStamp, Value, ExpTime, Flags, State),
     N_replace = NewState#state.n_replace,
     do_dolist(T, NewState#state{n_replace = N_replace + 1}, DoFlags, [Res|Acc]);
 do_dolist([{set, Key, TStamp, Value, ExpTime, Flags}|T], State, DoFlags, Acc) ->
-    {Res, NewState} = set_key(Key, TStamp, Value, ExpTime, Flags, State),
+    if TStamp =:= 0 -> EffTStamp = brick_server:make_timestamp(); true -> EffTStamp = TStamp end,
+    {Res, NewState} = set_key(Key, EffTStamp, Value, ExpTime, Flags, State),
     N_set = NewState#state.n_set,
     do_dolist(T, NewState#state{n_set = N_set + 1}, DoFlags, [Res|Acc]);
 do_dolist([{rename, Key, TStamp, OldKey, ExpTime, Flags}|T], State, DoFlags, Acc) ->
-    {Res, NewState} = rename_key(Key, TStamp, OldKey, ExpTime, Flags, State),
+    if TStamp =:= 0 -> EffTStamp = brick_server:make_timestamp(); true -> EffTStamp = TStamp end,
+    {Res, NewState} = rename_key(Key, EffTStamp, OldKey, ExpTime, Flags, State),
     N_rename = NewState#state.n_rename,
     do_dolist(T, NewState#state{n_rename = N_rename + 1}, DoFlags, [Res|Acc]);
 do_dolist([{get, Key, Flags}|T], State, DoFlags, Acc) ->
@@ -772,8 +776,7 @@ do_dolist([{get_many, Key, Flags}|T], State, DoFlags, Acc) ->
     {Res0, NewState} = get_many1(Key, Flags, true, DoFlags, State),
     Res = {ok, Res0},
     N_get_many = NewState#state.n_get_many,
-    do_dolist(T, NewState#state{n_get_many = N_get_many + 1}, DoFlags,
-              [Res|Acc]);
+    do_dolist(T, NewState#state{n_get_many = N_get_many + 1}, DoFlags, [Res|Acc]);
 do_dolist([next_op_is_silent, DoOp|T], State, DoFlags, Acc) ->
     {_ResList, NewState} = do_dolist([DoOp], State, DoFlags, []),
     do_dolist(T, NewState, DoFlags, Acc);
@@ -795,8 +798,14 @@ do_txnlist([], State, Acc, true, _N, DoFlags, []) ->
     Reply;
 do_txnlist([], State, _Acc, false, _, _DoFlags, ErrAcc) ->
     {{txn_fail, lists:reverse(ErrAcc)}, State};
-do_txnlist([{add, Key, _TStamp, _Value, _ExpTime, Flags} = H|T], State,
+do_txnlist([{add, Key, TStamp, _Value, _ExpTime, Flags} = H|T], State,
            Acc, Good, N, DoFlags, ErrAcc) ->
+    if TStamp =:= 0 ->
+            EffTStamp = brick_server:make_timestamp(),
+            EffH = setelement(3, H, EffTStamp);
+       true ->
+            EffH = H
+    end,
     case key_exists_p(Key, Flags, State) of
         {Key, TS, _, _, _, _} ->
             Err = {key_exists, TS},
@@ -804,13 +813,20 @@ do_txnlist([{add, Key, _TStamp, _Value, _ExpTime, Flags} = H|T], State,
         {ts_error, _} = Err ->
             do_txnlist(T, State, [Err|Acc], false, N+1, DoFlags, [{N, Err}|ErrAcc]);
         _ ->
-            do_txnlist(T, State, [H|Acc], Good, N+1, DoFlags, ErrAcc)
+            do_txnlist(T, State, [EffH|Acc], Good, N+1, DoFlags, ErrAcc)
     end;
 do_txnlist([{replace, Key, TStamp, Value, _ExpTime, Flags} = H|T], State,
            Acc, Good, N, DoFlags, ErrAcc) ->
-    case key_exists_p(Key, Flags, State, true, TStamp, Value) of
+    if TStamp =:= 0 ->
+            EffTStamp = brick_server:make_timestamp(),
+            EffH = setelement(3, H, EffTStamp);
+       true ->
+            EffTStamp = TStamp,
+            EffH = H
+    end,
+    case key_exists_p(Key, Flags, State, true, EffTStamp, Value) of
         {Key, _, _, _, _, _} ->
-            do_txnlist(T, State, [H|Acc], Good, N+1, DoFlags, ErrAcc);
+            do_txnlist(T, State, [EffH|Acc], Good, N+1, DoFlags, ErrAcc);
         {ts_error, _} = Err ->
             do_txnlist(T, State, [Err|Acc], false, N+1, DoFlags, [{N, Err}|ErrAcc]);
         _ ->
@@ -819,25 +835,39 @@ do_txnlist([{replace, Key, TStamp, Value, _ExpTime, Flags} = H|T], State,
     end;
 do_txnlist([{set, Key, TStamp, Value, _ExpTime, Flags} = H|T], State,
            Acc, Good, N, DoFlags, ErrAcc) ->
+    if TStamp =:= 0 ->
+            EffTStamp = brick_server:make_timestamp(),
+            EffH = setelement(3, H, EffTStamp);
+       true ->
+            EffTStamp = TStamp,
+            EffH = H
+    end,
     Num = lists:foldl(fun(Flag, Sum) -> case check_flaglist(Flag, Flags) of
                                             {true, _} -> Sum + 1;
                                             _         -> Sum
                                         end
                       end, 0, [must_exist, must_not_exist]),
     if Num == 0 ->
-            case key_exists_p(Key, Flags, State, false, TStamp, Value) of
+            case key_exists_p(Key, Flags, State, false, EffTStamp, Value) of
                 {ts_error, _} = Err ->
                     do_txnlist(T, State, [Err|Acc], false, N+1, DoFlags, [{N, Err}|ErrAcc]);
                 _ ->
-                    do_txnlist(T, State, [H|Acc], Good, N+1, DoFlags, ErrAcc)
+                    do_txnlist(T, State, [EffH|Acc], Good, N+1, DoFlags, ErrAcc)
             end;
        true ->
             Err = invalid_flag_present,
             do_txnlist(T, State, [Err|Acc], false, N+1, DoFlags, [{N, Err}|ErrAcc])
     end;
-do_txnlist([{rename, Key, TStamp, OldKey, _ExpTime, Flags} = _H|T], State,
+do_txnlist([{rename, Key, TStamp, OldKey, _ExpTime, Flags} = H|T], State,
            Acc, _Good, N, DoFlags, ErrAcc) ->
-    case key_exists_p(Key, proplists:delete(testset,Flags), State, false, TStamp) of
+    if TStamp =:= 0 ->
+            EffTStamp = brick_server:make_timestamp(),
+            _EffH = setelement(3, H, EffTStamp);
+       true ->
+            EffTStamp = TStamp,
+            _EffH = H
+    end,
+    case key_exists_p(Key, proplists:delete(testset,Flags), State, false, EffTStamp) of
         {Key, TS, _, _, _, _} ->
             Err = {key_exists, TS},
             do_txnlist(T, State, [Err|Acc], false, N+1, DoFlags, [{N, Err}|ErrAcc]);
@@ -845,7 +875,7 @@ do_txnlist([{rename, Key, TStamp, OldKey, _ExpTime, Flags} = _H|T], State,
             case key_exists_p(OldKey, Flags, State, false, TStamp) of
                 {OldKey, _, _, _, _, _} ->
                     %% @TODO disable server implementation until further notice
-                    %% do_txnlist(T, State, [H|Acc], Good, N+1, DoFlags, ErrAcc);
+                    %% do_txnlist(T, State, [EffH|Acc], Good, N+1, DoFlags, ErrAcc);
                     Err = {key_exists, 0},
                     do_txnlist(T, State, [Err|Acc], false, N+1, DoFlags, [{N, Err}|ErrAcc]);
                 {ts_error, _} = Err ->
@@ -961,7 +991,7 @@ add_key(Key, TStamp, Value, ExpTime, Flags, State) ->
             case my_insert(State, Key, TStamp, Value, ExpTime, Flags) of
                 {val_error, _} = Err ->
                     {Err, State};
-                {ok, _} = Ok ->
+                {{ok, _}, _} = Ok ->
                     Ok
             end
     end.
@@ -982,14 +1012,14 @@ replace_key2(Key, TStamp, Value, ExpTime, Flags, State, TS) ->
             case my_insert(State, Key, TStamp, Value, ExpTime, Flags) of
                 {val_error, _} = Err ->
                     {Err, State};
-                {ok, _} = Ok ->
+                {{ok, _}, _} = Ok ->
                     Ok
             end;
         TStamp == TS, element(1, Value) == ?VALUE_SWITCHAROO ->
             case my_insert(State, Key, TStamp, Value, ExpTime, Flags) of
                 {val_error, _} = Err ->
                     {Err, State};
-                {ok, _} = Ok ->
+                {{ok, _}, _} = Ok ->
                     Ok
             end;
         TStamp == TS ->
@@ -999,7 +1029,7 @@ replace_key2(Key, TStamp, Value, ExpTime, Flags, State, TS) ->
                     %% In this case, the new timestamp and value is
                     %% identical to what is already stored here ... so
                     %% we will return OK without changing anything.
-                    {ok, State};
+                    {{ok, TS}, State};
                true ->
                     {{ts_error, TS}, State}
             end;
@@ -1019,7 +1049,7 @@ set_key(Key, TStamp, Value, ExpTime, Flags, State) ->
             case my_insert(State, Key, TStamp, Value, ExpTime, Flags) of
                 {val_error, _} = Err ->
                     {Err, State};
-                {ok, _} = Ok ->
+                {{ok, _}, _} = Ok ->
                     Ok
             end
     end.
@@ -1059,7 +1089,7 @@ get_key(Key, Flags, State) ->
                             {ok, KeyTStamp};
                         {true, _} ->
                             Flags2 = [{val_len, ValueLen}|KeyFlags],
-                            {ok, KeyTStamp, Flags2}
+                            {ok, KeyTStamp, ExpTime, Flags2}
                     end;
                 _ ->
                     case GetAllAttribs of
@@ -1286,14 +1316,27 @@ make_many_result(StoreTuple, {true, true, false}, S) ->
      make_extern_flags(storetuple_val(StoreTuple),
                        storetuple_vallen(StoreTuple),
                        storetuple_flags(StoreTuple), S)};
-make_many_result(StoreTuple, {false, _DoAllAttr, false}, S) ->
+make_many_result(StoreTuple, {false, false, false}, S) ->
     make_many_result2(StoreTuple, S);
+make_many_result(StoreTuple, {false, true, false}, S) ->
+    make_many_result3(StoreTuple, S);
 make_many_result(StoreTuple, {_DoWitness, _DoAllAttr, true}, _S) ->
     StoreTuple.
 
 make_many_result2(StoreTuple, S) when S#state.bigdata_dir == undefined ->
-    storetuple_to_externtuple(StoreTuple, S);
+    {Key, TStamp, Val0, _ExpTime, _Flags} = storetuple_to_externtuple(
+                                              StoreTuple, S),
+    {Key, TStamp, Val0};
 make_many_result2(StoreTuple, S) ->
+    {Key, TStamp, Val0, _ExpTime, _Flags} = storetuple_to_externtuple(
+                                            StoreTuple, S),
+    ValLen = storetuple_vallen(StoreTuple),
+    Val = bigdata_dir_get_val(Key, Val0, ValLen, S),
+    {Key, TStamp, Val}.
+
+make_many_result3(StoreTuple, S) when S#state.bigdata_dir == undefined ->
+    storetuple_to_externtuple(StoreTuple, S);
+make_many_result3(StoreTuple, S) ->
     {Key, TStamp, Val0, ExpTime, Flags} = storetuple_to_externtuple(
                                             StoreTuple, S),
     ValLen = storetuple_vallen(StoreTuple),
@@ -1470,8 +1513,8 @@ check_flaglist(Flag, [_H|T]) ->
 %% <ul>
 %% <!--  1    2       3      4         5        6        -->
 %% <li> {Key, TStamp, Value, ValueLen}                 </li>
-%% <li> {Key, TStamp, Value, ValueLen, ExpTime}        </li>
 %% <li> {Key, TStamp, Value, ValueLen, Flags}          </li>
+%% <li> {Key, TStamp, Value, ValueLen, ExpTime}        </li>
 %% <li> {Key, TStamp, Value, ValueLen, ExpTime, Flags} </li>
 %% </ul>
 
@@ -1482,18 +1525,16 @@ check_flaglist(Flag, [_H|T]) ->
                        {key(), ts(), storetuple_val(), integer(), flags_list()} |
                        {key(), ts(), storetuple_val(), integer(), exp_time(), flags_list()}.
 -type extern_tuple() :: {key(), ts(), storetuple_val()} |
-                        {key(), ts(), storetuple_val(), exp_time()} |
-                        {key(), ts(), storetuple_val(), flags_list()} |
                         {key(), ts(), storetuple_val(), exp_time(), flags_list()}.
 
 storetuple_make(Key, TStamp, Value, ValueLen, 0, []) ->
     {Key, TStamp, Value, ValueLen};
-storetuple_make(Key, TStamp, Value, ValueLen, ExpTime, [])
-  when is_integer(ExpTime), ExpTime =/= 0 ->
-    {Key, TStamp, Value, ValueLen, ExpTime};
 storetuple_make(Key, TStamp, Value, ValueLen, 0, Flags)
   when is_list(Flags), Flags /= [] ->
     {Key, TStamp, Value, ValueLen, Flags};
+storetuple_make(Key, TStamp, Value, ValueLen, ExpTime, [])
+  when is_integer(ExpTime), ExpTime =/= 0 ->
+    {Key, TStamp, Value, ValueLen, ExpTime};
 storetuple_make(Key, TStamp, Value, ValueLen, ExpTime, Flags) ->
     {Key, TStamp, Value, ValueLen, ExpTime, Flags}.
 
@@ -1550,12 +1591,12 @@ storetuple_flags(_) ->
 
 storetuple_to_externtuple({Key, TStamp, Value, ValueLen}, S) ->
     {Key, TStamp, Value, 0, make_extern_flags(Value, ValueLen, [], S)};
-storetuple_to_externtuple({Key, TStamp, Value, ValueLen, ExpTime}, S)
-  when is_integer(ExpTime) ->
-    {Key, TStamp, Value, ExpTime, make_extern_flags(Value, ValueLen, [], S)};
 storetuple_to_externtuple({Key, TStamp, Value, ValueLen, Flags}, S)
   when is_list(Flags) ->
     {Key, TStamp, Value, 0, make_extern_flags(Value, ValueLen, Flags, S)};
+storetuple_to_externtuple({Key, TStamp, Value, ValueLen, ExpTime}, S)
+  when is_integer(ExpTime) ->
+    {Key, TStamp, Value, ExpTime, make_extern_flags(Value, ValueLen, [], S)};
 storetuple_to_externtuple({Key, TStamp, Value, ValueLen, ExpTime, Flags}, S) ->
     {Key, TStamp, Value, ExpTime, make_extern_flags(Value, ValueLen, Flags, S)}.
 
@@ -1568,12 +1609,14 @@ make_extern_flags(Value, ValueLen, Flags, S) ->
 
 externtuple_to_storetuple({Key, TStamp, Value}) ->
     storetuple_make(Key, TStamp, Value, gmt_util:io_list_len(Value), 0, []);
-externtuple_to_storetuple({Key, TStamp, Value, ExpTime})
-  when is_integer(ExpTime) ->
-    storetuple_make(Key, TStamp, Value, gmt_util:io_list_len(Value), ExpTime, []);
-externtuple_to_storetuple({Key, TStamp, Value, Flags})
+externtuple_to_storetuple({Key, TStamp, Value, 0, []}) ->
+    storetuple_make(Key, TStamp, Value, gmt_util:io_list_len(Value), 0, []);
+externtuple_to_storetuple({Key, TStamp, Value, 0, Flags})
   when is_list(Flags) ->
     storetuple_make(Key, TStamp, Value, gmt_util:io_list_len(Value), 0, Flags);
+externtuple_to_storetuple({Key, TStamp, Value, ExpTime, []})
+  when is_integer(ExpTime) ->
+    storetuple_make(Key, TStamp, Value, gmt_util:io_list_len(Value), ExpTime, []);
 externtuple_to_storetuple({Key, TStamp, Value, ExpTime, Flags}) ->
     storetuple_make(Key, TStamp, Value, gmt_util:io_list_len(Value), ExpTime, Flags).
 
@@ -1628,7 +1671,7 @@ my_insert2(#state{thisdo_mods=Mods, max_log_size=MaxLogSize}=S, Key, TStamp, Val
             Mod = {insert_constant_value,
                    storetuple_make(Key, TStamp, CurVal, CurValLen, ExpTime,
                                    Flags)},
-            {ok, S#state{thisdo_mods = [Mod|Mods]}};
+            {{ok, TStamp}, S#state{thisdo_mods = [Mod|Mods]}};
         {?VALUE_SWITCHAROO, OldVal, NewVal} ->
             %% @TODO - value_in_ram support?
             %% NOTE: If testset has been specified, it has already
@@ -1650,7 +1693,7 @@ my_insert2(#state{thisdo_mods=Mods, max_log_size=MaxLogSize}=S, Key, TStamp, Val
                         %% change what we scribble to the local log.
                         {log_noop}
                 end,
-            {ok, S#state{thisdo_mods = [Mod|Mods]}};
+            {{ok, TStamp}, S#state{thisdo_mods = [Mod|Mods]}};
         {?KEY_SWITCHAROO, OldKey} ->
             %% @TODO - value_in_ram support?
             [ST] = my_lookup(S, OldKey, false),
@@ -1659,7 +1702,7 @@ my_insert2(#state{thisdo_mods=Mods, max_log_size=MaxLogSize}=S, Key, TStamp, Val
             Mod = {insert_constant_value,
                    storetuple_make(Key, TStamp, Val, ValLen, ExpTime,
                                    Flags)},
-            {ok, S#state{thisdo_mods = [Mod|Mods]}};
+            {{ok, TStamp}, S#state{thisdo_mods = [Mod|Mods]}};
         _ ->
             Val = gmt_util:bin_ify(Value),
             ValSize = byte_size(Val),
@@ -1676,7 +1719,7 @@ my_insert2(#state{thisdo_mods=Mods, max_log_size=MaxLogSize}=S, Key, TStamp, Val
                                 Loc = bigdata_dir_store_val(Key, Value, S),
                                 {insert, ST, storetuple_replace_val(ST, Loc)}
                         end,
-                    {ok, S#state{thisdo_mods = [Mod|Mods]}}
+                    {{ok, TStamp}, S#state{thisdo_mods = [Mod|Mods]}}
             end
     end.
 

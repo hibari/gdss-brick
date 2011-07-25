@@ -1390,7 +1390,7 @@ update_locations_on_brick(Brick, NewLocs) ->
     DoRes = brick_server:do(Brick, node(), Dos,
                             [ignore_role, {sync_override, false},
                              local_op_only_do_not_forward], 60*1000),
-    Any = lists:any(fun(ok)            -> false;
+    Any = lists:any(fun({ok, _})       -> false;
                        (key_not_exist) -> false;
                        ({ts_error, _}) -> false;
                        (_X)            -> true

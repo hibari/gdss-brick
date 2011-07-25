@@ -74,13 +74,13 @@
 
 -type do1_res_ok()   :: ok |
                         key_not_exist |
-                        {ok, val()} |
                         {ok, ts()} |
+                        {ok, ts(), time_t(), flags_list()} |
                         {ok, ts(), val()} |
-                        {ok, ts(), flags_list()} |
                         {ok, ts(), val(), time_t(), flags_list()} |
                         {ok, {[{key(), ts()}], boolean()}} |
-                        {ok, {[{key(), ts(), flags_list()}], boolean()}} |
+                        {ok, {[{key(), ts(), time_t(), flags_list()}], boolean()}} |
+                        {ok, {[{key(), ts(), val()}], boolean()}} |
                         {ok, {[{key(), ts(), val(), time_t(), flags_list()}], boolean()}} |
                         %% The 'txn' atom is present only because of QuickCheck:
                         %% a dumb generator may put 'txn' anywhere in the

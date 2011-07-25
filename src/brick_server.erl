@@ -469,13 +469,13 @@
 
 -type do_reply() :: list() | {txn_fail, list()} | {wrong_brick, term()}.
 -type syncdown_reply() :: list({state_r(), node_name()}).
--type add_reply() :: {key_exists, integer()} | {ts_error, ts()} | ok.
--type replace_reply() :: {ts_error, ts()} | key_not_exist | ok.
--type set_reply() :: {ts_error, ts()} | ok.
--type rename_reply() :: {key_exists, integer()} | {ts_error, ts()} | key_not_exist | ok.
+-type add_reply() :: {key_exists, integer()} | {ts_error, ts()} | {ok, ts()}.
+-type replace_reply() :: {ts_error, ts()} | key_not_exist | {ok, ts()}.
+-type set_reply() :: {ts_error, ts()} | {ok, ts()}.
+-type rename_reply() :: {key_exists, integer()} | {ts_error, ts()} | key_not_exist | {ok, ts()}.
 -type get_reply() :: {ts_error, ts()} | key_not_exist |
-                     {ok, ts()} | {ok, ts(), flags_list()} | {ok, ts(), val()} |
-                     {ok, ts(), val(), exp_time(), flags_list()}.
+                     {ok, ts()} | {ok, ts(), exp_time(), flags_list()} |
+                     {ok, ts(), val()} | {ok, ts(), val(), exp_time(), flags_list()}.
 -type delete_reply() :: {ts_error, ts()} | key_not_exist | ok.
 -type getmany_reply() :: {list(impl_tuple()), boolean()}.
 -type status_reply() :: {ok, prop_list()}.
@@ -2612,7 +2612,7 @@ make_op2(OpName, Key, Flags) ->
 -spec make_op5(atom(), key(), val_impl(), exp_time(), flags_or_fun_list()) ->
                       {atom(), binary(), integer(), val(), exp_time(), flags_or_fun_list()}.
 make_op5(OpName, Key, Value0, ExpTime, Flags) ->
-    TStamp = make_timestamp(),
+    TStamp = 0,
     EFlags = encode_op_flags(Flags),
     Value = check_value_type(Value0),
     {OpName, gmt_util:bin_ify(Key), TStamp, Value, ExpTime, EFlags}.
@@ -2654,7 +2654,7 @@ make_op6(OpName, Key, TStamp, Value0, ExpTime, Flags) ->
 %%
 %% NOTE: If the options 'witness' and 'get_all_attribs' are both present
 %%       in a 'get' or 'get_many' call, then the tuple returned will be:
-%%       {ok, TStamp::integer(), Flags::prop_list()}
+%%       {ok, TStamp::integer(), time_t(), Flags::prop_list()}
 
 encode_op_flags([{_,_}=H|T]) ->
     [H|encode_op_flags(T)];
