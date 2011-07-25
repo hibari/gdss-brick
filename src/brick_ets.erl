@@ -759,9 +759,9 @@ do_dolist([{set, Key, TStamp, Value, ExpTime, Flags}|T], State, DoFlags, Acc) ->
     {Res, NewState} = set_key(Key, EffTStamp, Value, ExpTime, Flags, State),
     N_set = NewState#state.n_set,
     do_dolist(T, NewState#state{n_set = N_set + 1}, DoFlags, [Res|Acc]);
-do_dolist([{rename, Key, TStamp, OldKey, ExpTime, Flags}|T], State, DoFlags, Acc) ->
+do_dolist([{rename, Key, TStamp, NewKey, ExpTime, Flags}|T], State, DoFlags, Acc) ->
     if TStamp =:= 0 -> EffTStamp = brick_server:make_timestamp(); true -> EffTStamp = TStamp end,
-    {Res, NewState} = rename_key(Key, EffTStamp, OldKey, ExpTime, Flags, State),
+    {Res, NewState} = rename_key(Key, EffTStamp, NewKey, ExpTime, Flags, State),
     N_rename = NewState#state.n_rename,
     do_dolist(T, NewState#state{n_rename = N_rename + 1}, DoFlags, [Res|Acc]);
 do_dolist([{get, Key, Flags}|T], State, DoFlags, Acc) ->
@@ -858,32 +858,27 @@ do_txnlist([{set, Key, TStamp, Value, _ExpTime, Flags} = H|T], State,
             Err = invalid_flag_present,
             do_txnlist(T, State, [Err|Acc], false, N+1, DoFlags, [{N, Err}|ErrAcc])
     end;
-do_txnlist([{rename, Key, TStamp, OldKey, _ExpTime, Flags} = H|T], State,
-           Acc, _Good, N, DoFlags, ErrAcc) ->
+do_txnlist([{rename, Key, TStamp, NewKey, _ExpTime, Flags} = H|T], State,
+           Acc, Good, N, DoFlags, ErrAcc) ->
     if TStamp =:= 0 ->
             EffTStamp = brick_server:make_timestamp(),
-            _EffH = setelement(3, H, EffTStamp);
+            EffH = setelement(3, H, EffTStamp);
        true ->
             EffTStamp = TStamp,
-            _EffH = H
+            EffH = H
     end,
-    case key_exists_p(Key, proplists:delete(testset,Flags), State, false, EffTStamp) of
-        {Key, TS, _, _, _, _} ->
-            Err = {key_exists, TS},
+    case key_exists_p(Key, Flags, State, true, EffTStamp, NewKey) of
+        {NewKey, _, _, _, _, _} ->
+            %% special case when Key =:= NewKey
+            Err = key_not_exist,
+            do_txnlist(T, State, [Err|Acc], false, N+1, DoFlags, [{N, Err}|ErrAcc]);
+        {Key, _, _, _, _, _} ->
+            do_txnlist(T, State, [EffH|Acc], Good, N+1, DoFlags, ErrAcc);
+        {ts_error, _} = Err ->
             do_txnlist(T, State, [Err|Acc], false, N+1, DoFlags, [{N, Err}|ErrAcc]);
         _ ->
-            case key_exists_p(OldKey, Flags, State, false, TStamp) of
-                {OldKey, _, _, _, _, _} ->
-                    %% @TODO disable server implementation until further notice
-                    %% do_txnlist(T, State, [EffH|Acc], Good, N+1, DoFlags, ErrAcc);
-                    Err = {key_exists, 0},
-                    do_txnlist(T, State, [Err|Acc], false, N+1, DoFlags, [{N, Err}|ErrAcc]);
-                {ts_error, _} = Err ->
-                    do_txnlist(T, State, [Err|Acc], false, N+1, DoFlags, [{N, Err}|ErrAcc]);
-                _ ->
-                    Err = key_not_exist,
-                    do_txnlist(T, State, [Err|Acc], false, N+1, DoFlags, [{N, Err}|ErrAcc])
-            end
+            Err = key_not_exist,
+            do_txnlist(T, State, [Err|Acc], false, N+1, DoFlags, [{N, Err}|ErrAcc])
     end;
 do_txnlist([{Primitive, Key, Flags} = H|T], State,
            Acc, Good, N, DoFlags, ErrAcc)
@@ -1054,26 +1049,43 @@ set_key(Key, TStamp, Value, ExpTime, Flags, State) ->
             end
     end.
 
-rename_key(Key, TStamp, OldKey, ExpTime, Flags, State) ->
-    case key_exists_p(Key, proplists:delete(testset,Flags), State, false) of
-        {Key, TS, _, _, _, _} ->
-            {{key_exists, TS}, State};
+rename_key(Key, TStamp, NewKey, ExpTime, Flags, State) ->
+    case key_exists_p(Key, Flags, State, false) of
+        {NewKey, _TS, _, _, _PreviousExp, _} ->
+            %% special case when Key =:= NewKey
+            {key_not_exist, State};
+        {Key, TS, _, _, _PreviousExp, _} ->
+            rename_key2(Key, TStamp, NewKey, ExpTime, Flags, State, TS);
+        {ts_error, _} = Err ->
+            {Err, State};
         _ ->
-            case key_exists_p(OldKey, Flags, State, false) of
-                {OldKey, TS, _Value, _ValueLen, _PreviousExp, _} ->
-                    rename_key2(Key, TStamp, OldKey, ExpTime, Flags, State, TS);
-                {ts_error, _} = Err ->
-                    {Err, State};
-                _ ->
-                    {key_not_exist, State}
-            end
+            {key_not_exist, State}
     end.
 
-rename_key2(_Key, TStamp, _OldKey, _ExpTime, _Flags, State, TS) ->
+rename_key2(Key, TStamp, NewKey, ExpTime, Flags, State, TS) ->
     if
         TStamp > TS ->
-            %% @TODO disable server implementation until further notice
-            {{key_exists, 0}, State};
+            case key_exists_p(NewKey, [], State, false) of
+                false ->
+                    %% NewKey doesn't exist
+                    case my_insert(State, Key, TStamp, {?KEY_SWITCHAROO, NewKey}, ExpTime, Flags) of
+                        {val_error, _} = Err ->
+                            {Err, State};
+                        {{ok, _}, _} = Ok ->
+                            Ok
+                    end;
+                {NewKey, OldTS, _, _, _, _} when TStamp > OldTS ->
+                    %% NewKey does exist and TStamp is OK
+                    case my_insert(State, Key, TStamp, {?KEY_SWITCHAROO, NewKey}, ExpTime, Flags) of
+                        {val_error, _} = Err ->
+                            {Err, State};
+                        {{ok, _}, _} = Ok ->
+                            Ok
+                    end;
+                {NewKey, OldTS, _, _, _, _} ->
+                    %% Otherwise TStamp is not ok
+                    {{ts_error, OldTS}, State}
+            end;
         true ->
             {{ts_error, TS}, State}
     end.
@@ -1694,15 +1706,19 @@ my_insert2(#state{thisdo_mods=Mods, max_log_size=MaxLogSize}=S, Key, TStamp, Val
                         {log_noop}
                 end,
             {{ok, TStamp}, S#state{thisdo_mods = [Mod|Mods]}};
-        {?KEY_SWITCHAROO, OldKey} ->
+        {?KEY_SWITCHAROO, NewKey} ->
             %% @TODO - value_in_ram support?
-            [ST] = my_lookup(S, OldKey, false),
-            Val = storetuple_val(ST),
-            ValLen = storetuple_vallen(ST),
-            Mod = {insert_constant_value,
-                   storetuple_make(Key, TStamp, Val, ValLen, ExpTime,
-                                   Flags)},
-            {{ok, TStamp}, S#state{thisdo_mods = [Mod|Mods]}};
+            [ST] = my_lookup(S, Key, false),
+            CurVal = storetuple_val(ST),
+            CurValLen = storetuple_vallen(ST),
+            CurExpTime = storetuple_exptime(ST),
+            %% Same as ?VALUE_REMAINS_CONSTANT except using NewKey and
+            %% then deleting Key
+            Mod = {insert_existing_value,
+                   storetuple_make(NewKey, TStamp, CurVal, CurValLen, ExpTime,
+                                   Flags),
+                   Key},
+            {{ok, TStamp}, my_delete(S#state{thisdo_mods = [Mod|Mods]}, Key, CurExpTime)};
         _ ->
             Val = gmt_util:bin_ify(Value),
             ValSize = byte_size(Val),
@@ -1860,6 +1876,9 @@ load_rec_from_log({delete_noexptime, Key}, S) ->
 load_rec_from_log({insert_constant_value, StoreTuple}, S) ->
     Key = storetuple_key(StoreTuple),
     my_insert_ignore_logging(S, Key, StoreTuple);
+load_rec_from_log({insert_existing_value, StoreTuple, _OldKey}, S) ->
+    Key = storetuple_key(StoreTuple),
+    my_insert_ignore_logging(S, Key, StoreTuple);
 load_rec_from_log({delete_all_table_items}, S) ->
     my_delete_all_objects(S#state.mdtab),
     my_delete_all_objects(S#state.etab),
@@ -1971,6 +1990,17 @@ filter_mods_from_upstream(Thisdo_Mods, S) ->
                            NewST = storetuple_make(
                                      Key, TS, CurVal, CurValLen, Exp, Flags),
                            {insert_constant_value, NewST};
+                      ({insert_existing_value, ST, OldKey}) ->
+                           Key = storetuple_key(ST),
+                           TS = storetuple_ts(ST),
+                           [CurST] = my_lookup(S, OldKey, false),
+                           CurVal = storetuple_val(CurST),
+                           CurValLen = storetuple_vallen(CurST),
+                           Exp = storetuple_exptime(ST),
+                           Flags = storetuple_flags(ST),
+                           NewST = storetuple_make(
+                                     Key, TS, CurVal, CurValLen, Exp, Flags),
+                           {insert_existing_value, NewST, OldKey};
                       (X) ->
                            X
                    end, Thisdo_Mods),
@@ -2335,6 +2365,9 @@ map_mods_into_ets([{delete_noexptime, Key}|Tail], S) ->
 map_mods_into_ets([{insert_constant_value, StoreTuple}|Tail], S) ->
     %% Lazy, reuse....
     map_mods_into_ets([{insert, StoreTuple}|Tail], S);
+map_mods_into_ets([{insert_existing_value, StoreTuple, _OldKey}|Tail], S) ->
+    %% Lazy, reuse....
+    map_mods_into_ets([{insert, StoreTuple}|Tail], S);
 map_mods_into_ets([], _S) ->
     ok;
 map_mods_into_ets([{log_directive, map_sleep, N}|Tail], S) ->
@@ -2427,6 +2460,11 @@ add_mods_to_dirty_tab([{InsertLike, StoreTuple}|Tail], S)
     ?DBG_ETSx({add_to_dirty, S#state.name, Key}),
     ets:insert(S#state.dirty_tab, {Key, insert, StoreTuple}),
     add_mods_to_dirty_tab(Tail, S);
+add_mods_to_dirty_tab([{insert_existing_value, StoreTuple, _OldKey}|Tail], S) ->
+    Key = storetuple_key(StoreTuple),
+    ?DBG_ETSx({add_to_dirty, S#state.name, Key}),
+    ets:insert(S#state.dirty_tab, {Key, insert, StoreTuple}),
+    add_mods_to_dirty_tab(Tail, S);
 add_mods_to_dirty_tab([{insert, StoreTuple, _BigDataTuple}|Tail], S) ->
     %% Lazy, reuse...
     add_mods_to_dirty_tab([{insert, StoreTuple}|Tail], S);
@@ -2460,6 +2498,9 @@ clear_dirty_tab([{delete_noexptime, Key}|Tail], S) ->
     ets:delete(S#state.dirty_tab, Key),
     clear_dirty_tab(Tail, S);
 clear_dirty_tab([{insert_constant_value, StoreTuple}|Tail], S) ->
+    %% Lazy, reuse....
+    clear_dirty_tab([{insert, StoreTuple}|Tail], S);
+clear_dirty_tab([{insert_existing_value, StoreTuple, _OldKey}|Tail], S) ->
     %% Lazy, reuse....
     clear_dirty_tab([{insert, StoreTuple}|Tail], S);
 clear_dirty_tab([], _S) ->
