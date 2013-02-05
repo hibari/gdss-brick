@@ -1,5 +1,5 @@
 %%%-------------------------------------------------------------------
-%%% Copyright (c) 2007-2011 Gemini Mobile Technologies, Inc.  All rights reserved.
+%%% Copyright (c) 2007-2013 Hibari developers.  All rights reserved.
 %%%
 %%% Licensed under the Apache License, Version 2.0 (the "License");
 %%% you may not use this file except in compliance with the License.
@@ -2597,7 +2597,7 @@ repair_diff_round1([Tuple|Tail] = UpList, MyKey, Unknown, Ds, S) ->
                     %% this to happen, but I'll leave the alarm in
                     %% anyway.
                     gmt_util:set_alarm({debug_alarm, {a_24622, MyKey}},
-                                       "Contact Gemini technical support",
+                                       "Contact Hibari developer",
                                        fun() -> ok end),
                     repair_diff_round1(Tail,
                                        ets:next(S#state.ctab, MyKey),
