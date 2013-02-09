@@ -111,7 +111,35 @@
 -export([sequence_file_is_bad_common/6, append_external_bad_sequence_file/2,
          delete_external_bad_sequence_file/1]).
 
-
+%%%
+%%% ETS Tables (Section 2.3.14.3 of Hibari Contributor's Guide)
+%%%
+%%% #state.ctab, the contents table:
+%%%    Except for changes made during a checkpoint, all data about a
+%%%    key lives in this table as a "store tuple".
+%%%
+%%% #state.dirty_tab, the dirty table:
+%%%    If a key has been updated but not yet flushed to disk, the key
+%%%    appears here. Necessary for any update, inside or outside of a
+%%%    micro-transaction, where race conditions are possible. See
+%%%    Section 2.3.14.6, "The dirty keys table".
+%%%
+%%% #state.etab, the expiry table:
+%%%    If a key has a non-zero expiry time associated with it (an
+%%%    integer in UNIX time_t form), then the expiry time appears in
+%%%    this table.
+%%%
+%%% #state.mdtab, the brick private metadata table:
+%%%    Used for private state management during data migration and
+%%%    other tasks.
+%%%
+%%% #state.shadowtab, the shadow table:
+%%%    During checkpoints, the contents table is frozen while the
+%%%    checkpoint process dumps its contents. All updates made while
+%%%    the checkpoint is running (insert or delete) are stored in this
+%%%    table. When the checkpoint is finished, the contents of this
+%%%    table are applied to the contents table, and then the shadow
+%%%    table is deleted.
 %%%
 %%% ctab format:
 %%%    {Key = binary()|term(),         binary is preferred
