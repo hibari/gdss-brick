@@ -2536,14 +2536,14 @@ make_rename(Key, NewKey) ->
 
 -spec make_rename(key(), key(), exp_time(), flags_list()) -> rename().
 make_rename(Key, NewKey, ExpTime, Flags) ->
-    make_op5(rename, Key, NewKey, ExpTime, Flags).
+    make_op5(rename, Key, gmt_util:bin_ify(NewKey), ExpTime, Flags).
 
 %% @spec (term(), integer(), term(), integer(), prop_list()) -> do_op()
 %% @doc Create an "rename" do op (see encode_op_flags() for valid flags).
 
 -spec make_rename(key(), integer(), key(), exp_time(), flags_list()) -> rename().
 make_rename(Key, TStamp, NewKey, ExpTime, Flags) ->
-    make_op6(rename, Key, TStamp, NewKey, ExpTime, Flags).
+    make_op6(rename, Key, TStamp, gmt_util:bin_ify(NewKey), ExpTime, Flags).
 
 %% @spec (term()) -> do_op()
 %% @equiv make_get(Key, [])
