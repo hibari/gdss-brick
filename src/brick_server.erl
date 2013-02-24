@@ -469,13 +469,13 @@
 
 -type do_reply() :: list() | {txn_fail, list()} | {wrong_brick, term()}.
 -type syncdown_reply() :: list({state_r(), node_name()}).
--type add_reply() :: {key_exists, integer()} | {ts_error, ts()} | ok.
--type replace_reply() :: {ts_error, ts()} | key_not_exist | ok.
--type set_reply() :: {ts_error, ts()} | ok.
--type rename_reply() :: {key_exists, integer()} | {ts_error, ts()} | key_not_exist | ok.
+-type add_reply() :: {key_exists, integer()} | {ts_error, ts()} | {ok, ts()}.
+-type replace_reply() :: {ts_error, ts()} | key_not_exist | {ok, ts()}.
+-type set_reply() :: {ts_error, ts()} | {ok, ts()}.
+-type rename_reply() :: {ts_error, ts()} | key_not_exist | {ok, ts()}.
 -type get_reply() :: {ts_error, ts()} | key_not_exist |
-                     {ok, ts()} | {ok, ts(), flags_list()} | {ok, ts(), val()} |
-                     {ok, ts(), val(), exp_time(), flags_list()}.
+                     {ok, ts()} | {ok, ts(), exp_time(), flags_list()} |
+                     {ok, ts(), val()} | {ok, ts(), val(), exp_time(), flags_list()}.
 -type delete_reply() :: {ts_error, ts()} | key_not_exist | ok.
 -type getmany_reply() :: {list(impl_tuple()), boolean()}.
 -type status_reply() :: {ok, prop_list()}.
@@ -751,37 +751,37 @@ set(ServerName, Node, Key, Value, ExpTime, Flags, Timeout)
 
 %% @spec (brick_name(), node_name(), io_list(), io_list())
 %%    -> zzz_add_reply()
-%% @equiv rename(ServerName, Node, Key, OldKey, 0, [], DefaultTimeout)
+%% @equiv rename(ServerName, Node, Key, NewKey, 0, [], DefaultTimeout)
 
-%% @doc Rename a OldKey/Value pair to Key/Value pair in a brick,
-%% failing if OldKey does not already exist or if Key already exists.
+%% @doc Rename a Key/Value pair to NewKey/Value pair in a brick,
+%% failing if Key does not exist.
 
 -spec rename(brick_name(), node_name(), key(), key()) -> rename_reply().
-rename(ServerName, Node, Key, OldKey) ->
-    rename(ServerName, Node, Key, OldKey, 0, [], foo_timeout()).
+rename(ServerName, Node, Key, NewKey) ->
+    rename(ServerName, Node, Key, NewKey, 0, [], foo_timeout()).
 
 %% @spec (brick_name(), node_name(), io_list(), io_list(), prop_list() | timeout())
 %%    -> zzz_add_reply()
-%% @equiv rename(ServerName, Node, Key, OldKey, 0, Flags, DefaultTimeoutOrFlags)
+%% @equiv rename(ServerName, Node, Key, NewKey, 0, Flags, DefaultTimeoutOrFlags)
 
-%% @doc Rename a OldKey/Value pair to Key/Value pair in a brick,
-%% failing if OldKey does not already exist or if Key already exists.
+%% @doc Rename a Key/Value pair to NewKey/Value pair in a brick,
+%% failing if Key does not exist.
 
 -spec rename(brick_name(), node_name(), key(), key(), flags_list0() | timeout()) -> rename_reply().
-rename(ServerName, Node, Key, OldKey, Flags) when is_list(Flags) ->
-    rename(ServerName, Node, Key, OldKey, 0, Flags, foo_timeout());
-rename(ServerName, Node, Key, OldKey, Timeout) when is_integer(Timeout) ->
-    rename(ServerName, Node, Key, OldKey, 0, [], Timeout).
+rename(ServerName, Node, Key, NewKey, Flags) when is_list(Flags) ->
+    rename(ServerName, Node, Key, NewKey, 0, Flags, foo_timeout());
+rename(ServerName, Node, Key, NewKey, Timeout) when is_integer(Timeout) ->
+    rename(ServerName, Node, Key, NewKey, 0, [], Timeout).
 
 %% @spec (brick_name(), node_name(), io_list(), io_list(), integer(), prop_list(), timeout())
 %%    -> zzz_add_reply()
-%% @doc Rename a OldKey/Value pair to Key/Value pair in a brick,
-%% failing if OldKey does not already exist or if Key already exists.
+%% @doc Rename a Key/Value pair to NewKey/Value pair in a brick,
+%% failing if Key does not exist.
 
 -spec rename(brick_name(), node_name(), key(), key(), integer(), flags_list(), timeout()) -> rename_reply().
-rename(ServerName, Node, Key, OldKey, ExpTime, Flags, Timeout)
+rename(ServerName, Node, Key, NewKey, ExpTime, Flags, Timeout)
   when not is_list(Node) ->
-    case do(ServerName, Node, [make_rename(Key, OldKey, ExpTime, Flags)],
+    case do(ServerName, Node, [make_rename(Key, NewKey, ExpTime, Flags)],
             Timeout) of
         [Res] -> Res;
         Else  -> Else
@@ -2525,25 +2525,25 @@ make_set(Key, TStamp, Value, ExpTime, Flags) ->
     make_op6(set, Key, TStamp, Value, ExpTime, Flags).
 
 %% @spec (term(), term()) -> do_op()
-%% @equiv make_rename(Key, OldKey, 0, [])
+%% @equiv make_rename(Key, NewKey, 0, [])
 
 -spec make_rename(key(), key()) -> rename().
-make_rename(Key, OldKey) ->
-    make_rename(Key, OldKey, 0, []).
+make_rename(Key, NewKey) ->
+    make_rename(Key, NewKey, 0, []).
 
 %% @spec (term(), term(), integer(), prop_list()) -> do_op()
 %% @doc Create an "rename" do op (see encode_op_flags() for valid flags).
 
 -spec make_rename(key(), key(), exp_time(), flags_list()) -> rename().
-make_rename(Key, OldKey, ExpTime, Flags) ->
-    make_op5(rename, Key, OldKey, ExpTime, Flags).
+make_rename(Key, NewKey, ExpTime, Flags) ->
+    make_op5(rename, Key, gmt_util:bin_ify(NewKey), ExpTime, Flags).
 
 %% @spec (term(), integer(), term(), integer(), prop_list()) -> do_op()
 %% @doc Create an "rename" do op (see encode_op_flags() for valid flags).
 
 -spec make_rename(key(), integer(), key(), exp_time(), flags_list()) -> rename().
-make_rename(Key, TStamp, OldKey, ExpTime, Flags) ->
-    make_op6(rename, Key, TStamp, OldKey, ExpTime, Flags).
+make_rename(Key, TStamp, NewKey, ExpTime, Flags) ->
+    make_op6(rename, Key, TStamp, gmt_util:bin_ify(NewKey), ExpTime, Flags).
 
 %% @spec (term()) -> do_op()
 %% @equiv make_get(Key, [])
@@ -2612,7 +2612,7 @@ make_op2(OpName, Key, Flags) ->
 -spec make_op5(atom(), key(), val_impl(), exp_time(), flags_or_fun_list()) ->
                       {atom(), binary(), integer(), val(), exp_time(), flags_or_fun_list()}.
 make_op5(OpName, Key, Value0, ExpTime, Flags) ->
-    TStamp = make_timestamp(),
+    TStamp = 0,
     EFlags = encode_op_flags(Flags),
     Value = check_value_type(Value0),
     {OpName, gmt_util:bin_ify(Key), TStamp, Value, ExpTime, EFlags}.
@@ -2654,7 +2654,7 @@ make_op6(OpName, Key, TStamp, Value0, ExpTime, Flags) ->
 %%
 %% NOTE: If the options 'witness' and 'get_all_attribs' are both present
 %%       in a 'get' or 'get_many' call, then the tuple returned will be:
-%%       {ok, TStamp::integer(), Flags::prop_list()}
+%%       {ok, TStamp::integer(), time_t(), Flags::prop_list()}
 
 encode_op_flags([{_,_}=H|T]) ->
     [H|encode_op_flags(T)];
@@ -2763,8 +2763,10 @@ harvest_do_keys(DoList, S) ->
 %% them in <tt>{read|write, term()}</tt> form.
 
 harvest_do_keys([{OpName, Key, _, _, _, _}|T], Acc, S)
-  when OpName == add; OpName == replace; OpName == set; OpName == rename ->
+  when OpName == add; OpName == replace; OpName == set ->
     harvest_do_keys(T, [{write, Key}|Acc], S);
+harvest_do_keys([{rename, Key, _, NewKey, _, _}|T], Acc, S) ->
+    harvest_do_keys(T, [{write, Key}, {write, NewKey}|Acc], S);
 harvest_do_keys([{delete, Key, _}|T], Acc, S) ->
     harvest_do_keys(T, [{write, Key}|Acc], S);
 harvest_do_keys([{get, Key, _}|T], Acc, S) ->
