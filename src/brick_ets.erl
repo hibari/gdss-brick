@@ -280,12 +280,12 @@ init([ServerName, Options]) ->
     ?DBG_GENx({qqq_starting, ServerName}),
 
     process_flag(trap_exit, true),
-    ?E_INFO("top of init: ~p, ~p\n", [ServerName, Options]),
+    ?E_INFO("top of init: ~p, ~p", [ServerName, Options]),
 
     %% Avoid race conditions where a quick restart of the brick
     %% catches up with the not-yet-finished death of the previous log
     %% proc.
-    %% io:format("\n\nUSING gmt_hlog, old-school....\n\n\n"), timer:sleep(1000),
+    %% io:format("USING gmt_hlog, old-school...."), timer:sleep(1000),
     %% WalMod = proplists:get_value(wal_log_module, Options, gmt_hlog),
     WalMod = proplists:get_value(wal_log_module, Options, gmt_hlog_local),
     catch exit(whereis(WalMod:log_name2reg_name(ServerName)), kill),
@@ -485,7 +485,7 @@ handle_call({set_do_sync, NewValue}, _From, State) ->
 handle_call({set_do_logging, NewValue}, _From, State) ->
     {reply, State#state.do_logging, State#state{do_logging = NewValue}};
 handle_call(Request, _From, State) ->
-    ?E_ERROR("~s handle_call: Request = ~P\n", [?MODULE, Request, 20]),
+    ?E_ERROR("~s handle_call: Request = ~P", [?MODULE, Request, 20]),
     Reply = err,
     {reply, Reply, State}.
 
@@ -500,7 +500,7 @@ handle_cast({checkpoint_last_seqnum, SeqNum}, State) ->
 handle_cast({incr_expired, Amount}, #state{n_expired = N} = State) ->
     {noreply, State#state{n_expired = N + Amount}};
 handle_cast(Msg, State) ->
-    ?E_ERROR("~s handle_cast: ~p: Msg = ~P\n",
+    ?E_ERROR("~s handle_cast: ~p: Msg = ~P",
              [?MODULE, State#state.name, Msg, 20]),
     exit({handle_cast, Msg}),                   % QQQ TODO debugging only
     {noreply, State}.
@@ -549,7 +549,7 @@ handle_info({'EXIT', Pid, Reason}, State) when Pid == State#state.check_pid ->
         {{?MODULE,_,_}, {line, _}, done} ->     % smart exceptions too helpful!
             ok;
         _ ->
-            ?E_WARNING("checkpoint: pid ~p died with ~p\n", [Pid, Reason])
+            ?E_WARNING("checkpoint: pid ~p died with ~p", [Pid, Reason])
     end,
     NewState = fold_shadow_into_ctab(State),
     {noreply, NewState#state{check_pid = undefined}};
@@ -563,11 +563,11 @@ handle_info({'EXIT', Pid, Done}, State)
     {noreply, State#state{scavenger_pid = undefined}};
 handle_info({'EXIT', Pid, Reason}, State)
   when Pid == State#state.scavenger_pid ->
-    ?E_WARNING("QQQ: ~p: scavenger ~p exited with ~p\n",
+    ?E_WARNING("QQQ: ~p: scavenger ~p exited with ~p",
                [State#state.name, State#state.scavenger_pid, Reason]),
     {noreply, State#state{scavenger_pid = undefined}};
 handle_info({'EXIT', Pid, Reason}, State) when Pid == State#state.log ->
-    ?E_WARNING("~p: log process ~p exited with ~p\n",
+    ?E_WARNING("~p: log process ~p exited with ~p",
                [State#state.name, State#state.log, Reason]),
     {stop, Reason, State};
 handle_info(qqq_debugging_only, S) ->
@@ -587,18 +587,18 @@ handle_info(log_sync_stats, State) ->
     AvgLen = if State#state.syncsum_count == 0 -> 0;
                 true -> State#state.syncsum_len / State#state.syncsum_count
              end,
-    ?E_INFO("sync summary: ~p: ~p syncs ~p msec avg ~p len avg\n",
+    ?E_INFO("sync summary: ~p: ~p syncs ~p msec avg ~p len avg",
             [State#state.name, State#state.syncsum_count, AvgTime, AvgLen]),
     {noreply, State#state{syncsum_count = 0, syncsum_msec = 0,
                           syncsum_len = 0}};
 handle_info(do_init_second_half, State) ->
-    ?E_INFO("do_init_second_half: ~p\n", [State#state.name]),
+    ?E_INFO("do_init_second_half: ~p", [State#state.name]),
 
     ok = gmt_hlog_common:full_writeback(),
 
     MinimumSeqNum = read_checkpoint_num(State#state.log_dir),
     {_LTODO_x, ErrList} = wal_scan_all(State, MinimumSeqNum),
-    ?DBG_GEN("log ~p _LTODO_x = ~p ErrList = ~p\n",
+    ?DBG_GEN("log ~p _LTODO_x = ~p ErrList = ~p",
              [State#state.wal_mod, _LTODO_x, ErrList]),
 
     if ErrList == [] ->
@@ -619,7 +619,7 @@ handle_info(do_init_second_half, State) ->
     %%       the missing keys, which could make us regret deleting keys
     %%       as many keys as we are doing here.
     _ = [begin {Purged, _S} = purge_recs_by_seqnum(SeqNum, true, State),
-               ?E_INFO("~s: purged ~p keys from sequence ~p\n",
+               ?E_INFO("~s: purged ~p keys from sequence ~p",
                        [State#state.name, Purged, SeqNum]),
                Purged
          end || SeqNum <- read_external_bad_sequence_file(State#state.name)],
@@ -636,14 +636,14 @@ handle_info(do_init_second_half, State) ->
     brick_itimer:send_interval(1*1000, qqq_debugging_only),
     {ok, ExpiryTRef} = brick_itimer:send_interval(1*1000, check_expiry),
 
-    ?E_INFO("do_init_second_half: ~p finished\n", [State#state.name]),
+    ?E_INFO("do_init_second_half: ~p finished", [State#state.name]),
     self() ! {storage_layer_init_finished, State#state.name, ZeroDiskErrorsP},
     {noreply, State#state{checkpoint_timer = CheckTimer,
                           expiry_tref = ExpiryTRef,
                           scavenger_tref = undefined,
                           check_lastseqnum = MinimumSeqNum}};
 handle_info(_Info, State) ->
-    ?E_ERROR("Hey: ~s handle_info: Info = ~P\n", [?MODULE, _Info, 20]),
+    ?E_ERROR("Hey: ~s handle_info: Info = ~P", [?MODULE, _Info, 20]),
     {noreply, State}.
 
 %%----------------------------------------------------------------------
@@ -653,7 +653,7 @@ handle_info(_Info, State) ->
 %%----------------------------------------------------------------------
 terminate(Reason, State) ->
     ?DBG_GENx({qqq_stopping, State#state.name, Reason}),
-    ?DBG_GEN("Hey: terminate ~p: reason = ~p\n", [State#state.name, Reason]),
+    ?DBG_GEN("Hey: terminate ~p: reason = ~p", [State#state.name, Reason]),
     catch ets:delete(State#state.ctab),
     catch ets:delete(State#state.etab),
     catch ets:delete(State#state.shadowtab),
@@ -695,7 +695,7 @@ do_status(S) ->
          ]}.
 
 do_flush_all(State) ->
-    ?DBG_GEN("\n\n\nDeleting all table data!\n\n\n", []),
+    ?DBG_GEN("Deleting all table data!", []),
     ets:delete_all_objects(State#state.ctab),
     ets:delete_all_objects(State#state.etab),
     catch ets:delete_all_objects(State#state.shadowtab),
@@ -1082,7 +1082,7 @@ rename_key(Key, TStamp, NewKey, ExpTime, Flags, State) ->
         {NewKey, _TS, _, _, _PreviousExp, _} ->
             %% special case when Key =:= NewKey
             {key_not_exist, State};
-        {Key, TS, _, _, _PreviousExp, _} ->
+        {Key, TS, _, _, _PreviousExp, _PreviousFlags} ->
             rename_key2(Key, TStamp, NewKey, ExpTime, Flags, State, TS);
         {ts_error, _} = Err ->
             {Err, State};
@@ -1216,8 +1216,8 @@ get_many1(Key, Flags, IncreasingOrderP, DoFlags, State) ->
                             fun(T) when element(1, T) =< SweepZ -> true;
                                (_)                              -> false
                             end, Rs),
-                                                %io:format("DROP: sweep ~p - ~p\n", [SweepA, SweepZ]),
-                                                %io:format("DROP: ~P\n", [[KKK || {KKK, _} <- (Rs -- Rs2)], 10]),
+                                                %io:format("DROP: sweep ~p - ~p", [SweepA, SweepZ]),
+                                                %io:format("DROP: ~P", [[KKK || {KKK, _} <- (Rs -- Rs2)], 10]),
                     {{Rs2, true}, NewState};
                 _ ->
                     Result
@@ -1933,7 +1933,7 @@ load_rec_clean_up_etab(Key, S) ->
     end.
 
 purge_recs_by_seqnum(SeqNum, CheckpointNotRunning_p, S) ->
-    ?E_INFO("~s: purging keys with sequence ~p, size ~p\n",
+    ?E_INFO("~s: purging keys with sequence ~p, size ~p",
             [S#state.name, SeqNum, ets:info(S#state.ctab, size)]),
     if CheckpointNotRunning_p ->
             undefined = S#state.shadowtab; % sanity
@@ -1983,8 +1983,8 @@ purge_rec_from_shadowtab(SeqNum, ShadowTab, S) ->
 
 filter_mods_for_downstream(Thisdo_Mods) ->
     lists:map(fun({insert, ChainStoreTuple, _StoreTuple}) ->
-                      %%?DBG_GEN("ChainStoreTuple = ~p\n", [ChainStoreTuple]),
-                      %%?DBG_GEN("_StoreTuple = ~p\n", [_StoreTuple]),
+                      %%?DBG_GEN("ChainStoreTuple = ~p", [ChainStoreTuple]),
+                      %%?DBG_GEN("_StoreTuple = ~p", [_StoreTuple]),
                       {insert, ChainStoreTuple};
                  ({log_directive, sync_override, _}) ->
                       {log_noop};
@@ -2004,7 +2004,7 @@ filter_mods_from_upstream(Thisdo_Mods, S) ->
                       %% Do not modify {insert_value_into_ram,...} tuples here.
                       ({insert, ST, BigDataDirThing}) ->
                            ?DBG_OPx({error, S#state.name, bad_mod_from_upstream, ST, BigDataDirThing}),
-                           ?E_ERROR("BUG: ~p\n", [{error, S#state.name, bad_mod_from_upstream, ST, BigDataDirThing}]),
+                           ?E_ERROR("BUG: ~p", [{error, S#state.name, bad_mod_from_upstream, ST, BigDataDirThing}]),
                            exit({bug, S#state.name, bad_mod_from_upstream,
                                  ST, BigDataDirThing});
                       ({insert_constant_value, ST}) ->
@@ -2032,7 +2032,7 @@ filter_mods_from_upstream(Thisdo_Mods, S) ->
                       (X) ->
                            X
                    end, Thisdo_Mods),
-    %%?DBG_GEN("WWWW: 2: ~p\n", [Ms]),
+    %%?DBG_GEN("WWWW: 2: ~p", [Ms]),
     Ms.
 
 do_checkpoint(S, _Options) when S#state.check_pid /= undefined ->
@@ -2055,7 +2055,7 @@ checkpoint_start(S_ro, DoneLogSeq, ParentPid, Options) ->
 
     CheckName = ?CHECK_NAME ++ "." ++ atom_to_list(S_ro#state.ctab),
     CheckFile = Dir ++ "/" ++ CheckName ++ ".tmp",
-    Finfolog("checkpoint: ~p: starting\n", [S_ro#state.name]),
+    Finfolog("checkpoint: ~p: starting", [S_ro#state.name]),
     _ = file:delete(CheckFile),
 
     %% Allow checkpoint requester to alter our behavior, e.g. for
@@ -2125,7 +2125,7 @@ checkpoint_start(S_ro, DoneLogSeq, ParentPid, Options) ->
             %%   2. We'll do it in a worker proc so that we can notify our
             %%      parent now and exit.
             %%
-            Finfolog("checkpoint: ~p: deleting ~p log files\n",
+            Finfolog("checkpoint: ~p: deleting ~p log files",
                      [S_ro#state.name, length(OldSeqs)]),
             spawn(fun() ->
                           %% We have really weird intermittent
@@ -2146,7 +2146,7 @@ checkpoint_start(S_ro, DoneLogSeq, ParentPid, Options) ->
             ok;
        true ->
             Finfolog("checkpoint: ~p: moving ~p log "
-                     "files to long-term archive\n",
+                     "files to long-term archive",
                      [S_ro#state.name, length(OldSeqs)]),
             _ = [(S_ro#state.wal_mod):move_seq_to_longterm(S_ro#state.log, X)
                  || X <- OldSeqs],
@@ -2173,7 +2173,7 @@ checkpoint_start(S_ro, DoneLogSeq, ParentPid, Options) ->
             ok
     end,
     gen_server:cast(ParentPid, {checkpoint_last_seqnum, DoneLogSeq}),
-    Finfolog("checkpoint: ~p: finished\n", [S_ro#state.name]),
+    Finfolog("checkpoint: ~p: finished", [S_ro#state.name]),
     ?DBG_GENx({checkpoint_start, S_ro#state.name, done}),
     exit(done).
 
@@ -2211,11 +2211,11 @@ save_checkpoint_num(Dir, SeqNum) ->
     TmpPath = FinalPath ++ ".tmp",
     {ok, FH} = file:open(TmpPath, [write, binary]), % {sigh}
     try
-        ok = file:write(FH, [integer_to_list(SeqNum), "\n"]),
+        ok = file:write(FH, [integer_to_list(SeqNum), ""]),
         ok = file:sync(FH),
         ok = file:rename(TmpPath, FinalPath)
     catch X:Y ->
-            ?E_ERROR("Error renaming ~p -> ~p: ~p ~p (~p)\n",
+            ?E_ERROR("Error renaming ~p -> ~p: ~p ~p (~p)",
                      [TmpPath, FinalPath, X, Y, erlang:get_stacktrace()])
     after
         ok = file:close(FH)
@@ -2245,7 +2245,7 @@ sync_pid_loop(SPA) ->
     L = collect_sync_requests([], SPA, 5),
     if L /= [] ->
             LastSerial = sync_get_last_serial(L),
-            ?DBG_GEN("DBG: SPA ~p requesting sync last serial = ~p\n",
+            ?DBG_GEN("DBG: SPA ~p requesting sync last serial = ~p",
                      [SPA#syncpid_arg.name, LastSerial]),
             Start = now(),                      %qqq debug
             {ok, _X, _Y} = wal_sync(SPA#syncpid_arg.wal_pid,
@@ -2253,7 +2253,7 @@ sync_pid_loop(SPA) ->
             DiffMS = timer:now_diff(now(), Start) div 1000, %qqq debug
             SPA#syncpid_arg.parent_pid !
                 {syncpid_stats, SPA#syncpid_arg.name, DiffMS, ms, length(L)},
-            ?DBG_GEN("DBG: SPA ~p sync_done at ~p,~p, my last serial = ~p\n",
+            ?DBG_GEN("DBG: SPA ~p sync_done at ~p,~p, my last serial = ~p",
                      [SPA#syncpid_arg.name, _X, _Y, LastSerial]),
             SPA#syncpid_arg.parent_pid ! {sync_done, self(), LastSerial},
             ok;
@@ -2324,7 +2324,7 @@ do_check_checkpoint(S)
                 40
         end,
     if SumMB > MaxMB ->
-            ?E_INFO("table ~p: SumMB ~p > MaxMB ~p\n",
+            ?E_INFO("table ~p: SumMB ~p > MaxMB ~p",
                     [S#state.name, SumMB, MaxMB]),
             {ok, NewS} = do_checkpoint(S, S#state.options),
             NewS;
@@ -2363,7 +2363,7 @@ fold_shadow_into_ctab(Key, S) ->
             my_delete_ignore_logging(S, Key, ExpTime),
             fold_shadow_into_ctab(ets:next(S#state.shadowtab, Key), S);
         Err ->
-            ?E_WARNING("fold_shadow: Bad term for ~p: ~p\n", [Key, Err]),
+            ?E_WARNING("fold_shadow: Bad term for ~p: ~p", [Key, Err]),
             timer:sleep(1000),
             exit({fold, Key, Err})
     end.
@@ -2556,9 +2556,9 @@ retry_dirty_key_ops(S) ->
                             %% case_clause: {up1, list(), reply()} ...
                             %% CHAIN TODO: See comment "ISSUE001".
                             {up1, TDs, OrigReply} ->
-                                %%?DBG_GEN("QQQ ISSUE001: up todos = ~p\n", [get(issue001)]),
-                                %%?DBG_GEN("QQQ ISSUE001: TDs = ~p\n", [TDs]),
-                                %%?DBG_GEN("QQQ ISSUE001: OrigReply = ~p\n", [OrigReply]),
+                                %%?DBG_GEN("QQQ ISSUE001: up todos = ~p", [get(issue001)]),
+                                %%?DBG_GEN("QQQ ISSUE001: TDs = ~p", [TDs]),
+                                %%?DBG_GEN("QQQ ISSUE001: OrigReply = ~p", [OrigReply]),
                                 %% timer:sleep(5*1000), exit(asdlkfasdf);
                                 NewToDos = TDs ++ ToDos,
                                 case OrigReply of
@@ -2764,7 +2764,7 @@ repair_loop_insert(Tuple, S) ->
              [{insert_value_into_ram, ST2}] ->
                  ST2
          end,
-    ?DBG_REPAIR("\nrepair_loop_insert: ~p\n", [ST]),
+    ?DBG_REPAIR("repair_loop_insert: ~p", [ST]),
     my_insert_ignore_logging(S, Key, ST),
     ok.
 
@@ -2797,7 +2797,7 @@ bigdata_dir_store_val(Key, Val, S) ->
     {ok, Seq, Off} = (S#state.wal_mod):write_hunk(
                        S#state.log, S#state.name, bigblob, Key,
                        ?LOGTYPE_BLOB, [Val],[]),
-    ?DBG_GEN("DBG: store_val ~p at ~p,~p\n", [Key, Seq, Off]),
+    ?DBG_GEN("DBG: store_val ~p at ~p,~p", [Key, Seq, Off]),
     {Seq, Off}.
 
 bigdata_dir_delete_val(_Key, _S) ->
@@ -2836,7 +2836,7 @@ bigdata_dir_get_val(_Key, Val, ValLen, CheckMD5_p, S)
                     %%
                     %% TODO: What other erors here that we need to look for?
                     %%
-                    ?E_ERROR("~s: read error ~p at ~p ~p\n",
+                    ?E_ERROR("~s: read error ~p at ~p ~p",
                              [S#state.name, Reason, SeqNum, Offset]),
                     throw(silently_drop_reply);
                 eof when S#state.do_sync == false ->
@@ -2851,7 +2851,7 @@ bigdata_dir_get_val(_Key, Val, ValLen, CheckMD5_p, S)
                     %% when I read async-written data too early....
                     throw(silently_drop_reply);
                 Error ->
-                    ?E_WARNING("~s: error ~p at ~p ~p\n",
+                    ?E_WARNING("~s: error ~p at ~p ~p",
                                [S#state.name, Error, SeqNum, Offset]),
                     sequence_file_is_bad(SeqNum, Offset, S),
                     throw(silently_drop_reply)
@@ -2915,13 +2915,13 @@ write_bad_sequence_hunk(WalMod, Log, Name, SeqNum, Offset) ->
         _ = wal_sync(Log, WalMod)
     catch
         X:Y ->
-            ?E_ERROR("sequence_file_is_bad: ~p ~p -> ~p ~p (~p)\n",
+            ?E_ERROR("sequence_file_is_bad: ~p ~p -> ~p ~p (~p)",
                      [SeqNum, Offset, X, Y, erlang:get_stacktrace()])
     end.
 
 append_external_bad_sequence_file(Name, SeqNum) ->
     {ok, FH} = file:open(external_bad_sequence_path(Name), [append]),
-    io:format(FH, "~p.\n", [abs(SeqNum)]),
+    io:format(FH, "~p.", [abs(SeqNum)]),
     ok = file:close(FH).
 
 delete_external_bad_sequence_file(Name) ->
@@ -2948,11 +2948,11 @@ sequence_file_is_bad_common(LogDir, WalMod, _Log, Name, SeqNum, Offset) ->
     case sequence_rename(OldPath1, OldPath2, NewPath) of
         ok ->
             ?E_WARNING("Brick ~p bad sequence file: seq ~p offset ~p: "
-                       "renamed to ~s\n",
+                       "renamed to ~s",
                        [Name, SeqNum, Offset, NewPath]);
         {error, Reason} ->
             ?E_WARNING("Brick ~p bad sequence file: seq ~p offset ~p: "
-                       "rename ~s or ~s to ~s failed: ~p\n",
+                       "rename ~s or ~s to ~s failed: ~p",
                        [Name, SeqNum, Offset, OldPath1, OldPath2,
                         NewPath, Reason])
     end,
@@ -3001,13 +3001,13 @@ wal_scan_all(S, MinimumSeqNum) ->
                         Acc + 1;
                     false ->
                         %% Hibari: TODO: How do we escalate the bad news??
-                        ?E_ERROR("Bad checksum on hunk type ~p at ~p ~p\n",
+                        ?E_ERROR("Bad checksum on hunk type ~p at ~p ~p",
                                  [H#hunk_summ.type, H#hunk_summ.seq,
                                   H#hunk_summ.off]),
                         Acc
                 end;
            (H, _FH, Acc) ->
-                ?E_ERROR("Unknown hunk type at ~p ~p: ~p\n",
+                ?E_ERROR("Unknown hunk type at ~p ~p: ~p",
                          [H#hunk_summ.seq, H#hunk_summ.off, H#hunk_summ.type]),
                 Acc
         end,
@@ -3034,9 +3034,9 @@ wal_sync(Pid, WalMod) when is_pid(Pid) ->
 
 wal_purge_recs_by_seqnum(SeqNum, Offset, S) ->
     ?E_ERROR("A bad log sequence file, ~p number ~p, has been detected "
-             "(error at offset ~p).\n", [S#state.name, SeqNum, Offset]),
+             "(error at offset ~p).", [S#state.name, SeqNum, Offset]),
     {NumRecs, _NewS} = purge_recs_by_seqnum(SeqNum, true, S),
-    ?E_ERROR("Log sequence file ~p ~p contained ~p keys which are now lost.\n",
+    ?E_ERROR("Log sequence file ~p ~p contained ~p keys which are now lost.",
              [S#state.name, SeqNum, NumRecs]),
     gmt_util:set_alarm({data_lost, {S#state.name, seq, SeqNum, keys, NumRecs}},
                        "Number of keys lost = " ++ integer_to_list(NumRecs) ++
@@ -3045,7 +3045,7 @@ wal_purge_recs_by_seqnum(SeqNum, Offset, S) ->
     NumRecs.
 
 wal_scan_failed(ErrList, S) ->
-    ?E_WARNING("WAL scan by brick ~p had errors: ~p\n",[S#state.name, ErrList]),
+    ?E_WARNING("WAL scan by brick ~p had errors: ~p",[S#state.name, ErrList]),
     _Msg = lists:flatten(
              io_lib:format("Number of keys lost = unknown, must recover "
                            "via chain replication.  Error detail = ~p.",
@@ -3064,7 +3064,7 @@ flush_gen_cast_calls(S) ->
                         N ->         N
                     end,
             if Count < 10 ->
-                    ?E_INFO("~p: flushing $gen_cast message: ~P\n",
+                    ?E_INFO("~p: flushing $gen_cast message: ~P",
                             [S#state.name, Msg, 9]);
                true ->
                     ok
@@ -3201,7 +3201,7 @@ squidflash_doit(KsRaws, DoOp, From, ParentPid, FakeS) ->
 squidflash_prime1(Key, RawVal, ValLen, ReplyPid, FakeS) ->
     case (catch bigdata_dir_get_val(Key, RawVal, ValLen, false, FakeS)) of
         {'EXIT', _X} ->
-            ?E_ERROR("cache prime: ~p: ~p at ~p: ~p\n",
+            ?E_ERROR("cache prime: ~p: ~p at ~p: ~p",
                      [FakeS#state.name, Key, RawVal, _X]);
         _ -> ok
     end,
@@ -3265,7 +3265,7 @@ delete_keys_immediately(ServerName, KeysTs) ->
     end.
 
 verbose_expiration(ServerName, KeysTs) ->
-    if KeysTs /= [] -> ?E_INFO("Verbose expiry: ~p ~p\n", [ServerName, KeysTs]);
+    if KeysTs /= [] -> ?E_INFO("Verbose expiry: ~p ~p", [ServerName, KeysTs]);
        true         -> ok
     end,
     delete_keys_immediately(ServerName, KeysTs).
@@ -3417,7 +3417,7 @@ copy_one_hunk(SA, FH, Key, SeqNum, Offset, Fread_blob) ->
     catch
         _X:_Y ->
             %% Be more helpful and add key to error msg.
-            ?E_ERROR("copy_one_hunk: ~p: ~p ~p for key ~p seq ~p Offset ~p (~p)\n",
+            ?E_ERROR("copy_one_hunk: ~p: ~p ~p for key ~p seq ~p Offset ~p (~p)",
                      [SA#scav.name, _X, _Y, Key, SeqNum, Offset,
                       %% hack: this info isn't too helpful: erlang:get_stacktrace()]),
                       []]),
@@ -3457,7 +3457,7 @@ scavenge_one_seq_file_fun(TempDir, SA, Fread_blob, Finfolog) ->
             ok = file:close(FH),
             ok = disk_log:close(DInLog),
             ok = disk_log:close(DOutLog),
-            ?E_INFO("SCAV: ~p middle of step 10\n", [SA#scav.name]),
+            ?E_INFO("SCAV: ~p middle of step 10", [SA#scav.name]),
             if Errs == 0, SA#scav.destructive == true ->
                     {ok, DOutLog} = disk_log:open([{name, DOutPath},
                                                    {file, DOutPath}]),
@@ -3465,7 +3465,7 @@ scavenge_one_seq_file_fun(TempDir, SA, Fread_blob, Finfolog) ->
                         NumUpdates when is_integer(NumUpdates) ->
                             Finfolog(
                               "scavenger: ~p sequence ~p: UpRes ok, "
-                              "~p updates\n",
+                              "~p updates",
                               [SA#scav.name, SeqNum, NumUpdates]),
                             spawn(fun() ->
                                           timer:sleep(40*1000),
@@ -3473,7 +3473,7 @@ scavenge_one_seq_file_fun(TempDir, SA, Fread_blob, Finfolog) ->
                                   end);
                         UpRes ->
                             Finfolog(
-                              "scavenger: ~p sequence ~p: UpRes ~p\n",
+                              "scavenger: ~p sequence ~p: UpRes ~p",
                               [SA#scav.name, SeqNum, UpRes])
                     end;
                true ->
@@ -3717,7 +3717,7 @@ bcb_delete_metadata(Key, S) when is_record(S, state) ->
 
 bcb_add_mods_to_dirty_tab(Thisdo_Mods, S) when is_record(S, state) ->
     add_mods_to_dirty_tab(Thisdo_Mods, S),
-    %%?E_WARNING("EEE: ~w new dirty = ~p\n", [S#state.name, ets:tab2list(S#state.dirty_tab)]),
+    %%?E_WARNING("EEE: ~w new dirty = ~p", [S#state.name, ets:tab2list(S#state.dirty_tab)]),
     S.
 
 %% @spec (term(), term(), state_r()) ->
@@ -3905,14 +3905,14 @@ debug_scan(Dir, WalMod) ->
     WalMod:fold(
       shortterm, Dir,
       fun(H, FH, Acc) ->
-              io:format("Hunk: ~p ~p\n", [H#hunk_summ.seq, H#hunk_summ.off]),
+              io:format("Hunk: ~p ~p", [H#hunk_summ.seq, H#hunk_summ.off]),
               if H#hunk_summ.type == ?LOGTYPE_METADATA ->
                       CB = WalMod:read_hunk_member_ll(FH, H, md5, 1),
-                      io:format("~P\n\n", [binary_to_term(CB), 40]);
+                      io:format("~P", [binary_to_term(CB), 40]);
                  H#hunk_summ.type == ?LOGTYPE_BLOB ->
-                      io:format("blob len: ~p\n\n", [hd(H#hunk_summ.c_len)]);
+                      io:format("blob len: ~p", [hd(H#hunk_summ.c_len)]);
                  true ->
-                      io:format("Unknown hunk type: ~p\n~p\n\n", [H#hunk_summ.type, H])
+                      io:format("Unknown hunk type: ~p, ~p", [H#hunk_summ.type, H])
               end,
               Acc + 1
       end, 0).
@@ -3996,14 +3996,14 @@ debug_scan4(Dir, OutFile, WalMod) ->
                           lists:foreach(
                             fun(T) when element(1, T) == insert orelse element(1, T) == insert_value_into_ram ->
                                     Key = element(1, element(2, T)),
-                                    io:format(OutFH, "i ~p\n", [Key]);
+                                    io:format(OutFH, "i ~p", [Key]);
                                (T) when element(1, T) == delete orelse element(1, T) == delete_noexptime ->
                                     Key = element(2, T),
-                                    io:format(OutFH, "d ~p\n", [Key]);
+                                    io:format(OutFH, "d ~p", [Key]);
                                (T) when element(1, T) == delete_all_table_items ->
-                                    io:format(OutFH, "delete_all_table_items \n", []);
+                                    io:format(OutFH, "delete_all_table_items ", []);
                                (T) ->
-                                    io:format(OutFH, "? ~p\n", [T])
+                                    io:format(OutFH, "? ~p", [T])
                             end, Mods),
                           blah;
                      H#hunk_summ.type == ?LOGTYPE_BLOB ->
