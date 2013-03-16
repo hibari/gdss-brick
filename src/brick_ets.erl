@@ -277,10 +277,10 @@ brick_name2data_dir(ServerName) ->
 %%          {stop, Reason}
 %%----------------------------------------------------------------------
 init([ServerName, Options]) ->
-    ?DBG_GENx({qqq_starting, ServerName}),
+    ?DBG_GEN("qqq_starting ~w", [ServerName]),
 
     process_flag(trap_exit, true),
-    ?E_INFO("top of init: ~p, ~p", [ServerName, Options]),
+    ?E_INFO("top of init: ~w, ~w", [ServerName, Options]),
 
     %% Avoid race conditions where a quick restart of the brick
     %% catches up with the not-yet-finished death of the previous log
@@ -377,7 +377,7 @@ handle_call({do, _SentAt, L, DoFlags} = DoOp, From, State) ->
     ?DBG_OPx(DoOp),
     case do_do(L, DoFlags, DoOp, From, State#state{thisdo_mods = []}, check_dirty) of
         has_dirty_keys ->
-            ?DBG_OPx({?MODULE, do, State#state.name, has_dirty_keys, DoOp}),
+            ?DBG_OP("do ~w [has_dirty_keys] ~w", [State#state.name, DoOp]),
             DQI = #dirty_q{from = From, do_op = DoOp},
             DirtyQ = State#state.wait_on_dirty_q,
             {noreply, State#state{wait_on_dirty_q = queue:in(DQI, DirtyQ)}};
@@ -385,21 +385,19 @@ handle_call({do, _SentAt, L, DoFlags} = DoOp, From, State) ->
             %% #state.thisdo_mods will be in reverse order of DoOpList!
             Thisdo_Mods = lists:reverse(NewState#state.thisdo_mods),
             if NewState#state.read_only_p, Thisdo_Mods /= [] ->
-                    ?DBG_OPx({?MODULE, do, State#state.name, read_only_mode, DoOp}),
+                    ?DBG_OP("do ~w [read_only_mode] ~w", [State#state.name, DoOp]),
                     {up1_read_only_mode, From, DoOp, NewState};
                true ->
                     SyncOverride = proplists:get_value(sync_override, DoFlags),
                     case log_mods(NewState, SyncOverride) of
                         {goahead, NewState3} ->
-                            ?DBG_TLOGx({?MODULE, do, State#state.name, goahead, DoOp}),
-                            ok = map_mods_into_ets(Thisdo_Mods,
-                                                   NewState3),
-                            ?DBG_OPx({State#state.name, send_downstream}),
-                            LoggingSerial =
-                                NewState3#state.logging_op_serial,
+                            ?DBG_TLOG("do ~w [goahead] ~w", [State#state.name, DoOp]),
+                            ok = map_mods_into_ets(Thisdo_Mods, NewState3),
+                            ?DBG_OP("do ~w [send_downstream]", [State#state.name]),
+                            LoggingSerial = NewState3#state.logging_op_serial,
                             ToDos = [{chain_send_downstream, LoggingSerial,
                                       DoFlags, From, Reply, Thisdo_Mods}],
-                            ?DBG_TLOGx({?MODULE, do, State#state.name, todos_going_up, ToDos}),
+                            ?DBG_TLOG("do ~w [todos_going_up] ~w", [State#state.name, ToDos]),
                             N_do = NewState3#state.n_do,
                             %% !@#$!%! Grrr.....
                             %% If we're a head brick, we can increment
@@ -413,8 +411,7 @@ handle_call({do, _SentAt, L, DoFlags} = DoOp, From, State) ->
                             NL = if Thisdo_Mods == [] -> LoggingSerial;
                                     true              -> LoggingSerial + 1
                                  end,
-                            case proplists:get_value(
-                                   local_op_only_do_not_forward, DoFlags) of
+                            case proplists:get_value(local_op_only_do_not_forward, DoFlags) of
                                 true ->
                                     {reply, Reply, NewState3};
                                 _ ->
@@ -424,29 +421,25 @@ handle_call({do, _SentAt, L, DoFlags} = DoOp, From, State) ->
                                                  logging_op_serial = NL}}}
                             end;
                         {wait, NewState3} ->
-                            ?DBG_TLOGx({?MODULE, do, State#state.name, wait, DoOp}),
-                            add_mods_to_dirty_tab(Thisdo_Mods,
-                                                  NewState3),
-                            LoggingSerial =
-                                NewState3#state.logging_op_serial,
+                            ?DBG_TLOG("do ~w [wait]", [State#state.name, DoOp]),
+                            add_mods_to_dirty_tab(Thisdo_Mods, NewState3),
+                            LoggingSerial = NewState3#state.logging_op_serial,
                             SyncMsg = {sync_msg, LoggingSerial},
                             NewState3#state.sync_pid ! SyncMsg,
                             LQI = #log_q{logging_serial = LoggingSerial,
                                          thisdo_mods = Thisdo_Mods,
                                          doflags = DoFlags,
                                          from = From, reply = Reply},
-                            NewQ = queue:in(LQI,
-                                            NewState3#state.logging_op_q),
+                            NewQ = queue:in(LQI, NewState3#state.logging_op_q),
                             N_do = NewState3#state.n_do,
                             %% If we had to wait for logging, then
                             %% we're waiting because there's something
                             %% we actually *are* logging.  So
                             %% increasing the serial here is good.
                             NL = LoggingSerial + 1,
-                            NewState4 =
-                                NewState3#state{n_do = N_do + 1,
-                                                logging_op_serial = NL,
-                                                logging_op_q = NewQ},
+                            NewState4 = NewState3#state{n_do = N_do + 1,
+                                                        logging_op_serial = NL,
+                                                        logging_op_q = NewQ},
                             {noreply, NewState4}
                     end
             end;
@@ -485,7 +478,7 @@ handle_call({set_do_sync, NewValue}, _From, State) ->
 handle_call({set_do_logging, NewValue}, _From, State) ->
     {reply, State#state.do_logging, State#state{do_logging = NewValue}};
 handle_call(Request, _From, State) ->
-    ?E_ERROR("~s handle_call: Request = ~P", [?MODULE, Request, 20]),
+    ?E_ERROR("handle_call: Request = ~P", [Request, 20]),
     Reply = err,
     {reply, Reply, State}.
 
@@ -500,8 +493,7 @@ handle_cast({checkpoint_last_seqnum, SeqNum}, State) ->
 handle_cast({incr_expired, Amount}, #state{n_expired = N} = State) ->
     {noreply, State#state{n_expired = N + Amount}};
 handle_cast(Msg, State) ->
-    ?E_ERROR("~s handle_cast: ~p: Msg = ~P",
-             [?MODULE, State#state.name, Msg, 20]),
+    ?E_ERROR("handle_cast: ~p: Msg = ~P", [State#state.name, Msg, 20]),
     exit({handle_cast, Msg}),                   % QQQ TODO debugging only
     {noreply, State}.
 
@@ -513,11 +505,9 @@ handle_cast(Msg, State) ->
 %%----------------------------------------------------------------------
 handle_info({sync_done, Pid, LastLogSerial}, State)
   when Pid == State#state.sync_pid ->
-    ?DBG_TLOGx({sync_done, State#state.name, lastlogserial, LastLogSerial}),
-    ?DBG_TLOGx({sync_done, State#state.name, logging_op_serial, State#state.logging_op_serial}),
-    ?DBG_TLOGx({sync_done, State#state.name, logging_op_q, State#state.logging_op_q}),
-    {LQI_List, State2} =
-        pull_items_out_of_logging_queue(LastLogSerial, State),
+    ?DBG_TLOG("sync_done ~w, lastlog_serial ~w, logging_op_serial ~w, logging_op_q ~w",
+              [State#state.name, LastLogSerial, State#state.logging_op_serial, State#state.logging_op_q]),
+    {LQI_List, State2} = pull_items_out_of_logging_queue(LastLogSerial, State),
     _ = [ok = map_mods_into_ets(DoOpList, State2) ||
             #log_q{thisdo_mods = DoOpList} <- LQI_List],
     _ = [ok = clear_dirty_tab(DoOpList, State2) ||
@@ -531,7 +521,7 @@ handle_info({sync_done, Pid, LastLogSerial}, State)
     %%             resubmit the dirty keys truly independent??
     %% put(issue001, ToDos), ... looks like they're independent, whew!
     {State3, ToDos2} = retry_dirty_key_ops(State2),
-    ?DBG_TLOGx({sync_done_dirty_q, State#state.name, State#state.wait_on_dirty_q}),
+    ?DBG_TLOG("sync_done_dirty_q ~w, ~w", [State#state.name, State#state.wait_on_dirty_q]),
     {up1_sync_done, LastLogSerial, ToDos ++ ToDos2, State3};
 handle_info(check_expiry, State) ->
     case whereis(brick_server:make_expiry_regname(State#state.name)) of
@@ -571,10 +561,12 @@ handle_info({'EXIT', Pid, Reason}, State) when Pid == State#state.log ->
                [State#state.name, State#state.log, Reason]),
     {stop, Reason, State};
 handle_info(qqq_debugging_only, S) ->
-    ?DBG_GENx({debug, S#state.name, logging_op_serial, S#state.logging_op_serial}),
-    ?DBG_GENx({debug, S#state.name, logging_op_q, S#state.logging_op_q}),
-    ?DBG_GENx({debug, S#state.name, wait_on_dirty_q, S#state.wait_on_dirty_q}),
-    ?DBG_GENx({debug, S#state.name, dirty_tab, ets:tab2list(S#state.dirty_tab)}),
+    ?DBG_GEN("~w: logging_op_serial ~w, logging_op_q ~w, wait_on_dirty_q ~w, dirty_tab, ~w",
+             [S#state.name,
+              S#state.logging_op_serial,
+              S#state.logging_op_q,
+              S#state.wait_on_dirty_q,
+              ets:tab2list(S#state.dirty_tab)]),
     {noreply, S};
 handle_info({syncpid_stats, _Name, MSec, ms, Length}, State) ->
     {noreply, State#state{syncsum_count = State#state.syncsum_count + 1,
@@ -598,7 +590,7 @@ handle_info(do_init_second_half, State) ->
 
     MinimumSeqNum = read_checkpoint_num(State#state.log_dir),
     {_LTODO_x, ErrList} = wal_scan_all(State, MinimumSeqNum),
-    ?DBG_GEN("log ~p _LTODO_x = ~p ErrList = ~p",
+    ?DBG_GEN("log ~w _LTODO_x = ~w ErrList = ~w",
              [State#state.wal_mod, _LTODO_x, ErrList]),
 
     if ErrList == [] ->
@@ -643,7 +635,7 @@ handle_info(do_init_second_half, State) ->
                           scavenger_tref = undefined,
                           check_lastseqnum = MinimumSeqNum}};
 handle_info(_Info, State) ->
-    ?E_ERROR("Hey: ~s handle_info: Info = ~P", [?MODULE, _Info, 20]),
+    ?E_ERROR("Hey:~s handle_info: Info = ~P", [?MODULE, _Info, 20]),
     {noreply, State}.
 
 %%----------------------------------------------------------------------
@@ -652,8 +644,7 @@ handle_info(_Info, State) ->
 %% Returns: any (ignored by gen_server)
 %%----------------------------------------------------------------------
 terminate(Reason, State) ->
-    ?DBG_GENx({qqq_stopping, State#state.name, Reason}),
-    ?DBG_GEN("Hey: terminate ~p: reason = ~p", [State#state.name, Reason]),
+    ?DBG_GEN("qqq_stopping ~w, reason ~w", [State#state.name, Reason]),
     catch ets:delete(State#state.ctab),
     catch ets:delete(State#state.etab),
     catch ets:delete(State#state.shadowtab),
@@ -1716,7 +1707,7 @@ externtuple_to_storetuple({Key, TStamp, Value, ExpTime, Flags}) ->
 exptime_insert(_ETab, _Key, 0) ->
     ok;
 exptime_insert(ETab, Key, ExpTime) ->
-    ?DBG_ETSx({qqq_exp_insert, ETab, {ExpTime, Key}}),
+    ?DBG_ETS("exptime_insert: ~w, {~w, ~w}", [ETab, ExpTime, Key]),
     ets:insert(ETab, {{ExpTime, Key}}).
 
 exptime_delete(_ETab, _Key, 0) ->
@@ -1843,11 +1834,11 @@ my_insert_ignore_logging3(State, Key, StoreTuple)
   when State#state.bypass_shadowtab == true
        orelse
        State#state.shadowtab == undefined ->
-    ?DBG_ETSx({qqq_ins, State#state.name, regular, Key}),
+    ?DBG_ETS("qqq_ins_ignore_logging ~p [regular] ~w", [State#state.name, Key]),
     exptime_insert(State#state.etab, Key, storetuple_exptime(StoreTuple)),
     ets:insert(State#state.ctab, StoreTuple);
 my_insert_ignore_logging3(State, Key, StoreTuple) ->
-    ?DBG_ETSx({qqq_ins, State#state.name, shadow, Key}),
+    ?DBG_ETS("qqq_ins_ignore_logging ~p [shadow] ~w", [State#state.name, Key]),
     exptime_insert(State#state.etab, Key, storetuple_exptime(StoreTuple)),
     ets:insert(State#state.shadowtab, {Key, insert, StoreTuple}).
 
@@ -1881,11 +1872,11 @@ my_delete_ignore_logging2(State, Key, ExpTime)
   when State#state.bypass_shadowtab == true
        orelse
        State#state.shadowtab == undefined ->
-    ?DBG_ETSx({qqq_del, State#state.name, regular, Key}),
+    ?DBG_ETS("qqq_del_ignore_logging ~w [regular] ~w", [State#state.name, Key]),
     exptime_delete(State#state.etab, Key, ExpTime),
     ets:delete(State#state.ctab, Key);
 my_delete_ignore_logging2(State, Key, ExpTime) ->
-    ?DBG_ETSx({qqq_del, State#state.name, shadow, Key}),
+    ?DBG_ETS("qqq_del_ignore_logging ~w [shadow] ~w", [State#state.name, Key]),
     exptime_delete(State#state.etab, Key, ExpTime),
     ets:insert(State#state.shadowtab, {Key, delete, ExpTime}).
 
@@ -2058,8 +2049,8 @@ filter_mods_from_upstream(Thisdo_Mods, S) ->
                            {insert, ST, storetuple_replace_val(ST, Loc)};
                       %% Do not modify {insert_value_into_ram,...} tuples here.
                       ({insert, ST, BigDataDirThing}) ->
-                           ?DBG_OPx({error, S#state.name, bad_mod_from_upstream, ST, BigDataDirThing}),
-                           ?E_ERROR("BUG: ~p", [{error, S#state.name, bad_mod_from_upstream, ST, BigDataDirThing}]),
+                           ?DBG_OP("Error ~w bad_mod_from_upstream: ~w, ~w", [S#state.name, ST, BigDataDirThing]),
+                           ?E_ERROR("BUG: Error ~w bad_mod_from_upstream: ~p, ~p", [S#state.name, ST, BigDataDirThing]),
                            exit({bug, S#state.name, bad_mod_from_upstream,
                                  ST, BigDataDirThing});
                       ({insert_constant_value, ST}) ->
@@ -2101,7 +2092,7 @@ do_checkpoint(S, Options) ->
     {ok, S#state{check_pid = Pid, shadowtab = ShadowTab}}.
 
 checkpoint_start(S_ro, DoneLogSeq, ParentPid, Options) ->
-    ?DBG_GENx({checkpoint_start, S_ro#state.name, start}),
+    ?DBG_GEN("checkpoint_start ~w [start]", [S_ro#state.name]),
 
     _LogProps = (S_ro#state.wal_mod):get_proplist(S_ro#state.log),
     Dir = (S_ro#state.wal_mod):log_name2data_dir(S_ro#state.name),
@@ -2110,7 +2101,7 @@ checkpoint_start(S_ro, DoneLogSeq, ParentPid, Options) ->
 
     CheckName = ?CHECK_NAME ++ "." ++ atom_to_list(S_ro#state.ctab),
     CheckFile = Dir ++ "/" ++ CheckName ++ ".tmp",
-    Finfolog("checkpoint: ~p: starting", [S_ro#state.name]),
+    Finfolog("Checkpoint: ~w: starting", [S_ro#state.name]),
     _ = file:delete(CheckFile),
 
     %% Allow checkpoint requester to alter our behavior, e.g. for
@@ -2125,8 +2116,7 @@ checkpoint_start(S_ro, DoneLogSeq, ParentPid, Options) ->
     %% recovery mechanism to ignore any logs that have been read prior
     %% to this one.
     DelAll = term_to_binary([{delete_all_table_items}]),
-    {_, Bin1} = (S_ro#state.wal_mod):create_hunk(?LOGTYPE_METADATA,
-                                                 [DelAll], []),
+    {_, Bin1} = (S_ro#state.wal_mod):create_hunk(?LOGTYPE_METADATA, [DelAll], []),
     ok = file:write(CheckFH, Bin1),
 
     %% Dump data from the private metadata table.
@@ -2228,8 +2218,8 @@ checkpoint_start(S_ro, DoneLogSeq, ParentPid, Options) ->
             ok
     end,
     gen_server:cast(ParentPid, {checkpoint_last_seqnum, DoneLogSeq}),
-    Finfolog("checkpoint: ~p: finished", [S_ro#state.name]),
-    ?DBG_GENx({checkpoint_start, S_ro#state.name, done}),
+    Finfolog("Checkpoint: ~p: finished", [S_ro#state.name]),
+    ?DBG_GEN("checkpoint_start ~p [done]", [S_ro#state.name]),
     exit(done).
 
 dump_items(Tab, WalMod, Log) ->
@@ -2300,7 +2290,7 @@ sync_pid_loop(SPA) ->
     L = collect_sync_requests([], SPA, 5),
     if L /= [] ->
             LastSerial = sync_get_last_serial(L),
-            ?DBG_GEN("DBG: SPA ~p requesting sync last serial = ~p",
+            ?DBG_GEN("SPA ~w requesting sync last serial = ~w",
                      [SPA#syncpid_arg.name, LastSerial]),
             Start = now(),                      %qqq debug
             {ok, _X, _Y} = wal_sync(SPA#syncpid_arg.wal_pid,
@@ -2308,7 +2298,7 @@ sync_pid_loop(SPA) ->
             DiffMS = timer:now_diff(now(), Start) div 1000, %qqq debug
             SPA#syncpid_arg.parent_pid !
                 {syncpid_stats, SPA#syncpid_arg.name, DiffMS, ms, length(L)},
-            ?DBG_GEN("DBG: SPA ~p sync_done at ~p,~p, my last serial = ~p",
+            ?DBG_GEN("SPA ~p sync_done at ~w, ~w, my last serial = ~w",
                      [SPA#syncpid_arg.name, _X, _Y, LastSerial]),
             SPA#syncpid_arg.parent_pid ! {sync_done, self(), LastSerial},
             ok;
@@ -2540,19 +2530,19 @@ add_mods_to_dirty_tab([{InsertLike, StoreTuple}|Tail], S)
   when InsertLike == insert; InsertLike == insert_constant_value;
        InsertLike == insert_value_into_ram ->
     Key = storetuple_key(StoreTuple),
-    ?DBG_ETSx({add_to_dirty, S#state.name, Key}),
+    ?DBG_ETS("add_to_dirty ~w: ~w", [S#state.name, Key]),
     ets:insert(S#state.dirty_tab, {Key, insert, StoreTuple}),
     add_mods_to_dirty_tab(Tail, S);
 add_mods_to_dirty_tab([{insert_existing_value, StoreTuple, _OldKey}|Tail], S) ->
     Key = storetuple_key(StoreTuple),
-    ?DBG_ETSx({add_to_dirty, S#state.name, Key}),
+    ?DBG_ETS("add_to_dirty ~w: ~w", [S#state.name, Key]),
     ets:insert(S#state.dirty_tab, {Key, insert, StoreTuple}),
     add_mods_to_dirty_tab(Tail, S);
 add_mods_to_dirty_tab([{insert, StoreTuple, _BigDataTuple}|Tail], S) ->
     %% Lazy, reuse...
     add_mods_to_dirty_tab([{insert, StoreTuple}|Tail], S);
 add_mods_to_dirty_tab([{delete, Key, _}|Tail], S) ->
-    ?DBG_ETSx({add_to_dirty, S#state.name, Key}),
+    ?DBG_ETS("add_to_dirty ~w: ~w", [S#state.name, Key]),
     ets:insert(S#state.dirty_tab, {Key, delete, delete}),
     add_mods_to_dirty_tab(Tail, S);
 add_mods_to_dirty_tab([_|Tail], S) ->
@@ -2563,7 +2553,7 @@ add_mods_to_dirty_tab([], _S) ->
 
 clear_dirty_tab([{insert, StoreTuple}|Tail], S) ->
     Key = storetuple_key(StoreTuple),
-    ?DBG_ETSx({clear_dirty, S#state.name, Key}),
+    ?DBG_ETS("clear_dirty ~w: ~w", [S#state.name, Key]),
     ets:delete(S#state.dirty_tab, Key),
     clear_dirty_tab(Tail, S);
 clear_dirty_tab([{insert, _ChainStoreTuple, StoreTuple}|Tail], S) ->
@@ -2573,11 +2563,11 @@ clear_dirty_tab([{insert_value_into_ram, StoreTuple}|Tail], S) ->
     %% Lazy, reuse....
     clear_dirty_tab([{insert, StoreTuple}|Tail], S);
 clear_dirty_tab([{delete, Key, _}|Tail], S) ->
-    ?DBG_ETSx({clear_dirty, S#state.name, Key}),
+    ?DBG_ETS("clear_dirty ~w: ~w", [S#state.name, Key]),
     ets:delete(S#state.dirty_tab, Key),
     clear_dirty_tab(Tail, S);
 clear_dirty_tab([{delete_noexptime, Key}|Tail], S) ->
-    ?DBG_ETSx({clear_dirty_noexptime, S#state.name, Key}),
+    ?DBG_ETS("clear_dirty_noexptime ~w: ~w", [S#state.name, Key]),
     ets:delete(S#state.dirty_tab, Key),
     clear_dirty_tab(Tail, S);
 clear_dirty_tab([{insert_constant_value, StoreTuple}|Tail], S) ->
@@ -2602,11 +2592,11 @@ clear_dirty_tab(NotList, _S) when not is_list(NotList) ->
 retry_dirty_key_ops(S) ->
     case queue:is_empty(S#state.wait_on_dirty_q) of
         true ->
-            ?DBG_OPx({retry_dirty_key_ops, S#state.name, queue_empty}),
+            ?DBG_OP("retry_dirty_key_ops ~w [queue_empty]", [S#state.name]),
             {S, []};
         false ->
             F = fun(#dirty_q{from = From, do_op = DoOp}, {InterimS, ToDos}) ->
-                        ?DBG_OPx({retry_dirty_key_ops, S#state.name, DoOp}),
+                        ?DBG_OP("retry_dirty_key_ops ~w: ~w", [S#state.name, DoOp]),
                         case handle_call(DoOp, From, InterimS) of
                             %% case_clause: {up1, list(), reply()} ...
                             %% CHAIN TODO: See comment "ISSUE001".
@@ -2710,7 +2700,7 @@ repair_diff_round2([], LastKey, Is, Ds, S) ->
     {LastKey, Is, Ds, S};
 repair_diff_round2([Tuple|Tail], LastKey, Is, Ds, S) ->
     UpKey = storetuple_key(Tuple),
-    ?DBG_REPAIRx({rep_c, UpKey, LastKey}),
+    ?DBG_REPAIR("rep_c: upkey ~w, lastkey ~w", [UpKey, LastKey]),
     ok = repair_loop_insert(Tuple, S),
     NewLastKey =
         if UpKey > LastKey ->
@@ -2727,20 +2717,20 @@ repair_loop(UpstreamList, MyKey, S) ->
     repair_loop(UpstreamList, MyKey, 0, 0, S).
 
 repair_loop([], LastKey, Is, Ds, S) ->
-    ?DBG_REPAIRx({rep_a, LastKey}),
+    ?DBG_REPAIR("rep_a: ~w", [LastKey]),
     {LastKey, Is, Ds, S};
 repair_loop([StoreTuple|Tail], ?BRICK__GET_MANY_LAST = MyKey, Is, Ds, S) ->
-    ?DBG_REPAIRx({rep_b, storetuple_key(StoreTuple)}),
+    ?DBG_REPAIR("rep_b: ~w", [storetuple_key(StoreTuple)]),
     ok = repair_loop_insert(StoreTuple, S),
     repair_loop(Tail, MyKey, Is + 1, Ds, S);
 repair_loop([StoreTuple|Tail] = UpList, MyKey, Is, Ds, S) ->
     UpKey = storetuple_key(StoreTuple),
     if UpKey < MyKey ->
-            ?DBG_REPAIRx({rep_c, UpKey, MyKey}),
+            ?DBG_REPAIR("rep_c: upkey ~w, mykey ~w", [UpKey, MyKey]),
             ok = repair_loop_insert(StoreTuple, S),
             repair_loop(Tail, MyKey, Is + 1, Ds, S);
        UpKey =:= MyKey ->
-            ?DBG_REPAIRx({rep_d, UpKey, MyKey}),
+            ?DBG_REPAIR("rep_d: upkey ~w, mykey ~w", [UpKey, MyKey]),
             UpTS  = storetuple_ts(StoreTuple),
             UpVal = storetuple_val(StoreTuple),
             %% ets:lookup() here is OK, we'll fetch val later, if necessary.
@@ -2766,27 +2756,26 @@ repair_loop([StoreTuple|Tail] = UpList, MyKey, Is, Ds, S) ->
                                     bigdata_dir_get_val(UpKey, Val0, ValLen, S)
                             end,
                     if UpVal =/= MyVal ->
-                            ?E_INFO(
-                               "TODO: Weird, but we got a repair "
-                               "update for ~p with same ts but "
-                               "different values", [UpKey]),
+                            ?E_INFO("TODO: Weird, but we got a repair "
+                                    "update for ~p with same ts but "
+                                    "different values", [UpKey]),
                             throw(hibari_inconceivable_2398223);
                        true ->
                             %% Nothing to do
-                            ?DBG_REPAIRx({repair, do_nothing, UpKey}),
+                            ?DBG_REPAIR("repair [do_nothing] upkey ~w", [UpKey]),
                             repair_loop(Tail, ets:next(S#state.ctab, MyKey),
                                         Is, Ds, S)
                     end;
                %% UpTS < MyTS has already been tested!
                UpTS > MyTS ->
                     %% Upstream's value trumps us every time.
-                    ?DBG_REPAIRx({UpKey, UpTS, UpVal}),
+                    ?DBG_REPAIR("upkey ~w, upts ~w, upval ~w", [UpKey, UpTS, UpVal]),
                     ok = repair_loop_insert(StoreTuple, S),
                     repair_loop(Tail, ets:next(S#state.ctab, MyKey),
                                 Is + 1, Ds, S)
             end;
        UpKey > MyKey ->
-            ?DBG_REPAIRx({rep_e, UpKey, MyKey}),
+            ?DBG_REPAIR("rep_e: upkey ~w, mykey ~w", [UpKey, MyKey]),
             %% ets:lookup() here is OK, we don't need val.
             [MyStoreTuple] = ets:lookup(S#state.ctab, MyKey),
             MyExpTime  = storetuple_exptime(MyStoreTuple),
@@ -2798,7 +2787,7 @@ repair_loop_insert(Tuple, S) ->
     StoreTuple = externtuple_to_storetuple(Tuple),
     Key = storetuple_key(StoreTuple),
     Flags = storetuple_flags(StoreTuple),
-    ?DBG_REPAIRx({repair, insert, Key}),
+    ?DBG_REPAIR("repair [insert] ~w", [Key]),
     Thisdo_Mods = case lists:member(value_in_ram, Flags) of
                       true ->
                           [{insert_value_into_ram,
@@ -2819,12 +2808,12 @@ repair_loop_insert(Tuple, S) ->
              [{insert_value_into_ram, ST2}] ->
                  ST2
          end,
-    ?DBG_REPAIR("repair_loop_insert: ~p", [ST]),
+    ?DBG_REPAIR("repair_loop_insert: ~w", [ST]),
     my_insert_ignore_logging(S, Key, ST),
     ok.
 
 repair_loop_delete(Key, ExpTime, S) ->
-    ?DBG_REPAIRx({repair, delete, Key}),
+    ?DBG_REPAIR("repair [delete] ~w", [Key]),
     Thisdo_mods = [{delete, Key, ExpTime}],
     _ = log_mods2(Thisdo_mods, undefined, S),
     my_delete_ignore_logging(S, Key, ExpTime),
@@ -2852,7 +2841,7 @@ bigdata_dir_store_val(Key, Val, S) ->
     {ok, Seq, Off} = (S#state.wal_mod):write_hunk(
                        S#state.log, S#state.name, bigblob, Key,
                        ?LOGTYPE_BLOB, [Val],[]),
-    ?DBG_GEN("DBG: store_val ~p at ~p,~p", [Key, Seq, Off]),
+    ?DBG_GEN("bigdate_store_val ~w at seq ~w, off ~w", [Key, Seq, Off]),
     {Seq, Off}.
 
 bigdata_dir_delete_val(_Key, _S) ->
@@ -3627,7 +3616,7 @@ bcb_async_flush_log_serial(Serial, S) when is_record(S, state) ->
 %% @doc Write Thisdo_Mods list to disk.
 
 bcb_log_mods(Thisdo_Mods, Serial, S) when is_record(S, state) ->
-    ?DBG_ETSx({bcb_log_mods_to_storage, S#state.name, Thisdo_Mods}),
+    ?DBG_ETS("bcb_log_mods_to_storage ~w: ~w", [S#state.name, Thisdo_Mods]),
     LocalMods = filter_mods_from_upstream(Thisdo_Mods, S),
     case log_mods2(LocalMods, undefined, S) of
         {goahead, S2} ->
@@ -3639,7 +3628,7 @@ bcb_log_mods(Thisdo_Mods, Serial, S) when is_record(S, state) ->
 %% @doc Convert Thisdo_Mods list to internal storage.
 
 bcb_map_mods_to_storage(Thisdo_Mods, S) when is_record(S, state) ->
-    ?DBG_ETSx({bcb_map_mods_to_storage, S#state.name, Thisdo_Mods}),
+    ?DBG_ETS("bcb_map_mods_to_storage ~w: ~w", [S#state.name, Thisdo_Mods]),
     ok = map_mods_into_ets(Thisdo_Mods, S),
     ok = clear_dirty_tab(Thisdo_Mods, S),
     S.
@@ -3709,13 +3698,13 @@ bcb_repair_loop(RepairList, FirstKey, S) when is_record(S, state) ->
 %% @doc Perform an iteration of round 1 the diff repair loop, beginning with FirstKey.
 
 bcb_repair_diff_round1(RepairList, FirstKey, S) when is_record(S, state) ->
-    ?DBG_TLOGx({qqq_bcb_repair_diff_round1, S#state.name, RepairList}),
+    ?DBG_TLOG("qqq_bcb_repair_diff_round1 ~w: ~w", [S#state.name, RepairList]),
     repair_diff_round1(RepairList, FirstKey, S).
 
 %% @doc Perform an iteration of round 2 the diff repair loop
 
 bcb_repair_diff_round2(RepairList, Deletes, S) when is_record(S, state) ->
-    ?DBG_REPAIRx({qqq_bcb_repair_diff_round2, S#state.name, RepairList}),
+    ?DBG_REPAIR("qqq_bcb_repair_diff_round2 ~w: ~w", [S#state.name, RepairList]),
     repair_diff_round2(RepairList, Deletes, S).
 
 %% @doc Delete all remaining keys, starting with Key.
@@ -3729,7 +3718,7 @@ bcb_delete_remaining_keys(Key, S) ->
 %% @doc Enable/disable read-only mode.
 
 bcb_set_read_only_mode(ReadOnlyP, S) when is_record(S, state) ->
-    ?DBG_GENx({?MODULE, bcb_set_read_only_mode, S#state.name, ReadOnlyP}),
+    ?DBG_GEN("bcb_set_read_only_mode ~w: ~w", [S#state.name, ReadOnlyP]),
     S#state{read_only_p = ReadOnlyP}.
 
 %% @doc Get a brick-private metadata key/value pair.
@@ -3786,8 +3775,8 @@ bcb_dirty_keys_in_range(?BRICK__GET_MANY_FIRST, EndKey, S)
 bcb_dirty_keys_in_range(StartKey, EndKey, S)
   when is_record(S, state) ->
     DirtyList = ets:tab2list(S#state.dirty_tab),
-    ?DBG_GENx({bcb_dirty_keys_in_range, S#state.name, startk, StartKey,
-               endk, EndKey, dirty, DirtyList}),
+    ?DBG_GEN("bcb_dirty_keys_in_range ~w: startkey ~w, endkey ~w, dirty ~w",
+             [S#state.name, StartKey, EndKey, DirtyList]),
     L = if EndKey == ?BRICK__GET_MANY_LAST ->
                 [Dirty || {Key,_,_} = Dirty <- DirtyList,
                           Key >= StartKey];
