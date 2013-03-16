@@ -963,6 +963,49 @@ common_testset_must_mustnot(Key, Flags, S) ->
             end
     end.
 
+-spec apply_exp_time_directive(flags_list(), exp_time(), exp_time()) ->
+                                      {ok, exp_time()} | {error, invalid_flag_present}.
+apply_exp_time_directive(Flags, ExpTime, PreviousExpTime) ->
+    case check_flaglist(exp_time_directive, Flags) of
+        false ->
+            {ok, PreviousExpTime};
+        {true, keep} ->
+            {ok, PreviousExpTime};
+        {true, replace} ->
+            {ok, ExpTime};
+        {true, _} ->
+            {error, invalid_flag_present}
+    end.
+
+-spec apply_attrib_directive(flags_list(), flags_list()) ->
+                                    {ok, flags_list()} | {error, invalid_flag_present}.
+apply_attrib_directive(Flags, PreviousFlags) ->
+    case check_flaglist(attrib_directive, Flags) of
+        false ->
+            apply_attrib_directive1(Flags, PreviousFlags);
+        {true, keep} ->
+            apply_attrib_directive1(Flags, PreviousFlags);
+        {true, replace} ->
+            {ok, Flags};
+        {true, _} ->
+            {error, invalid_flag_present}
+    end.
+
+-spec apply_attrib_directive1(flags_list(), flags_list()) -> {ok, flags_list()}.
+apply_attrib_directive1([], PreviousFlags) ->
+    {ok, PreviousFlags};
+apply_attrib_directive1(Flags, []) ->
+    {ok, Flags};
+apply_attrib_directive1(Flags, PreviousFlags) ->
+    F = fun({Key, _}=Flag, Acc) ->
+                gb_trees:enter(Key, Flag, Acc);
+           (Flag, Acc) when is_atom(Flag) ->
+                gb_trees:enter(Flag, Flag, Acc)
+        end,
+    NewFlags0 = lists:foldl(F, gb_trees:empty(), PreviousFlags),
+    NewFlags1 = lists:foldl(F, NewFlags0, Flags),
+    {ok, gb_trees:values(NewFlags1)}.
+
 key_exists_p(Key, Flags, State) ->
     key_exists_p(Key, Flags, State, true).
 
@@ -1082,8 +1125,18 @@ rename_key(Key, TStamp, NewKey, ExpTime, Flags, State) ->
         {NewKey, _TS, _, _, _PreviousExp, _} ->
             %% special case when Key =:= NewKey
             {key_not_exist, State};
-        {Key, TS, _, _, _PreviousExp, _PreviousFlags} ->
-            rename_key2(Key, TStamp, NewKey, ExpTime, Flags, State, TS);
+        {Key, TS, _, _, PreviousExp, PreviousFlags} ->
+            case apply_exp_time_directive(Flags, ExpTime, PreviousExp) of
+                {ok, NewExpTime} ->
+                    case apply_attrib_directive(Flags, PreviousFlags) of
+                        {ok, NewFlags} ->
+                            rename_key2(Key, TStamp, NewKey, NewExpTime, NewFlags, State, TS);
+                        {error, Err} ->
+                            {Err, State}
+                    end;
+                {error, Err} ->
+                    {Err, State}
+            end;
         {ts_error, _} = Err ->
             {Err, State};
         _ ->
@@ -1679,19 +1732,21 @@ exptime_delete(ETab, Key, ExpTime) ->
 my_insert(State, Key, TStamp, Value, ExpTime, Flags) ->
     %% Filter all of the flags that we definitely must not store.
     Flags2 = lists:filter(
-               fun({testset, _})       -> false;
-                  ({max_num, _})       -> false;
-                  ({binary_prefix, _}) -> false;
-                  ({val_len, _})       -> false;
-                  ({_, _})             -> true;
-                  (must_exist)         -> false;
-                  (must_not_exist)     -> false;
-                  (witness)            -> false;
-                  (get_all_attribs)    -> false;
+               fun({testset, _})            -> false;
+                  ({max_num, _})            -> false;
+                  ({binary_prefix, _})      -> false;
+                  ({val_len, _})            -> false;
+                  ({exp_time_directive, _}) -> false;
+                  ({attrib_directive, _})   -> false;
+                  ({_, _})                  -> true;
+                  (must_exist)              -> false;
+                  (must_not_exist)          -> false;
+                  (witness)                 -> false;
+                  (get_all_attribs)         -> false;
                   %% We'd normally filter 'value_in_ram' here, but we
                   %% need to let it pass through to a lower level.
-                  (A) when is_atom(A)  -> true;
-                  (_)                  -> false
+                  (A) when is_atom(A)       -> true;
+                  (_)                       -> false
                end, Flags),
     my_insert2(State, Key, TStamp, Value, ExpTime, Flags2).
 
