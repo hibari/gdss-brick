@@ -387,7 +387,7 @@ handle_call({sync, ShortLong}, From, State)
     _Pid = spawn_link(fun() ->
                               {ok,_X,_Y} = gmt_hlog:sync(State#state.common_log,
                                                          ShortLong),
-                              ?DBG_GEN("DBG: ~p ~p -> common sync: ~p,~p\n", [State#state.name, self(), _X, _Y]),
+                              ?DBG_GEN("~w ~p -> common sync: ~w, ~w", [State#state.name, self(), _X, _Y]),
                               gen_server:reply(From, Reply),
                               unlink(ParentPid), % avoid smart_exceptions prob.
                               exit(normal)
@@ -494,7 +494,7 @@ get_or_start_common_log(PropList) ->
         undefined ->
             Ps = [{common_log_name, CName}],
             %% Use start() func to avoid linking to the new proc.
-            ?ELOG_INFO("trying to start ~p\n", [CName]),
+            ?ELOG_INFO("Trying to start ~w", [CName]),
             case (catch gmt_hlog_common:start(Ps)) of
                 {ok, _Pid} ->
                     ok;

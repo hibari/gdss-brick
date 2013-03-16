@@ -123,22 +123,22 @@
 %% Hold-over from brick_simple:dumblog/1, which only took a single arg.
 
 -define(DBG_GENx(Arg),
-        ?ELOG_TRACE(?CAT_GENERAL, "~p", [Arg])).
+        ?ELOG_TRACE(?CAT_GENERAL, "~w", [Arg])).
 -define(DBG_OPx(Arg),
-        ?ELOG_TRACE(?CAT_OP, "~p", [Arg])).
+        ?ELOG_TRACE(?CAT_OP, "~w", [Arg])).
 -define(DBG_ETSx(Arg),
-        ?ELOG_TRACE(?CAT_ETS, "~p", [Arg])).
+        ?ELOG_TRACE(?CAT_ETS, "~w", [Arg])).
 -define(DBG_TLOGx(Arg),
-        ?ELOG_TRACE(?CAT_TLOG, "~p", [Arg])).
+        ?ELOG_TRACE(?CAT_TLOG, "~w", [Arg])).
 -define(DBG_REPAIRx(Arg),
-        ?ELOG_TRACE(?CAT_REPAIR, "~p", [Arg])).
+        ?ELOG_TRACE(?CAT_REPAIR, "~w", [Arg])).
 -define(DBG_CHAINx(Arg),
-        ?ELOG_TRACE(?CAT_CHAIN, "~p", [Arg])).
+        ?ELOG_TRACE(?CAT_CHAIN, "~w", [Arg])).
 -define(DBG_CHAIN_TLOGx(Arg),
-        ?ELOG_TRACE((?CAT_CHAIN bor ?CAT_TLOG), "~p", [Arg])).
+        ?ELOG_TRACE((?CAT_CHAIN bor ?CAT_TLOG), "~w", [Arg])).
 -define(DBG_MIGRATEx(Arg),
-        ?ELOG_TRACE(?CAT_MIGRATE, "~p", [Arg])).
+        ?ELOG_TRACE(?CAT_MIGRATE, "~w", [Arg])).
 -define(DBG_HASHx(Arg),
-        ?ELOG_TRACE(?CAT_HASH, "~p", [Arg])).
+        ?ELOG_TRACE(?CAT_HASH, "~w", [Arg])).
 
 -endif. % -ifndef(ets_brick_hrl).
