@@ -954,12 +954,14 @@ common_testset_must_mustnot(Key, Flags, S) ->
             end
     end.
 
--spec apply_exp_time_directive(flags_list(), exp_time(), exp_time()) ->
+-spec apply_exp_time_directive(flags_list(), exp_time(), exp_time(), Default:: keep | replace) ->
                                       {ok, exp_time()} | {error, invalid_flag_present}.
-apply_exp_time_directive(Flags, ExpTime, PreviousExpTime) ->
+apply_exp_time_directive(Flags, ExpTime, PreviousExpTime, Default) ->
     case check_flaglist(exp_time_directive, Flags) of
-        false ->
+        false when Default =:= keep ->
             {ok, PreviousExpTime};
+        false when Default =:= replace ->
+            {ok, ExpTime};
         {true, keep} ->
             {ok, PreviousExpTime};
         {true, replace} ->
@@ -968,12 +970,14 @@ apply_exp_time_directive(Flags, ExpTime, PreviousExpTime) ->
             {error, invalid_flag_present}
     end.
 
--spec apply_attrib_directive(flags_list(), flags_list()) ->
+-spec apply_attrib_directive(flags_list(), flags_list(), Default:: keep | replace) ->
                                     {ok, flags_list()} | {error, invalid_flag_present}.
-apply_attrib_directive(Flags, PreviousFlags) ->
+apply_attrib_directive(Flags, PreviousFlags, Default) ->
     case check_flaglist(attrib_directive, Flags) of
-        false ->
+        false when Default =:= keep ->
             apply_attrib_directive1(Flags, PreviousFlags);
+        false when Default =:= replace ->
+            {ok, Flags};
         {true, keep} ->
             apply_attrib_directive1(Flags, PreviousFlags);
         {true, replace} ->
@@ -1055,8 +1059,18 @@ add_key(Key, TStamp, Value, ExpTime, Flags, State) ->
 
 replace_key(Key, TStamp, Value, ExpTime, Flags, State) ->
     case key_exists_p(Key, Flags, State, false) of
-        {Key, TS, _, _, _PreviousExp, _} ->
-            replace_key2(Key, TStamp, Value, ExpTime, Flags, State, TS);
+        {Key, TS, _, _, PreviousExp, PreviousFlags} ->
+            case apply_exp_time_directive(Flags, ExpTime, PreviousExp, replace) of
+                {ok, NewExpTime} ->
+                    case apply_attrib_directive(Flags, PreviousFlags, replace) of
+                        {ok, NewFlags} ->
+                            replace_key2(Key, TStamp, Value, NewExpTime, NewFlags, State, TS);
+                        {error, Err} ->
+                            {Err, State}
+                    end;
+                {error, Err} ->
+                    {Err, State}
+            end;
         {ts_error, _} = Err ->
             {Err, State};
         _ ->
@@ -1096,10 +1110,20 @@ replace_key2(Key, TStamp, Value, ExpTime, Flags, State, TS) ->
 
 set_key(Key, TStamp, Value, ExpTime, Flags, State) ->
     case key_exists_p(Key, Flags, State, false) of
-        {Key, TS, _, _, _PreviousExp, _} ->
+        {Key, TS, _, _, PreviousExp, PreviousFlags} ->
             %% Now, we have same case as replace_key when exists ...
             %% so reuse the lower level of replace_key().
-            replace_key2(Key, TStamp, Value, ExpTime, Flags, State, TS);
+            case apply_exp_time_directive(Flags, ExpTime, PreviousExp, replace) of
+                {ok, NewExpTime} ->
+                    case apply_attrib_directive(Flags, PreviousFlags, replace) of
+                        {ok, NewFlags} ->
+                            replace_key2(Key, TStamp, Value, NewExpTime, NewFlags, State, TS);
+                        {error, Err} ->
+                            {Err, State}
+                    end;
+                {error, Err} ->
+                    {Err, State}
+            end;
         {ts_error, _} = Err ->
             {Err, State};
         _X ->
@@ -1117,9 +1141,9 @@ rename_key(Key, TStamp, NewKey, ExpTime, Flags, State) ->
             %% special case when Key =:= NewKey
             {key_not_exist, State};
         {Key, TS, _, _, PreviousExp, PreviousFlags} ->
-            case apply_exp_time_directive(Flags, ExpTime, PreviousExp) of
+            case apply_exp_time_directive(Flags, ExpTime, PreviousExp, keep) of
                 {ok, NewExpTime} ->
-                    case apply_attrib_directive(Flags, PreviousFlags) of
+                    case apply_attrib_directive(Flags, PreviousFlags, keep) of
                         {ok, NewFlags} ->
                             rename_key2(Key, TStamp, NewKey, NewExpTime, NewFlags, State, TS);
                         {error, Err} ->
