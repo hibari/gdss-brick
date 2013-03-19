@@ -311,7 +311,8 @@ key_to_chainsweep(ReadOrWrite, Key, GH, FinalFun)
             B = FinalFun(ChainName, ReadOrWrite, GH, current),
             Debs = [{migrating_p, GH#g_hash_r.migrating_p},
                     {phase, GH#g_hash_r.phase}],
-            ?DBG_HASHx({ChainName, Key, no_mig, CurRev, MinorRev, B, Debs}),
+            ?DBG_HASH("key_to_chainsweep ~w ~w no_mig ~w ~w ~w",
+                      [ChainName, Key, CurRev, MinorRev, B, Debs]),
             B;
        true ->
             HNew = GH#g_hash_r.new_h_desc,
@@ -319,17 +320,20 @@ key_to_chainsweep(ReadOrWrite, Key, GH, FinalFun)
                              ReadOrWrite, Key, HNew#hash_r.opaque),
             if ChainName == ChainNameNew ->
                     B = FinalFun(ChainName, ReadOrWrite, GH, current),
-                    ?DBG_HASHx({Key, mig_same, CurRev, MinorRev, B}),
+                    ?DBG_HASH("key_to_chainsweep ~w mig_same ~w ~w ~w",
+                              [Key, CurRev, MinorRev, B]),
                     B;
                true ->
                     case where_is_key_relative_to_sweep(Key, ChainName, GH) of
                         in_front ->
                             B = FinalFun(ChainName, ReadOrWrite, GH, current),
-                            ?DBG_HASHx({Key, mig_current, CurRev, MinorRev, B}),
+                            ?DBG_HASH("key_to_chainsweep ~w mig_current ~w ~w ~w",
+                                      [Key, CurRev, MinorRev, B]),
                             B;
                         behind ->
                             B = FinalFun(ChainNameNew, ReadOrWrite, GH, new),
-                            ?DBG_HASHx({Key, mig_new, CurRev, MinorRev, B}),
+                            ?DBG_HASH("key_to_chainsweep ~w mig_new ~w ~w ~w",
+                                      [Key, CurRev, MinorRev, B]),
                             B
                     end
             end
@@ -437,14 +441,14 @@ desc_substitute_chain(Desc, ChainName, BrickList) ->
 where_is_key_relative_to_sweep(Key, ChainName, GH) ->
     case dict:find(ChainName, GH#g_hash_r.migr_dict) of
         {ok, SweepKey} ->
-            ?DBG_HASHx({relative_to_sweep, Key, ChainName, found, SweepKey}),
+            ?DBG_HASH("relative_to_sweep ~w ~w found ~w", [Key, ChainName, SweepKey]),
             if SweepKey == ?BRICK__GET_MANY_LAST  -> behind;
                SweepKey == ?BRICK__GET_MANY_FIRST -> in_front;
                Key =< SweepKey                    -> behind;
                true                               -> in_front
             end;
         _ ->
-            ?DBG_HASHx({relative_to_sweep, Key, ChainName, not_found}),
+            ?DBG_HASH("relative_to_sweep ~w ~w not_found", [Key, ChainName]),
             in_front
     end.
 
