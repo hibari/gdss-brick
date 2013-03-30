@@ -280,7 +280,7 @@ init([ServerName, Options]) ->
     ?DBG_GEN("qqq_starting ~w", [ServerName]),
 
     process_flag(trap_exit, true),
-    ?E_INFO("top of init: ~w, ~w", [ServerName, Options]),
+    ?E_INFO("top of init: ~w, ~p", [ServerName, Options]),
 
     %% Avoid race conditions where a quick restart of the brick
     %% catches up with the not-yet-finished death of the previous log
@@ -2003,8 +2003,8 @@ load_rec_clean_up_etab(Key, S) ->
     end.
 
 purge_recs_by_seqnum(SeqNum, CheckpointNotRunning_p, S) ->
-    ?E_INFO("~s: purging keys with sequence ~p, size ~p",
-            [S#state.name, SeqNum, ets:info(S#state.ctab, size)]),
+    ?E_NOTICE("~s: purging keys with sequence ~p, size ~p",
+              [S#state.name, SeqNum, ets:info(S#state.ctab, size)]),
     if CheckpointNotRunning_p ->
             undefined = S#state.shadowtab; % sanity
        true ->
@@ -2026,6 +2026,7 @@ purge_rec_from_log(Iters, Key, SeqNum, Count, S) ->
         {STSeqNum, _Offset} when abs(STSeqNum) == SeqNum ->
             ExpTime = storetuple_exptime(ST),
             my_delete_ignore_logging(S, Key, ExpTime),
+            ?E_NOTICE("~s: purged a key from log. key ~p", [S#state.name, Key]),
             purge_rec_from_log(Iters + 1, ets:next(S#state.ctab, Key), SeqNum,
                                Count + 1, S);
         _ ->
@@ -2043,6 +2044,8 @@ purge_rec_from_shadowtab(SeqNum, ShadowTab, S) ->
                           {STSeqNum, _Off} when abs(STSeqNum) == SeqNum ->
                               ExpTime = storetuple_exptime(ST),
                               my_delete_ignore_logging(S, Key, ExpTime),
+                              ?E_NOTICE("~s: purged a key from shadowtab. key ~p",
+                                        [S#state.name, Key]),
                               Acc + 1;
                           _ ->
                               Acc
@@ -2877,7 +2880,7 @@ bigdata_dir_get_val(_Key, Val, ValLen, S) ->
 
 %% TODO: This bad boy will crash if the file doesn't exist.
 
-bigdata_dir_get_val(_Key, Val, ValLen, CheckMD5_p, S)
+bigdata_dir_get_val(Key, Val, ValLen, CheckMD5_p, S)
   when is_tuple(Val) ->
     case Val of
         {0, 0} ->
@@ -2904,8 +2907,8 @@ bigdata_dir_get_val(_Key, Val, ValLen, CheckMD5_p, S)
                     %%
                     %% TODO: What other erors here that we need to look for?
                     %%
-                    ?E_ERROR("~s: read error ~p at ~p ~p",
-                             [S#state.name, Reason, SeqNum, Offset]),
+                    ?E_ERROR("~s: read error ~p at seq ~p offset ~p for the stored value of key ~p",
+                             [S#state.name, Reason, SeqNum, Offset, Key]),
                     throw(silently_drop_reply);
                 eof when S#state.do_sync == false ->
                     %% The brick is in async mode.  If we're trying to
@@ -2919,8 +2922,8 @@ bigdata_dir_get_val(_Key, Val, ValLen, CheckMD5_p, S)
                     %% when I read async-written data too early....
                     throw(silently_drop_reply);
                 Error ->
-                    ?E_WARNING("~s: error ~p at ~p ~p",
-                               [S#state.name, Error, SeqNum, Offset]),
+                    ?E_WARNING("~s: read error ~p at seq ~p offset ~p the stored value of key ~p",
+                               [S#state.name, Error, SeqNum, Offset, Key]),
                     sequence_file_is_bad(SeqNum, Offset, S),
                     throw(silently_drop_reply)
             end

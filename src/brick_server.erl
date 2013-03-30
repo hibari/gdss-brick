@@ -5552,7 +5552,7 @@ do_common_log_sequence_file_is_bad(SeqNum, S) ->
     {NumPurged, ImplState2} =
         ImplMod:bcb_common_log_sequence_file_is_bad(SeqNum, ImplState),
     set_sequence_file_is_bad_key(S#state.name, SeqNum),
-    ?ELOG_INFO("common_log_sequence_file_is_bad: ~p: ~w purged keys for log ~p",
+    ?ELOG_NOTICE("common_log_sequence_file_is_bad: ~p: purged ~w keys for log ~p",
                [S#state.name, NumPurged, SeqNum]),
     if NumPurged == 0 ->
             S#state{impl_state = ImplState2};
