@@ -102,9 +102,9 @@
 -export([sync_pid_start/1]).
 -export([file_input_fun/2, file_output_fun/1, sort_test0/0, slurp_log_chunks/1]).
 %% For gmt_hlog_common's scavenger support.
--export([make_info_log_fun/1, really_cheap_exclusion/3, scavenger_get_keys/5,
+-export([really_cheap_exclusion/3, scavenger_get_keys/5,
          count_live_bytes_in_log/1, temp_path_to_seqnum/1, which_path/3,
-         delete_seq/2, scavenge_one_seq_file_fun/4, copy_one_hunk/6]).
+         delete_seq/2, copy_one_hunk/6]).
 %% For brick_admin fast sync support
 -export([storetuple_make/6]).
 %% For gmt_hlog_common's use
@@ -232,7 +232,6 @@
 -spec disk_log_fold_bychunk(fun(([tuple()],integer())->integer()),integer(),term()) -> integer().
 -spec file_input_fun(term(),term()) -> fun((atom())->end_of_input|{error,term()}).
 -spec file_output_fun(term()) -> fun((term()) -> ok | fun()).
--spec make_info_log_fun(list()) -> fun((_,_) -> 'ok').
 -spec really_cheap_exclusion(atom(),fun(),fun()) -> fun().
 -spec scavenger_get_keys(brick_server:brick_name(),brick_server:flags_list_many(),
                          key(),
@@ -2124,11 +2123,10 @@ checkpoint_start(S_ro, DoneLogSeq, ParentPid, Options) ->
     _LogProps = (S_ro#state.wal_mod):get_proplist(S_ro#state.log),
     Dir = (S_ro#state.wal_mod):log_name2data_dir(S_ro#state.name),
     ServerProps = S_ro#state.options,
-    Finfolog = make_info_log_fun(Options),
 
     CheckName = ?CHECK_NAME ++ "." ++ atom_to_list(S_ro#state.ctab),
     CheckFile = Dir ++ "/" ++ CheckName ++ ".tmp",
-    Finfolog("Checkpoint: ~w: starting", [S_ro#state.name]),
+    ?E_INFO("Checkpoint: ~w: starting", [S_ro#state.name]),
     _ = file:delete(CheckFile),
 
     %% Allow checkpoint requester to alter our behavior, e.g. for
@@ -2197,7 +2195,7 @@ checkpoint_start(S_ro, DoneLogSeq, ParentPid, Options) ->
             %%   2. We'll do it in a worker proc so that we can notify our
             %%      parent now and exit.
             %%
-            Finfolog("checkpoint: ~p: deleting ~p log files",
+            ?E_INFO("checkpoint: ~p: deleting ~p log files",
                      [S_ro#state.name, length(OldSeqs)]),
             spawn(fun() ->
                           %% We have really weird intermittent
@@ -2217,7 +2215,7 @@ checkpoint_start(S_ro, DoneLogSeq, ParentPid, Options) ->
                   end),
             ok;
        true ->
-            Finfolog("checkpoint: ~p: moving ~p log "
+            ?E_INFO("checkpoint: ~p: moving ~p log "
                      "files to long-term archive",
                      [S_ro#state.name, length(OldSeqs)]),
             _ = [(S_ro#state.wal_mod):move_seq_to_longterm(S_ro#state.log, X)
@@ -2245,7 +2243,7 @@ checkpoint_start(S_ro, DoneLogSeq, ParentPid, Options) ->
             ok
     end,
     gen_server:cast(ParentPid, {checkpoint_last_seqnum, DoneLogSeq}),
-    Finfolog("Checkpoint: ~p: finished", [S_ro#state.name]),
+    ?E_INFO("Checkpoint: ~p: finished", [S_ro#state.name]),
     ?DBG_GEN("checkpoint_start ~p [done]", [S_ro#state.name]),
     exit(done).
 
@@ -3495,72 +3493,6 @@ copy_one_hunk(SA, FH, Key, SeqNum, Offset, Fread_blob) ->
             error
     end.
 
-scavenge_one_seq_file_fun(TempDir, SA, Fread_blob, Finfolog) ->
-    fun({SeqNum, _Bytes}, {Hs, Bs, Es}) ->
-            %%LEFT OFF HERE: we need to read the disk_log file instead
-            DInPath = TempDir ++ "/" ++ integer_to_list(SeqNum),
-            DOutPath = TempDir ++ "/" ++ integer_to_list(SeqNum) ++ ".out",
-            {ok, DInLog} = disk_log:open([{name, DInPath},
-                                          {file, DInPath}, {mode,read_only}]),
-            {ok, DOutLog} = disk_log:open([{name, DOutPath}, {file, DOutPath}]),
-            {ok, FH} = (SA#scav.wal_mod):open_log_file(SA#scav.log_dir, SeqNum,
-                                                       [read, binary]),
-            {Hunks, Bytes, Errs} =
-                disk_log_fold(fun({Offset, BrickName, Key, TS},
-                                  {Hs1, Bs1, Es1}) ->
-                                      OldLoc = {SeqNum, Offset},
-                                      case copy_one_hunk(SA, FH, Key, SeqNum,
-                                                         Offset,
-                                                         Fread_blob) of
-                                          error ->
-                                              {Hs1, Bs1, Es1 + 1};
-                                          {NewLoc, Size} ->
-                                              %% We want a tuple sortable first
-                                              %% by brick name.
-                                              Tpl = {BrickName, Key, TS,
-                                                     OldLoc, NewLoc},
-                                              ok = disk_log:log(DOutLog, Tpl),
-                                              {Hs1 + 1, Bs1 + Size, Es1}
-                                      end;
-                                 ({live_bytes, _}, Acc) ->
-                                      Acc
-                              end, {0, 0, 0}, DInLog),
-            ok = file:close(FH),
-            ok = disk_log:close(DInLog),
-            ok = disk_log:close(DOutLog),
-            ?E_INFO("SCAV: ~p middle of step 10", [SA#scav.name]),
-            if Errs == 0, SA#scav.destructive == true ->
-                    {ok, DOutLog} = disk_log:open([{name, DOutPath},
-                                                   {file, DOutPath}]),
-                    case (SA#scav.update_locations)(SA, DOutLog) of
-                        NumUpdates when is_integer(NumUpdates) ->
-                            Finfolog(
-                              "scavenger: ~p sequence ~p: UpRes ok, "
-                              "~p updates",
-                              [SA#scav.name, SeqNum, NumUpdates]),
-                            spawn(fun() ->
-                                          timer:sleep(40*1000),
-                                          delete_seq(SA, SeqNum)
-                                  end);
-                        UpRes ->
-                            Finfolog(
-                              "scavenger: ~p sequence ~p: UpRes ~p",
-                              [SA#scav.name, SeqNum, UpRes])
-                    end;
-               true ->
-                    ok
-            end,
-            ok = disk_log:close(DOutLog),
-            {Hs + Hunks, Bs + Bytes, Es + Errs}
-    end.
-
-make_info_log_fun(PropList) ->
-    SilentP = proplists:get_value(silent, PropList, false),
-    fun(Fmt, Args) ->
-            if SilentP -> ok;
-               true    -> ?E_INFO(Fmt, Args)
-            end
-    end.
 
 %% @doc Once this function returns, the process will be registered
 %% with ExclAtom.  If the process is already registered with that name

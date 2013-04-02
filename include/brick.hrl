@@ -53,11 +53,15 @@
           throttle_pid,                         % pid() private throttle server
           sorter_size,                          % int() bytes
           bricks = [],                          % list() CommonLog bricks
+          dead_paths = [],                      % list() Paths to dead sequences
+          dead_seq_bytes,                       % integer()
+          live_seq_bytes,                       % integer()
           exclusive_p = true,                   % boolean() Avoid parallel runs
           log_fun,                              % fun/2 info logging impl.
-          phase10_fun,                          % fun/7 Phase 10 implementation
+          bottom_fun,                           % fun/7 scavenger botton half implementation
           update_locations                      % fun/2
          }).
+-type scav_r() :: #scav{}.
 
 %% Write-ahead log hunk types
 -define(LOGTYPE_METADATA,     1).
@@ -96,8 +100,8 @@
         ?ELOG_NOTICE(?CAT_GENERAL, Fmt, Args)).
 -define(E_INFO(Fmt, Args),
         ?ELOG_INFO(?CAT_GENERAL, Fmt, Args)).
--define(E_DBG(Cat, Fmt, Args),
-        ?ELOG_DEBUG(Cat, Fmt, Args)).
+-define(E_DBG(Fmt, Args),
+        ?ELOG_DEBUG(?CAT_GENERAL, Fmt, Args)).
 -define(E_TRACE(Cat, Fmt, Args),
         ?ELOG_TRACE(Cat, Fmt, Args)).
 

@@ -302,9 +302,9 @@ stop(Server) ->
 write_hunk(Server, LocalBrickName, HLogType, Key, TypeNum, CBlobs, UBlobs)
   when is_atom(HLogType), is_integer(TypeNum),
        is_list(CBlobs), is_list(UBlobs) ->
-    if HLogType == metadata          -> ok;
-       HLogType == bigblob           -> ok;
-       HLogType == bigblob_longterm  -> ok % For use by scavenger
+    if HLogType =:= metadata          -> ok;
+       HLogType =:= bigblob           -> ok;
+       HLogType =:= bigblob_longterm  -> ok % For use by scavenger
     end,
     {H_Len, H_Bytes} = create_hunk(TypeNum, CBlobs, UBlobs),
     write_hunk_internalwrapper(Server, LocalBrickName, HLogType, Key,
@@ -818,7 +818,7 @@ create_hunk(TypeNum, CBlobs, UBlobs) ->
 
 do_advance_seqnum(Incr, From, #state{syncer_pid = SyncPid,
                                      write_backlog = Wbacklog} = S)
-  when (Wbacklog == [] andalso SyncPid == undefined) orelse (Incr < 0) ->
+  when (Wbacklog =:= [] andalso SyncPid =:= undefined) orelse (Incr < 0) ->
     NextSeq = S#state.last_seq + abs(Incr),
     NewSeq = if Incr > 0 -> ok = safe_log_close_short(S),
                             NextSeq;
@@ -826,7 +826,7 @@ do_advance_seqnum(Incr, From, #state{syncer_pid = SyncPid,
                             -NextSeq
              end,
     {FH, Off} = create_new_log_file(S#state.dir, NewSeq),
-    if From == undefined ->
+    if From =:= undefined ->
             ok;
        true ->
             gen_server:reply(From, {ok, NewSeq})
@@ -1128,10 +1128,10 @@ log_file_info(Dir, N) ->
             Res
     end.
 
-create_new_log_file(Dir, N)
-  when is_integer(N), N =/= 0 ->
+create_new_log_file(Dir, N) when is_integer(N), N =/= 0 ->
+    Path = log_file_path(Dir, N),
     %% sanity
-    {N, {error, enoent}} = {N, file:read_file_info(log_file_path(Dir, N))},
+    {N, {error, enoent}} = {N, file:read_file_info(Path)},
     %% extra sanity
     M = -N,
     {M, {error, enoent}} = {M, file:read_file_info(log_file_path(Dir, M))},
@@ -1139,6 +1139,11 @@ create_new_log_file(Dir, N)
     try
         ok = write_log_header(FH),
         {ok, FI} = stat_log_file(Dir, N),
+        Type = if N > 0 -> "short-term";
+                  true ->  "long-term"
+               end,
+        ?ELOG_INFO("Created ~s log file with sequence ~w: ~s",
+                   [Type, N, Path]),
         {FH, FI#file_info.size}
     catch
         X:Y ->
@@ -1254,13 +1259,19 @@ safe_log_close(S) ->
     safe_log_close_short(S),
     safe_log_close_long(S).
 
-safe_log_close_short(S) ->
-    catch file:sync(S#state.cur_fhS),
-    catch file:close(S#state.cur_fhS).
+safe_log_close_short(#state{dir=Dir, cur_seqS=SeqNum, cur_fhS=FH}) ->
+    catch file:sync(FH),
+    Res = (catch file:close(FH)),
+    ?ELOG_INFO("Closed short-term log file with sequence ~w: ~s",
+               [SeqNum, log_file_path(Dir, SeqNum)]),
+    Res.
 
-safe_log_close_long(S) ->
-    catch file:sync(S#state.cur_fhL),
-    catch file:close(S#state.cur_fhL).
+safe_log_close_long(#state{dir=Dir, cur_seqL=SeqNum, cur_fhL=FH}) ->
+    catch file:sync(FH),
+    Res = (catch file:close(FH)),
+    ?ELOG_INFO("Closed long-term log file with sequence ~w: ~s",
+               [SeqNum, log_file_path(Dir, SeqNum)]),
+    Res.
 
 %% @spec () -> binary()
 
