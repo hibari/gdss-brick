@@ -30,15 +30,23 @@
 -define(WAIT_BEFORE_EXIT, timer:sleep(1500)). %% milliseconds
 
 %% API
--export([start_link/1, hlog_pid/1, stop/1,
-         register_local_brick/2, unregister_local_brick/2,
+-export([start_link/1,
+         hlog_pid/1,
+         stop/1,
+         register_local_brick/2,
+         unregister_local_brick/2,
          permanently_unregister_local_brick/2,
-         full_writeback/0, full_writeback/1,
-         get_all_registrations/0, get_all_registrations/1
+         full_writeback/0,
+         full_writeback/1,
+         get_all_registrations/0,
+         get_all_registrations/1
         ]).
+
 %% Scavenger API
--export([start_scavenger_commonlog/1, stop_scavenger_commonlog/0,
-         resume_scavenger_commonlog/1, resume_scavenger_commonlog/2,
+-export([start_scavenger_commonlog/1,
+         stop_scavenger_commonlog/0,
+         resume_scavenger_commonlog/1,
+         resume_scavenger_commonlog/2,
          scavenger_commonlog/1                  % Not commonly used
         ]).
 
@@ -49,12 +57,23 @@
 -export([start/1]).
 
 %% gen_server callbacks
--export([init/1, handle_call/3, handle_cast/2, handle_info/2,
-         terminate/2, code_change/3]).
+-export([init/1,
+         handle_call/3,
+         handle_cast/2,
+         handle_info/2,
+         terminate/2,
+         code_change/3
+        ]).
 
 %% Pass-through to gmt_hlog.
--export([log_file_path/2, log_file_path/3, open_log_file/3,
-         read_hunk_summary/5, write_hunk/7]).
+-export([log_file_path/2,
+         log_file_path/3,
+         log_file_info/2,
+         open_log_file/3,
+         read_hunk_summary/5,
+         write_hunk/7
+        ]).
+
 
 %%%----------------------------------------------------------------------
 %%% Types/Specs/Records
@@ -92,81 +111,82 @@
 -type props() :: list({common_log_name,servername()}).
 
 -type byte_size() :: non_neg_integer().
--type sequence() :: neg_integer() | pos_integer(). %% Log sequence number
--type sequence_hunk_size() :: {sequence(), byte_size()}.
+-type seqnum_hunk_size() :: {seqnum(), byte_size()}.
 -type file_path() :: string().
-
--spec start_link(props()) -> {ok,pid()} | {error,term()} | ignore.
--spec start(props()) -> {ok,pid()} | {error,term()} | ignore.
--spec hlog_pid(server()) -> pid().
--spec stop(server()) -> ok | {error,term()}.
--spec register_local_brick(server(), brickname()) -> ok | {error,term()}.
--spec unregister_local_brick(server(), brickname()) -> ok.
--spec permanently_unregister_local_brick(server(), brickname()) -> ok.
--spec full_writeback(server()) -> ok | {error,term()}.
--spec get_all_registrations() -> list(atom()).
--spec get_all_registrations(server()) -> list(atom()).
-
--spec sequence_file_is_bad(seqnum(), offset()) -> ok.
-
--spec open_log_file(dirname(), seqnum(), openmode()) -> {ok, file:fd()} | {error, atom()}.
--spec write_hunk(server(), brickname(), hlogtype(), key(), typenum(), CBlobs::blobs(), UBlobs::blobs()) -> {ok, seqnum(), offset()} | {hunk_too_big, len()} | no_return().
-
--spec log_file_path(dirname(), seqnum()) -> dirname().
 
 
 %%%===================================================================
 %%% API
 %%%===================================================================
 
+-spec start_link(props()) -> {ok,pid()} | {error,term()} | ignore.
 start_link(PropList) ->
     gen_server:start_link(?MODULE, PropList, []).
 
+-spec start(props()) -> {ok,pid()} | {error,term()} | ignore.
 start(PropList) ->
     gen_server:start(?MODULE, PropList, []).
 
+-spec hlog_pid(server()) -> pid().
 hlog_pid(Server) ->
     gen_server:call(Server, {hlog_pid}, 300*1000).
 
+-spec stop(server()) -> ok | {error,term()}.
 stop(Server) ->
     gen_server:call(Server, {stop}).
 
+-spec register_local_brick(server(), brickname()) -> ok | {error,term()}.
 register_local_brick(Server, LocalBrick) when is_atom(LocalBrick) ->
     gen_server:call(Server, {register_local_brick, LocalBrick}).
 
+-spec unregister_local_brick(server(), brickname()) -> ok.
 unregister_local_brick(Server, LocalBrick) when is_atom(LocalBrick) ->
     gen_server:call(Server, {unregister_local_brick, LocalBrick}).
 
+-spec permanently_unregister_local_brick(server(), brickname()) -> ok.
 permanently_unregister_local_brick(Server, LocalBrick) when is_atom(LocalBrick) ->
     gen_server:call(Server, {permanently_unregister_local_brick, LocalBrick}).
 
 full_writeback() ->
     full_writeback(?GMT_HLOG_COMMON_LOG_NAME).
 
+-spec full_writeback(server()) -> ok | {error,term()}.
 full_writeback(Server) ->
     gen_server:call(Server, {full_writeback}, 300*1000).
 
+-spec get_all_registrations() -> list(atom()).
 get_all_registrations() ->
     get_all_registrations(?GMT_HLOG_COMMON_LOG_NAME).
 
+-spec get_all_registrations(server()) -> list(atom()).
 get_all_registrations(Server) ->
     gen_server:call(Server, {get_all_registrations}, 300*1000).
 
-log_file_path(A, B) ->
-    gmt_hlog:log_file_path(A, B).
+-spec log_file_path(dirname(), seqnum()) -> dirname().
+log_file_path(Dir, SeqNum) ->
+    gmt_hlog:log_file_path(Dir, SeqNum).
 
-log_file_path(A, B, C) ->
-    gmt_hlog:log_file_path(A, B, C).
+log_file_path(Dir, SeqNum, Suffix) ->
+    gmt_hlog:log_file_path(Dir, SeqNum, Suffix).
 
-open_log_file(A, B, C) ->
-    gmt_hlog:open_log_file(A, B, C).
+-spec open_log_file(dirname(), seqnum(), openmode()) -> {ok, file:fd()} | {error, atom()}.
+open_log_file(Dir, SeqNum, Mode) ->
+    gmt_hlog:open_log_file(Dir, SeqNum, Mode).
+
+-spec log_file_info(dirname(), seqnum()) -> {ok, filepath(), file:file_info()} | {error, atom()}.
+log_file_info(LogDir, SeqNum) ->
+    gmt_hlog:log_file_info(LogDir, SeqNum).
 
 read_hunk_summary(A, B, C, D, E) ->
     gmt_hlog:read_hunk_summary(A, B, C, D, E).
 
+-spec write_hunk(server(), brickname(), hlogtype(), key(), typenum(),
+                 CBlobs::blobs(), UBlobs::blobs()) ->
+                        {ok, seqnum(), offset()} | {hunk_too_big, len()} | no_return().
 write_hunk(A, B, C, D, E, F, G) ->
     gmt_hlog:write_hunk(A, B, C, D, E, F, G).
 
+-spec sequence_file_is_bad(seqnum(), offset()) -> ok.
 sequence_file_is_bad(SeqNum, Offset) ->
     gen_server:call(?GMT_HLOG_COMMON_LOG_NAME,
                     {sequence_file_is_bad, SeqNum, Offset}).
@@ -505,13 +525,13 @@ do_sync_writeback(S) ->
 
     {EndSeqNum, EndOffset} =
         gmt_hlog:get_current_seqnum_and_file_position(S#state.hlog_pid),
-    ?DBG_TLOG("do_sync_writeback: end_seq ~w, end_offset ~w", [EndSeqNum, EndOffset]),
+    %% ?DBG_TLOG("do_sync_writeback: end_seq ~w, end_offset ~w", [EndSeqNum, EndOffset]),
     {ok, Count1} = do_metadata_hunk_writeback(S#state.last_seqnum,
                                               S#state.last_offset,
                                               EndSeqNum, EndOffset, S),
     {ok, Bytes2} = do_bigblob_hunk_writeback(S#state.last_seqnum,
                                              S#state.last_offset, S),
-    ?DBG_TLOG("do_sync_writeback: counts ~w, ~w", [Count1, Bytes2]),
+    %% ?DBG_TLOG("do_sync_writeback: counts ~w, ~w", [Count1, Bytes2]),
 
     %% OK, we're written everything back to where they need to be.
     %% However, all of those writes were asynchronous and probably
@@ -540,18 +560,20 @@ do_metadata_hunk_writeback(OldSeqNum, OldOffset, StopSeqNum, StopOffset, S_ro)->
                   %% anything useful, alas.  Instead, we'll use the
                   %% magic return value to tell fold_a_file() to use a
                   %% new offset for the next iteration.
-                  ?DBG_TLOG("do_metadata_hunk_writeback [new_offset] seq ~w, off ~w", [SeqNum, OldOffset]),
+
+                  %% ?DBG_TLOG("do_metadata_hunk_writeback [new_offset] seq ~w, off ~w", [SeqNum, OldOffset]),
                   {{{new_offset, OldOffset}}};
              (#hunk_summ{seq = SeqNum, off = Offset} = _H, _FH, WB)
                 when {SeqNum, Offset} >= {StopSeqNum, StopOffset} ->
                   %% Do nothing here: our folding has moved past where
                   %% we need to process ... this hunk will be
                   %% processed later.
-                  ?DBG_TLOG("do_metadata_hunk_writeback [stop] seq ~w, off ~w", [SeqNum, Offset]),
+
+                  %% ?DBG_TLOG("do_metadata_hunk_writeback [stop] seq ~w, off ~w", [SeqNum, Offset]),
                   WB;
              (#hunk_summ{type = ?LOCAL_RECORD_TYPENUM, u_len = [BLen]} = H, FH,
               #wb{exactly_count = Count, exactly_ts = Ts} = WB) ->
-                  ?DBG_TLOG("do_metadata_hunk_writeback [metadata] seq ~w, off ~w", [H#hunk_summ.seq, H#hunk_summ.off]),
+                  %% ?DBG_TLOG("do_metadata_hunk_writeback [metadata] seq ~w, off ~w", [H#hunk_summ.seq, H#hunk_summ.off]),
                   UBlob = gmt_hlog:read_hunk_member_ll(FH, H, undefined, 1),
                   if size(UBlob) /= BLen ->
                           %% This should never happen.
@@ -567,7 +589,7 @@ do_metadata_hunk_writeback(OldSeqNum, OldOffset, StopSeqNum, StopOffset, S_ro)->
                   %% This tuple is sortable the way we need it, as-is.
                   WB#wb{exactly_count = Count + 1, exactly_ts = [T|Ts]};
              (_H, _FH, WB) ->
-                  ?DBG_TLOG("do_metadata_hunk_writeback [bigblob_hunk] seq ~w, off ~w", [_H#hunk_summ.seq, _H#hunk_summ.off]),
+                  %% ?DBG_TLOG("do_metadata_hunk_writeback [bigblob_hunk] seq ~w, off ~w", [_H#hunk_summ.seq, _H#hunk_summ.off]),
                   %% These are copied by do_bigblob_hunk_writeback() instead.
                   WB
           end,
@@ -638,46 +660,60 @@ write_back_exactly_to_logs(Ts, S_ro) ->
 %%
 
 write_back_to_local_log([{eee, LocalBrickName, SeqNum, Offset, _Key, _TypeNum,
-                          H_Len, H_Bytes}|Ts] = AllTs, LogSeqNum, LogFH_pos,
-                        I_LogFH, LastBrickName,
-                        I_TsAcc, Count, S_ro)
-  when Count > 0, LocalBrickName == LastBrickName ->
+                          H_Len, H_Bytes}|Ts] = AllTs,
+                        LogSeqNum,
+                        LogFH_pos,
+                        I_LogFH,
+                        LastBrickName,
+                        I_TsAcc,
+                        Count,
+                        S_ro)
+  when Count > 0,
+       LocalBrickName =:= LastBrickName ->
+
     {LogFH, TsAcc} =
-        if LogSeqNum == SeqNum, I_LogFH /= undefined ->
+        if LogSeqNum =:= SeqNum andalso I_LogFH =/= undefined ->
                 {I_LogFH, I_TsAcc};
            true ->
-                if I_LogFH /= undefined ->
+                if I_LogFH =/= undefined ->
                         write_stuff(I_LogFH, lists:reverse(I_TsAcc));
                    true ->
                         ok
                 end,
-                ?DBG_TLOG("write_back_to_local_log [close] ~w", [I_LogFH]),
+                %% ?DBG_TLOG("write_back_to_local_log [close] ~w", [I_LogFH]),
                 (catch file:close(I_LogFH)),
-                LPath = gmt_hlog:log_name2data_dir(
-                          LocalBrickName),
-                {ok, Lfh} = open_log_file_mkdir(LPath, SeqNum,
-                                                [read,write,binary]),
-                _NBytes = check_hlog_header(Lfh),
-                ?DBG_TLOG("write_back_to_local_log [open] ~w, nbytes ~w", [Lfh, _NBytes]),
+
+                LogDir = gmt_hlog:log_name2data_dir(LocalBrickName),
+                {ok, Lfh} = open_log_file_mkdir(LogDir, SeqNum, [read,write,binary]),
+                case check_hlog_header(Lfh) of
+                    created ->
+                        ?E_INFO("Created local log file with sequence ~w: ~s",
+                                [SeqNum, gmt_hlog:log_file_path(LogDir, SeqNum)]);
+                    ok ->
+                        %% ?DBG_TLOG("write_back_to_local_log [open] ~w, nbytes ~w", [Lfh, _NBytes]),
+                        %% ?E_DBG("Opened local log file with sequence ~w: ~s",
+                        %%        [SeqNum, gmt_hlog:log_file_path(LogDir, SeqNum)])
+                        ok
+                end,
                 {Lfh, []}
         end,
-    if TsAcc == [] ->
+    if TsAcc =:= [] ->
             {ok, Offset} = file:position(LogFH, {bof, Offset}),
-            ?DBG_TLOG("write_back_to_local_log [new_pos] ~w, off ~w", [LogFH, Offset]),
+            %% ?DBG_TLOG("write_back_to_local_log [new_pos] ~w, off ~w", [LogFH, Offset]),
             write_back_to_local_log(Ts, SeqNum, Offset + H_Len,
                                     LogFH, LocalBrickName,
                                     [H_Bytes|TsAcc],
                                     Count - 1, S_ro);
 
-       LogSeqNum == SeqNum, LogFH_pos == Offset ->
-            ?DBG_TLOG("write_back_to_local_log [append_pos] ~w, off ~w", [LogFH, Offset]),
+       LogSeqNum =:= SeqNum, LogFH_pos =:= Offset ->
+            %% ?DBG_TLOG("write_back_to_local_log [append_pos] ~w, off ~w", [LogFH, Offset]),
             write_back_to_local_log(Ts, SeqNum, Offset + H_Len,
                                     LogFH, LocalBrickName,
                                     [H_Bytes|TsAcc],
                                     Count - 1, S_ro);
        true ->
             %% Writeback!
-            ?DBG_TLOG("write_back_to_local_log [writeback] ~w, off ~w", [LogFH, Offset]),
+            %% ?DBG_TLOG("write_back_to_local_log [writeback] ~w, off ~w", [LogFH, Offset]),
             write_back_to_local_log(AllTs, SeqNum, LogFH_pos, LogFH,
                                     LastBrickName, TsAcc, 0, S_ro)
     end;
@@ -686,15 +722,15 @@ write_back_to_local_log([{eee, LocalBrickName, SeqNum, Offset, _Key, _TypeNum,
 %% set!), then reset accumulators & counter and resume iteration.
 write_back_to_local_log(AllTs, SeqNum, _LogFH_pos, LogFH,
                         LastBrickName, TsAcc, _Count, S_ro)
-  when LogFH /= undefined ->
+  when LogFH =/= undefined ->
     write_stuff(LogFH, lists:reverse(TsAcc)),
     case peek_first_brick_name(AllTs) of
         LastBrickName ->
-            ?DBG_TLOG("write_back_to_local_log [peek_last] ~w", [LogFH]),
+            %% ?DBG_TLOG("write_back_to_local_log [peek_last] ~w", [LogFH]),
             write_back_to_local_log(AllTs, SeqNum, 0, LogFH,
                                     LastBrickName, [], ?WB_COUNT, S_ro);
         OtherBrickName ->
-            ?DBG_TLOG("write_back_to_local_log [other_close] ~w", [LogFH]),
+            %% ?DBG_TLOG("write_back_to_local_log [other_close] ~w", [LogFH]),
             (catch file:close(LogFH)),
             write_back_to_local_log(AllTs, undefined, 0, undefined,
                                     OtherBrickName, [], ?WB_COUNT, S_ro)
@@ -703,17 +739,18 @@ write_back_to_local_log(AllTs, SeqNum, _LogFH_pos, LogFH,
 %% No more input, perhaps one last writeback?
 write_back_to_local_log([] = AllTs, SeqNum, FH_pos, LogFH,
                         LastBrickName, TsAcc, _Count, S_ro) ->
-    if TsAcc == [] ->
-            ?DBG_TLOG("write_back_to_local_log [empty_close] ~w", [LogFH]),
+    if TsAcc =:= [] ->
+            %% ?DBG_TLOG("write_back_to_local_log [empty_close] ~w", [LogFH]),
             (catch file:close(LogFH)),
             ok;
        true ->
             %% Writeback one last time.
-            ?DBG_TLOG("write_back_to_local_log [one_last_time] ~w", [LogFH]),
+            %% ?DBG_TLOG("write_back_to_local_log [one_last_time] ~w", [LogFH]),
             write_back_to_local_log(AllTs, SeqNum, FH_pos, LogFH,
                                     LastBrickName, TsAcc, 0, S_ro)
     end.
 
+-spec check_hlog_header(file:fd()) -> ok | created.
 check_hlog_header(FH) ->
     FileHeader = gmt_hlog:file_header_version_1(),
     {ok, 0} = file:position(FH, {bof, 0}),
@@ -727,10 +764,10 @@ check_hlog_header(FH) ->
             created
     end.
 
+-spec open_log_file_mkdir(dirname(), seqnum(), openmode()) -> {ok, file:fd()} | {error, atom()}.
 open_log_file_mkdir(Dir, SeqNum, Options) when SeqNum > 0 ->
     case gmt_hlog:open_log_file(Dir, SeqNum, Options) of
         {error, enoent} ->
-            io:format("HRM, e ~p ~p, ", [Dir, SeqNum]),
             ok = file:make_dir(Dir), % FIX later: ICKY assumption!! SeqNum > 0.
             ok = file:make_dir(Dir ++ "/s"), % FIX later: ICKY assumption!!
             ?DBG_TLOG("open_log_file_mkdir ~s", [Dir]),
@@ -740,8 +777,9 @@ open_log_file_mkdir(Dir, SeqNum, Options) when SeqNum > 0 ->
     end.
 
 write_stuff(LogFH, LogBytes) ->
-    ?DBG_TLOG("write_stuff: ~w, size ~w", [LogFH, erlang:iolist_size(LogBytes)]),
-    ok = file:write(LogFH, LogBytes).
+    %%?DBG_TLOG("write_stuff: ~w, size ~w", [LogFH, erlang:iolist_size(LogBytes)]),
+    ok = file:write(LogFH, LogBytes),
+    ok.
 
 do_register_local_brick(Brick, #state{reg_dict = _Dict} = S) ->
     _ = file:make_dir(brick_registration_dir(S)),
@@ -1135,8 +1173,6 @@ scavenger_commonlog(#scav{name=Name, work_dir=WorkDir,
             %% more than the maximum amount of live/in-use space.
             LiveSeqs = AllSeqs -- DeadSeqs,
             LiveHunkSizesGroupBySeq = scavenger_find_live_sequences(SA, LiveSeqs, HunkSizesGroupBySeq),
-            ?E_DBG("SCAV: ~w - Live hunk sizes grouped by sequence: ~p",
-                   [Name, LiveHunkSizesGroupBySeq]),
             scav_check_shutdown(),
 
             %% Step 6
@@ -1153,7 +1189,7 @@ scavenger_commonlog(#scav{name=Name, work_dir=WorkDir,
 
 %% @doc Scavenger step 2: Find all keys and their raw storage
 %% locations via get_many hackery
--spec scavenger_commonlog_save_storage_locations(scav_r(), [sequence()]) -> 'ok'.
+-spec scavenger_commonlog_save_storage_locations(scav_r(), [seqnum()]) -> 'ok'.
 scavenger_commonlog_save_storage_locations(#scav{name=Name, work_dir=WorkDir,
                                                  bricks=Bricks}, _AllSeqs) ->
     ?E_INFO("SCAV: ~w - Saving all keys and their raw storage locations.", [Name]),
@@ -1201,7 +1237,7 @@ scavenger_commonlog_save_storage_locations(#scav{name=Name, work_dir=WorkDir,
     ok.
 
 %% @doc Scavenger step 3: Sort store tuples in each work file.
--spec scavenger_sort_storage_locations(scav_r()) -> [sequence_hunk_size()].
+-spec scavenger_sort_storage_locations(scav_r()) -> [seqnum_hunk_size()].
 scavenger_sort_storage_locations(#scav{name=Name, work_dir=WorkDir,
                                        sorter_size=SorterSize}) ->
     ?E_INFO("SCAV: ~w - Sorting store tuples for each sequence", [Name]),
@@ -1232,15 +1268,14 @@ scavenger_sort_storage_locations(#scav{name=Name, work_dir=WorkDir,
                          %% Count live bytes in Log.
                          {ok, Log} = disk_log:open([{name,InPath},
                                                     {file,InPath}, {mode,read_only}]),
-                         Bytes = brick_ets:count_live_bytes_in_log(Log),
+                         Bytes = count_live_bytes_in_log(Log),
                          ok = disk_log:close(Log),
                          ok = file:delete(InPath),
 
                          erlang:garbage_collect(),
                          SeqNum = brick_ets:temp_path_to_seqnum(OutPath),
-                         ?E_INFO("SCAV: ~w - Sorted store tuples for log sequence ~w. "
-                                 "work file: ~s",
-                                 [Name, SeqNum, OutPath]),
+                         ?E_INFO("SCAV: ~w - Sorted the contents of work file: ~s",
+                                 [Name, OutPath]),
                          [{SeqNum, Bytes}|Acc]
 
                      catch Err1:Err2 ->
@@ -1261,9 +1296,15 @@ scavenger_sort_storage_locations(#scav{name=Name, work_dir=WorkDir,
                     end, [link, {priority, low}]),
     receive {X, RemoteVal} when X =:= Pid-> RemoteVal end.
 
+-spec count_live_bytes_in_log(file:fd()) -> integer().
+count_live_bytes_in_log(Log) ->
+    brick_ets:disk_log_fold(fun({live_bytes, Bs}, Sum) -> Sum + Bs;
+                               (_               , Sum) -> Sum
+                            end, 0, Log).
+
 %% @doc Scavenger step 4: Identify sequences that contains 0 live hunks.
--spec scavenger_find_dead_sequences(scav_r(), [sequence()], [sequence_hunk_size()]) ->
-                                           {[sequence()], [file_path()]}.
+-spec scavenger_find_dead_sequences(scav_r(), [seqnum()], [seqnum_hunk_size()]) ->
+                                           {[seqnum()], [file_path()]}.
 scavenger_find_dead_sequences(#scav{name=Name, log_dir=LogDir, wal_mod=WalMod},
                               AllSeqs, HunkSizesGroupBySeq) ->
     %% Note: Because of movement of sequence #s from shortterm to longterm
@@ -1289,12 +1330,14 @@ scavenger_find_dead_sequences(#scav{name=Name, log_dir=LogDir, wal_mod=WalMod},
 %% gmt_hlog overhead (header descriptions, etc.), but we'll be
 %% close enough.
 
--spec scavenger_find_live_sequences(scav_r(), [sequence()], [sequence_hunk_size()]) ->
-                                           [sequence_hunk_size()].
+-spec scavenger_find_live_sequences(scav_r(), [seqnum()], [seqnum_hunk_size()]) ->
+                                           [seqnum_hunk_size()].
+scavenger_find_live_sequences(_SA, [], _HunkSizesGroupBySeq) ->
+    [];
 scavenger_find_live_sequences(#scav{name=Name, wal_mod=WalMod, log_dir=LogDir,
                                     skip_live_percentage_greater_than=SkipLivePercentage},
                               LiveSeqs, HunkSizesGroupBySeq) ->
-    ?E_INFO("SCAV: ~w - Calculating live hunks percentage for log sequences ~w",
+    ?E_INFO("SCAV: ~w - Checking live hunks percentage for log sequences ~w",
             [Name, LiveSeqs]),
 
     LiveSeqsAbs = lists:sort([abs(N) || N <- LiveSeqs]),
@@ -1314,10 +1357,12 @@ scavenger_find_live_sequences(#scav{name=Name, wal_mod=WalMod, log_dir=LogDir,
                               LivePercentage = Bytes / FileSize,
                               ShouldScavenge =
                                   LivePercentage =< (SkipLivePercentage / 100),
-                              ?E_INFO("SCAV: ~w - Live percentage for log sequence ~w - ~.2f% ~s",
+                              ?E_INFO("SCAV: ~w - Live hunks percentage for log sequence ~w - ~.2f% "
+                                      "live/total bytes: ~w/~w  ~s",
                                       [Name, SeqNum1, LivePercentage * 100,
+                                       Bytes, FileSize,
                                        if ShouldScavenge -> "";
-                                          true ->           "(will not be scavenged)"
+                                          true ->           " (won't be scavenged)"
                                        end]),
                               ShouldScavenge
                       end, lists:zip(SeqSizes, LiveBytesInLiveSeqs))),
@@ -1325,7 +1370,7 @@ scavenger_find_live_sequences(#scav{name=Name, wal_mod=WalMod, log_dir=LogDir,
 
 %% @doc Scavenger step 6: Count all byets in sequences
 -spec scavenger_count_all_bytes_in_sequences(scav_r(),
-                                             DeadPaths::[file_path()], LiveSeqs::[sequence()]) ->
+                                             DeadPaths::[file_path()], LiveSeqs::[seqnum()]) ->
                                                     {DeadSeqBytes::byte_size(),
                                                      LiveSeqBytes::byte_size()}.
 scavenger_count_all_bytes_in_sequences(#scav{log_dir=LogDir, wal_mod=WalMod}, DeadPaths, LiveSeqs) ->
@@ -1356,7 +1401,7 @@ scavenger_count_all_bytes_in_sequences(#scav{log_dir=LogDir, wal_mod=WalMod}, De
 scavenger_commonlog_bottom(#scav{name=Name, work_dir=WorkDir,
                                  log=HLog,
                                  throttle_bytes=ThrottleBytes,
-                                 dead_paths=DeadPaths,
+                                 dead_paths=DeadPaths,  %% DeadSeqs will be enough
                                  dead_seq_bytes=DeadSeqBytes,
                                  live_seq_bytes=LiveSeqBytes,
                                  destructive=Destructive,
@@ -1369,14 +1414,24 @@ scavenger_commonlog_bottom(#scav{name=Name, work_dir=WorkDir,
     {ok, ThrottlePid} = brick_ticket:start_link(undefined, ThrottleBytes),
     SA = SA0#scav{throttle_pid = ThrottlePid},
 
-    %% Step 7: it isn't kosher to have the top have
-    %% doing destructive things like deleting files, so we need to
-    %% delete those files here.
-    lists:foreach(fun({SeqNum, Path}) ->
-                          brick_ets:delete_seq(SA, SeqNum),
-                          ?E_INFO("SCAV: ~w - Deleted a sequence file with no live hunk: ~p",
-                                  [Name, Path])
-                  end, DeadPaths),
+    %% Step 7: Delete sequence files with no live hunks
+    if
+        Destructive ->
+            lists:foreach(fun({SeqNum, Path}) ->
+                                  case delete_log_file(SA, SeqNum) of
+                                      {ok, _Path, Size} ->
+                                          ?E_INFO("SCAV: ~w - Deleted a log sequence ~w "
+                                                  "with no live hunk: ~s (~w bytes)",
+                                                  [Name, SeqNum, Path, Size]);
+                                      {error, _}=Err ->
+                                          ?E_WARNING("SCAV: ~w - Failed to delete a log sequence ~w "
+                                                     "with no live hunk: ~s (~p)",
+                                                     [Name, SeqNum, Path, Err])
+                                  end
+                          end, DeadPaths);
+        true ->
+            ok
+    end,
 
     %% Step 8: Copy hunks to a new long-term sequence. Advance the
     %% long-term counter to avoid chance of writing to the same
@@ -1412,8 +1467,7 @@ scavenger_commonlog_bottom(#scav{name=Name, work_dir=WorkDir,
             LiveSeqBytes - CopiedBytes]),
     if
         Destructive ->
-            _ = os:cmd("/bin/rm -rf " ++ WorkDir),
-            ok;
+            _ = os:cmd("/bin/rm -rf " ++ WorkDir);
         true ->
             ok
     end,
@@ -1485,7 +1539,6 @@ scavenge_one_seq_file_fun(#scav{name=Name, work_dir=WorkDir,
                                 wal_mod=WalMod,
                                 log_dir=LogDir,
                                 update_locations=LocationUpdater}=SA, Fread_blob) ->
-    {ok, SleepTimeSec} = application:get_env(gdss_brick, brick_dirty_buffer_wait),
     fun({SeqNum, Bytes}, {SeqNums, Hs, Bs, Es}) ->
             scav_check_shutdown(),
 
@@ -1539,12 +1592,9 @@ scavenge_one_seq_file_fun(#scav{name=Name, work_dir=WorkDir,
                             ?E_INFO("SCAV: ~w - Updated locations for log sequence ~w: UpRes ok, "
                                     "~w updates",
                                    [Name, SeqNum, NumUpdates]),
-                            spawn(fun() ->
-                                          timer:sleep(SleepTimeSec * 1000),
-                                          brick_ets:delete_seq(SA, SeqNum),
-                                          ?E_INFO("SCAV: ~w - Deleted log sequence ~w",
-                                                  [Name, SeqNum])
-                                  end);
+                            {ok, SleepTimeSec} =
+                                application:get_env(gdss_brick, brick_dirty_buffer_wait),
+                            spawn_log_file_eraser(SA, SeqNum, SleepTimeSec);
                         UpRes ->
                             ?E_INFO("SCAV: ~w - sequence ~w: UpRes ~p",
                                     [Name, SeqNum, UpRes])
@@ -1559,6 +1609,35 @@ scavenge_one_seq_file_fun(#scav{name=Name, work_dir=WorkDir,
             ok = disk_log:close(DOutLog),
 
             {tl(SeqNums), Hs + Hunks, Bs + Bytes, Es + Errs}
+    end.
+
+-spec spawn_log_file_eraser(scav_r(), seqnum(), non_neg_integer()) -> pid().
+spawn_log_file_eraser(#scav{name=Name}=SA, SeqNum, SleepTimeSec) ->
+    spawn(fun() ->
+                  timer:sleep(SleepTimeSec * 1000),
+                  case delete_log_file(SA, SeqNum) of
+                      {ok, Path, Size} ->
+                          ?E_INFO("SCAV: ~w - Deleted a log sequence ~w: ~s (~w bytes)",
+                                  [Name, SeqNum, Path, Size]);
+                      {error, Err} ->
+                          ?E_ERROR("SCAV: ~w - Error deleting a log sequence ~w: (~p)",
+                                   [Name, SeqNum, Err])
+                  end
+          end).
+
+-spec delete_log_file(scav_r(), seqnum()) ->
+                             {ok, Path::file_path(), FileSize::byte_size()} | {error, term()}.
+delete_log_file(#scav{wal_mod=WalMod, log_dir=LogDir}, SeqNum) ->
+    case WalMod:log_file_info(LogDir, SeqNum) of
+        {ok, Path, #file_info{size=Size}} ->
+            case file:delete(Path) of
+                ok ->
+                    {ok, Path, Size};
+                {error, _}=Err ->
+                    Err
+            end;
+        {error, _}=Err ->
+                Err
     end.
 
 schedule_next_daily_scavenger() ->

@@ -67,49 +67,97 @@
 -define(BIGDIR_BITS1_MOD, (1 bsl ?BIGDIR_BITS1)).
 -define(BIGDIR_BITS2_MOD, (1 bsl ?BIGDIR_BITS2)).
 
--export([debug_scan/1, debug_scan/2, debug_scan2/1, debug_scan2/2,
-         debug_scan3/2, debug_scan3/3, debug_scan4/2, debug_scan4/3]).
+-export([debug_scan/1,
+         debug_scan/2,
+         debug_scan2/1,
+         debug_scan2/2,
+         debug_scan3/2,
+         debug_scan3/3,
+         debug_scan4/2,
+         debug_scan4/3
+        ]).
 -export([verbose_expiration/2]).
 
 %% External exports
--export([start_link/2, stop/1, dump_state/1, sync_stats/2, brick_name2data_dir/1]).
+-export([start_link/2,
+         stop/1,
+         dump_state/1,
+         sync_stats/2,
+         brick_name2data_dir/1
+        ]).
 
 %% gen_server callbacks
--export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
+-export([init/1,
+         handle_call/3,
+         handle_cast/2,
+         handle_info/2,
+         terminate/2,
+         code_change/3
+        ]).
 
 %% Brick callbacks
--export([bcb_force_flush/1, bcb_async_flush_log_serial/2,
-         bcb_log_mods/3, bcb_map_mods_to_storage/2,
-         bcb_get_many/3, bcb_get_list/2, bcb_repair_loop/3,
-         bcb_repair_diff_round1/3, bcb_repair_diff_round2/3,
+-export([bcb_force_flush/1,
+         bcb_async_flush_log_serial/2,
+         bcb_log_mods/3,
+         bcb_map_mods_to_storage/2,
+         bcb_get_many/3,
+         bcb_get_list/2, bcb_repair_loop/3,
+         bcb_repair_diff_round1/3,
+         bcb_repair_diff_round2/3,
          bcb_delete_remaining_keys/2,
          bcb_set_read_only_mode/2,
-         bcb_get_metadata/2, bcb_set_metadata/3, bcb_delete_metadata/2,
-         bcb_add_mods_to_dirty_tab/2, bcb_dirty_keys_in_range/3,
+         bcb_get_metadata/2,
+         bcb_set_metadata/3,
+         bcb_delete_metadata/2,
+         bcb_add_mods_to_dirty_tab/2,
+         bcb_dirty_keys_in_range/3,
          bcb_retry_dirty_key_ops/1,
-         bcb_lookup_key/3, bcb_lookup_key_storetuple/3,
+         bcb_lookup_key/3,
+         bcb_lookup_key_storetuple/3,
          bcb_start_time/1,
-         bcb_val_switcharoo/3, bcb_filter_mods_for_downstream/2,
+         bcb_val_switcharoo/3,
+         bcb_filter_mods_for_downstream/2,
          bcb_make_log_replay_noop/1,
-         bcb_incr_logging_serial/1, bcb_peek_logging_serial/1,
-         bcb_peek_logging_op_q_len/1, bcb_get_logging_op_q/1,
-         bcb_status/1, bcb_common_log_sequence_file_is_bad/2]).
--export([disk_log_fold/3, disk_log_fold_bychunk/3]).
+         bcb_incr_logging_serial/1,
+         bcb_peek_logging_serial/1,
+         bcb_peek_logging_op_q_len/1,
+         bcb_get_logging_op_q/1,
+         bcb_status/1,
+         bcb_common_log_sequence_file_is_bad/2
+        ]).
+-export([disk_log_fold/3,
+         disk_log_fold_bychunk/3
+        ]).
 
 %% Internal exports
--export([sync_pid_loop/1, checkpoint_start/4]).
+-export([sync_pid_loop/1,
+         checkpoint_start/4
+        ]).
+
 %% Debug/temp/benchmarking exports
 -export([sync_pid_start/1]).
--export([file_input_fun/2, file_output_fun/1, sort_test0/0, slurp_log_chunks/1]).
+-export([file_input_fun/2,
+         file_output_fun/1,
+         sort_test0/0,
+         slurp_log_chunks/1
+        ]).
+
 %% For gmt_hlog_common's scavenger support.
--export([really_cheap_exclusion/3, scavenger_get_keys/5,
-         count_live_bytes_in_log/1, temp_path_to_seqnum/1, which_path/3,
-         delete_seq/2, copy_one_hunk/6]).
+-export([really_cheap_exclusion/3,
+         scavenger_get_keys/5,
+         temp_path_to_seqnum/1,
+         which_path/3,
+         copy_one_hunk/6
+        ]).
+
 %% For brick_admin fast sync support
 -export([storetuple_make/6]).
+
 %% For gmt_hlog_common's use
--export([sequence_file_is_bad_common/6, append_external_bad_sequence_file/2,
-         delete_external_bad_sequence_file/1]).
+-export([sequence_file_is_bad_common/6,
+         append_external_bad_sequence_file/2,
+         delete_external_bad_sequence_file/1
+        ]).
 
 %%%
 %%% ETS Tables (Section 2.3.14.3 of Hibari Contributor's Guide)
@@ -207,6 +255,7 @@
           wal_mod :: atom(),                      % atom()
           max_log_size = 0 :: non_neg_integer()   % max log size
          }).
+-type state_r() :: #state{}.
 
 
 -record(syncpid_arg, {
@@ -221,13 +270,7 @@
 
 -type log_fold_fun() :: fun((tuple(),tuple()) -> tuple()).
 -type server_ref() :: atom() | {atom(), atom()} | {global, term()} | pid().
--type state_r() :: tuple().
 
--spec append_external_bad_sequence_file(atom(),integer()) -> ok.
--spec brick_name2data_dir(atom()) -> nonempty_string().
--spec copy_one_hunk(tuple(), term(), integer(), integer(), integer(), fun()) -> {{integer(), integer()}, integer()} | error.
--spec count_live_bytes_in_log(file:fd()) -> integer().
--spec delete_seq(#scav{},integer()) -> ok.
 -spec disk_log_fold(log_fold_fun(),tuple()|integer(),term()) -> tuple()|integer().
 -spec disk_log_fold_bychunk(fun(([tuple()],integer())->integer()),integer(),term()) -> integer().
 -spec file_input_fun(term(),term()) -> fun((atom())->end_of_input|{error,term()}).
@@ -242,8 +285,6 @@
 -spec which_path(_,atom() | tuple(),_) -> {_,atom() | [any()]}.
 
 -spec dump_state(server_ref() | atom()) -> {integer(), list(), state_r()}.
-
-%% #scav moved to brick.hrl
 
 %%%----------------------------------------------------------------------
 %%% API
@@ -260,6 +301,7 @@ dump_state(Server) ->
 sync_stats(Server, Seconds) when seconds >= 0 ->
     gen_server:call(Server, {sync_stats, Seconds}).
 
+-spec brick_name2data_dir(atom()) -> nonempty_string().
 brick_name2data_dir(ServerName) ->
     {ok, FileDir} = application:get_env(gdss_brick, brick_default_data_dir),
     filename:join([FileDir, "hlog." ++ atom_to_list(ServerName)]).
@@ -583,7 +625,7 @@ handle_info(log_sync_stats, State) ->
     {noreply, State#state{syncsum_count = 0, syncsum_msec = 0,
                           syncsum_len = 0}};
 handle_info(do_init_second_half, State) ->
-    ?E_INFO("do_init_second_half: ~p", [State#state.name]),
+    ?E_INFO("do_init_second_half: ~w", [State#state.name]),
 
     ok = gmt_hlog_common:full_writeback(),
 
@@ -592,12 +634,12 @@ handle_info(do_init_second_half, State) ->
     ?DBG_GEN("log ~w _LTODO_x = ~w ErrList = ~w",
              [State#state.wal_mod, _LTODO_x, ErrList]),
 
-    if ErrList == [] ->
+    if ErrList =:= [] ->
             ok;
        true ->
             wal_scan_failed(ErrList, State)
     end,
-    ZeroDiskErrorsP = (ErrList == []),
+    ZeroDiskErrorsP = (ErrList =:= []),
 
     %% If the commonlog has told us that there are checksum errors,
     %% purge all records used by those bad log sequence files.
@@ -623,9 +665,9 @@ handle_info(do_init_second_half, State) ->
     %% os:cmd("sync"),
 
     %% Set these timers only after the WAL scan is finished.
-    {ok, CheckTimer} = brick_itimer:send_interval(30*1000, check_checkpoint),
+    {ok, CheckTimer} = brick_itimer:send_interval(30 * 1000, check_checkpoint),
     brick_itimer:send_interval(1*1000, qqq_debugging_only),
-    {ok, ExpiryTRef} = brick_itimer:send_interval(1*1000, check_expiry),
+    {ok, ExpiryTRef} = brick_itimer:send_interval(1 * 1000, check_expiry),
 
     ?E_INFO("do_init_second_half: ~p finished", [State#state.name]),
     self() ! {storage_layer_init_finished, State#state.name, ZeroDiskErrorsP},
@@ -2107,7 +2149,7 @@ filter_mods_from_upstream(Thisdo_Mods, S) ->
     %%?DBG_GEN("WWWW: 2: ~p", [Ms]),
     Ms.
 
-do_checkpoint(S, _Options) when S#state.check_pid /= undefined ->
+do_checkpoint(S, _Options) when S#state.check_pid =/= undefined ->
     {sorry, S};
 do_checkpoint(S, Options) ->
     {ok, NewLogSeq} = (S#state.wal_mod):advance_seqnum(S#state.log, 2),
@@ -2117,16 +2159,13 @@ do_checkpoint(S, Options) ->
                                                  named_table]),
     {ok, S#state{check_pid = Pid, shadowtab = ShadowTab}}.
 
-checkpoint_start(S_ro, DoneLogSeq, ParentPid, Options) ->
-    ?DBG_GEN("checkpoint_start ~w [start]", [S_ro#state.name]),
-
-    _LogProps = (S_ro#state.wal_mod):get_proplist(S_ro#state.log),
-    Dir = (S_ro#state.wal_mod):log_name2data_dir(S_ro#state.name),
+checkpoint_start(#state{name=Name, wal_mod=WalMod}=S_ro, DoneLogSeq, ParentPid, Options) ->
+    %% _LogProps = WalMod:get_proplist(S_ro#state.log),
+    Dir = WalMod:log_name2data_dir(Name),
     ServerProps = S_ro#state.options,
 
     CheckName = ?CHECK_NAME ++ "." ++ atom_to_list(S_ro#state.ctab),
     CheckFile = Dir ++ "/" ++ CheckName ++ ".tmp",
-    ?E_INFO("Checkpoint: ~w: starting", [S_ro#state.name]),
     _ = file:delete(CheckFile),
 
     %% Allow checkpoint requester to alter our behavior, e.g. for
@@ -2134,20 +2173,21 @@ checkpoint_start(S_ro, DoneLogSeq, ParentPid, Options) ->
     timer:sleep(proplists:get_value(start_sleep_time, Options, 0)),
 
     {ok, CheckFH} = file:open(CheckFile, [binary, write]),
-    ok = (S_ro#state.wal_mod):write_log_header(CheckFH),
+    ok = WalMod:write_log_header(CheckFH),
+    ?E_INFO("Checkpoint: ~w - Dumping to the checkpoint file: ~s", [Name, CheckFile]),
 
     %% To avoid icky failure scenarios, we'll add a magic
     %% {delete_all_table_items} tuple, which effectively tells the
     %% recovery mechanism to ignore any logs that have been read prior
     %% to this one.
     DelAll = term_to_binary([{delete_all_table_items}]),
-    {_, Bin1} = (S_ro#state.wal_mod):create_hunk(?LOGTYPE_METADATA, [DelAll], []),
+    {_, Bin1} = WalMod:create_hunk(?LOGTYPE_METADATA, [DelAll], []),
     ok = file:write(CheckFH, Bin1),
 
     %% Dump data from the private metadata table.
     MDs = term_to_binary([{md_insert, T} ||
                              T <- ets:tab2list(S_ro#state.mdtab)]),
-    {_, Bin2} = (S_ro#state.wal_mod):create_hunk(?LOGTYPE_METADATA, [MDs], []),
+    {_, Bin2} = WalMod:create_hunk(?LOGTYPE_METADATA, [MDs], []),
     ok = file:write(CheckFH, Bin2),
 
     %% Dump all the "normal" data.
@@ -2165,21 +2205,25 @@ checkpoint_start(S_ro, DoneLogSeq, ParentPid, Options) ->
         true -> ok = file:sync(CheckFH);
         _    -> ok
     end,
-    timer:sleep(
-      proplists:get_value(checkpoint_sleep_before_close, Options, 0)),
+    timer:sleep(proplists:get_value(checkpoint_sleep_before_close, Options, 0)),
 
     ok = file:close(CheckFH),
-    ok = file:rename(CheckFile,
-                     (S_ro#state.wal_mod):log_file_path(Dir, DoneLogSeq)),
+    {ok, #file_info{size=CheckFileSize}} = file:read_file_info(CheckFile),
+    ?E_INFO("Checkpoint: ~w - Finished dumping to the checkpoint file: ~s (~w bytes)",
+            [Name, CheckFile, CheckFileSize]),
+    LogFile = WalMod:log_file_path(Dir, DoneLogSeq),
+    ok = file:rename(CheckFile, LogFile),
     ok = save_checkpoint_num(Dir, DoneLogSeq),
+    ?E_INFO("Checkpoint: ~w - Renamed the checkpoint file to local log: ~s",
+            [Name, LogFile]),
 
-    OldSeqs = [X || X <- (S_ro#state.wal_mod):find_current_log_seqnums(Dir),
+    OldSeqs = [X || X <- WalMod:find_current_log_seqnums(Dir),
                     X < DoneLogSeq],
     DeleteP = case proplists:get_value(bigdata_dir, ServerProps) of
                   undefined -> true;
                   _         -> S_ro#state.wal_mod /= gmt_hlog_common
               end,
-    if DeleteP ->
+    if DeleteP andalso OldSeqs =/= [] ->
             %%
             %% Here's a not-perfect solution for a race condition.
             %% The race condition is between us and the
@@ -2195,33 +2239,54 @@ checkpoint_start(S_ro, DoneLogSeq, ParentPid, Options) ->
             %%   2. We'll do it in a worker proc so that we can notify our
             %%      parent now and exit.
             %%
-            ?E_INFO("checkpoint: ~p: deleting ~p log files",
-                     [S_ro#state.name, length(OldSeqs)]),
-            spawn(fun() ->
-                          %% We have really weird intermittent
-                          %% problems with both QuickCheck and with
-                          %% the regression tests where very
-                          %% occasionally files get deleted when they
-                          %% shouldn't.
-                          link(ParentPid),
-                          timer:sleep(5*1000),
-                          ?DBG_TLOGx({checkpoint, S_ro#state.name, async_delete,
-                                      OldSeqs}),
-                          _ = [_ = file:delete((S_ro#state.wal_mod):log_file_path(
-                                                 Dir, X, Suffix))
-                               || X <- OldSeqs, Suffix <- ["HLOG"]],
-                          unlink(ParentPid),
-                          exit(normal)
-                  end),
+            Pid = spawn(fun() ->
+                                %% We have really weird intermittent
+                                %% problems with both QuickCheck and with
+                                %% the regression tests where very
+                                %% occasionally files get deleted when they
+                                %% shouldn't.
+                                link(ParentPid),
+                                timer:sleep(5 * 1000),
+                                lists:foreach(
+                                  fun(SeqNum) ->
+                                          case delete_local_log_file(S_ro, SeqNum) of
+                                              {ok, Path, Size} ->
+                                                  ?E_INFO("Checkpoint: ~w - "
+                                                          "Deleted a local log sequence ~w: ~s "
+                                                          "(~w bytes)",
+                                                          [Name, SeqNum, Path, Size]);
+                                              {error, Err} ->
+                                                  ?E_ERROR("Checkpoint: ~w - "
+                                                           "Error deleting a local log sequence ~w: (~p)",
+                                                           [Name, SeqNum, Err])
+                                          end
+                                  end, OldSeqs),
+                                unlink(ParentPid),
+                                exit(normal)
+                        end),
+            ?E_INFO("Checkpoint: ~w - Spawned a process ~w to delete ~w local log files",
+                    [Name, Pid, length(OldSeqs)]),
+            ok;
+       OldSeqs =/= [] ->
+            ?E_INFO("Checkpoint: ~p - Moving ~p local log files to long-term archive",
+                     [Name, length(OldSeqs)]),
+            lists:foreach(
+              fun(SeqNum) ->
+                      case WalMod:move_seq_to_longterm(S_ro#state.log, SeqNum) of
+                          ok ->
+                              {ok, Path, #file_info{size=Size}} = WalMod:log_file_info(Dir, SeqNum),
+                              ?E_INFO("Checkpoint: ~w - "
+                                      "Moved a local log sequence ~w to ~s (~w bytes)",
+                                      [Name, SeqNum, Path, Size]);
+                          {error, Err} ->
+                              ?E_INFO("Checkpoint: ~w - "
+                                      "Couldn't move a local log sequence ~w to long-term archive: ~p",
+                                      [Name, SeqNum, Err])
+                      end
+              end, OldSeqs),
+            _ = file:delete(WalMod:log_file_path(Dir,S_ro#state.check_lastseqnum)),
             ok;
        true ->
-            ?E_INFO("checkpoint: ~p: moving ~p log "
-                     "files to long-term archive",
-                     [S_ro#state.name, length(OldSeqs)]),
-            _ = [(S_ro#state.wal_mod):move_seq_to_longterm(S_ro#state.log, X)
-                 || X <- OldSeqs],
-            _ = file:delete((S_ro#state.wal_mod):log_file_path(
-                              Dir,S_ro#state.check_lastseqnum)),
             ok
     end,
 
@@ -2235,7 +2300,7 @@ checkpoint_start(S_ro, DoneLogSeq, ParentPid, Options) ->
     %% notification.  If that race happens, it's possible to forget
     %% about that sequence file, but someone we'll re-discover the
     %% error ourselves at some future time.
-    _ = delete_external_bad_sequence_file(S_ro#state.name),
+    _ = delete_external_bad_sequence_file(Name),
 
     if is_pid(ThrottleSvr) ->
             brick_ticket:stop(ThrottleSvr);
@@ -2243,9 +2308,24 @@ checkpoint_start(S_ro, DoneLogSeq, ParentPid, Options) ->
             ok
     end,
     gen_server:cast(ParentPid, {checkpoint_last_seqnum, DoneLogSeq}),
-    ?E_INFO("Checkpoint: ~p: finished", [S_ro#state.name]),
-    ?DBG_GEN("checkpoint_start ~p [done]", [S_ro#state.name]),
+    ?E_INFO("Checkpoint: ~w - Finished checkpoint process for ~w", [Name, Name]),
     exit(done).
+
+-spec delete_local_log_file(state_r(), seqnum()) ->
+                                   {ok, Path::filepath(), FileSize::non_neg_integer()}
+                                       | {error, term()}.
+delete_local_log_file(#state{wal_mod=WalMod, log_dir=LogDir}, SeqNum) ->
+    case WalMod:log_file_info(LogDir, SeqNum) of
+        {ok, Path, #file_info{size=Size}} ->
+            case file:delete(Path) of
+                ok ->
+                    {ok, Path, Size};
+                {error, _}=Err ->
+                    Err
+            end;
+        {error, _}=Err ->
+                Err
+    end.
 
 dump_items(Tab, WalMod, Log) ->
     dump_items2(ets:first(Tab), Tab, WalMod, Log, 0, []).
@@ -2312,9 +2392,11 @@ sync_pid_loop(SPA) ->
     %% tunable, values lower than 5 start hurting on my laptop 10-15%
     %% but larger than 5 seem to help very little (and add latency in
     %% extremely low load situations).
-    L = collect_sync_requests([], SPA, 5),
-    if L /= [] ->
-            LastSerial = sync_get_last_serial(L),
+    case collect_sync_requests([], SPA, 5) of
+        [] ->
+            ok;
+        SyncRequests ->
+            LastSerial = sync_get_last_serial(SyncRequests),
             ?DBG_GEN("SPA ~w requesting sync last serial = ~w",
                      [SPA#syncpid_arg.name, LastSerial]),
             Start = now(),                      %qqq debug
@@ -2322,12 +2404,10 @@ sync_pid_loop(SPA) ->
                                     SPA#syncpid_arg.wal_mod),
             DiffMS = timer:now_diff(now(), Start) div 1000, %qqq debug
             SPA#syncpid_arg.parent_pid !
-                {syncpid_stats, SPA#syncpid_arg.name, DiffMS, ms, length(L)},
+                {syncpid_stats, SPA#syncpid_arg.name, DiffMS, ms, length(SyncRequests)},
             ?DBG_GEN("SPA ~p sync_done at ~w, ~w, my last serial = ~w",
                      [SPA#syncpid_arg.name, _X, _Y, LastSerial]),
             SPA#syncpid_arg.parent_pid ! {sync_done, self(), LastSerial},
-            ok;
-       true ->
             ok
     end,
     ?MODULE:sync_pid_loop(SPA).
@@ -2366,7 +2446,7 @@ sync_get_last_serial([], LastSerial) ->
 
 %% LTODO: unfinished
 do_check_checkpoint(S)
-  when S#state.check_pid == undefined ->
+  when S#state.check_pid =:= undefined ->
     LogDir = S#state.log_dir,
     LogFiles = (S#state.wal_mod):find_current_log_files(LogDir),
     Sum =
@@ -2381,7 +2461,7 @@ do_check_checkpoint(S)
                                     Acc
                             end
                     end, 0, LogFiles),
-    SumMB = Sum / (1024*1024),
+    SumMB = Sum / (1024 * 1024),
     MaxMB =
         case re:run(atom_to_list(S#state.name), "bootstrap_") of
             nomatch ->
@@ -2885,7 +2965,7 @@ bigdata_dir_get_val(Key, Val, ValLen, CheckMD5_p, S)
             <<>>;
         {SeqNum, Offset} ->
             %% {sigh} So much for 100% module API interop.
-            case if S#state.wal_mod == gmt_hlog_local ->
+            case if S#state.wal_mod =:= gmt_hlog_local ->
                          (S#state.wal_mod):read_bigblob_hunk_blob(
                            SeqNum, Offset, CheckMD5_p, ValLen);
                     true ->
@@ -2895,7 +2975,7 @@ bigdata_dir_get_val(Key, Val, ValLen, CheckMD5_p, S)
                  end of
                 Blob when is_binary(Blob) ->
                     Blob;
-                {error, Reason} when Reason == system_limit ->
+                {error, Reason} when Reason =:= system_limit ->
                     %% We shouldn't mark the file as bad: in this
                     %% clause we aborted before reads were entirely
                     %% successful.  Logging an error probably won't
@@ -2908,7 +2988,7 @@ bigdata_dir_get_val(Key, Val, ValLen, CheckMD5_p, S)
                     ?E_ERROR("~s: read error ~p at seq ~p offset ~p for the stored value of key ~p",
                              [S#state.name, Reason, SeqNum, Offset, Key]),
                     throw(silently_drop_reply);
-                eof when S#state.do_sync == false ->
+                eof when S#state.do_sync =:= false ->
                     %% The brick is in async mode.  If we're trying to
                     %% read something that was written very very
                     %% recently, then the commonLogServer may have
@@ -2955,13 +3035,13 @@ bigdata_dir_get_val(_Key, Val0, _ValLen, _CheckMD5_p, _S) ->
     exit({ltodo_2_when_does_this_happen, _Key, Val0}).
 
 sequence_file_is_bad(SeqNum, Offset, S)
-  when S#state.wal_mod == gmt_hlog ->
+  when S#state.wal_mod =:= gmt_hlog ->
     write_bad_sequence_hunk(S#state.wal_mod, S#state.log, S#state.name,
                             SeqNum, Offset),
     sequence_file_is_bad_common(S#state.log_dir, S#state.wal_mod, S#state.log,
                                 S#state.name, SeqNum, Offset);
 sequence_file_is_bad(SeqNum, Offset, S)
-  when S#state.wal_mod == gmt_hlog_local ->
+  when S#state.wal_mod =:= gmt_hlog_local ->
     append_external_bad_sequence_file(S#state.name, SeqNum),
     gmt_hlog_common:sequence_file_is_bad(SeqNum, Offset).
 
@@ -2988,6 +3068,7 @@ write_bad_sequence_hunk(WalMod, Log, Name, SeqNum, Offset) ->
                      [SeqNum, Offset, X, Y, erlang:get_stacktrace()])
     end.
 
+-spec append_external_bad_sequence_file(atom(),integer()) -> ok.
 append_external_bad_sequence_file(Name, SeqNum) ->
     {ok, FH} = file:open(external_bad_sequence_path(Name), [append]),
     io:format(FH, "~p.", [abs(SeqNum)]),
@@ -3355,11 +3436,6 @@ slurp_log_chunks({error, _} = Err, _Log, _Acc) ->
 slurp_log_chunks({Cont, Ts}, Log, Acc) ->
     slurp_log_chunks(disk_log:chunk(Log, Cont), Log, [Ts|Acc]).
 
-count_live_bytes_in_log(Log) ->
-    disk_log_fold(fun({live_bytes, Bs}, Sum) -> Sum + Bs;
-                     (_               , Sum) -> Sum
-                  end, 0, Log).
-
 disk_log_fold(Fun, Acc, Log) ->
     disk_log_fold_2(disk_log:chunk(Log, start), Fun, Acc, Log,
                     fun(X) -> X end).
@@ -3391,16 +3467,6 @@ which_path(Dir, WalMod, SeqNum) ->
                     {-SeqNum, P2}
             end
     end.
-
-%% TODO: Should this be moved to gmt_hlog.erl?
-
-delete_seq(SA, SeqNum) when SA#scav.destructive == true ->
-    [_ = file:delete((SA#scav.wal_mod):log_file_path(SA#scav.log_dir,
-                                                     SeqNum, "HLOG")),
-     _ = file:delete((SA#scav.wal_mod):log_file_path(SA#scav.log_dir,
-                                                     -SeqNum, "HLOG"))];
-delete_seq(_, _) ->
-    ok.
 
 scavenger_get_keys(Name, Fs, FirstKey, F_k2d, F_lump) ->
     {ok, Retry} = application:get_env(gdss_brick, scavenger_get_many_retry),
@@ -3459,6 +3525,8 @@ prepend_rs(Name, L1, L2) ->
 
 %% @spec(file_handle(), integer(), fun()) ->
 %%      {{integer(), integer()}, integer()} | error
+-spec copy_one_hunk(tuple(), term(), integer(), integer(), integer(), fun()) ->
+                           {{integer(), integer()}, integer()} | error.
 copy_one_hunk(SA, FH, Key, SeqNum, Offset, Fread_blob) ->
     try begin
             Blob = if SA#scav.skip_reads == true ->
@@ -3470,7 +3538,7 @@ copy_one_hunk(SA, FH, Key, SeqNum, Offset, Fread_blob) ->
                    end,
             if not is_binary(Blob) -> ?ELOG_ERROR("DEBUG: Blob = ~P", [Blob, 10]); true -> ok end,
             true = is_binary(Blob),
-            if SA#scav.destructive == true ->
+            if SA#scav.destructive =:= true ->
                     case (SA#scav.wal_mod):write_hunk(
                            SA#scav.log, SA#scav.name, bigblob_longterm,
                            Key, ?LOGTYPE_BLOB, [Blob], []) of

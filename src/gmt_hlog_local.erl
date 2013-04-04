@@ -89,23 +89,49 @@
 %% API
 -export([start_link/1]).
 %% gen_server proxy
--export([stop/1, advance_seqnum/2, get_proplist/1, sync/1,
-         write_hunk/7, get_current_seqnum/1]).
+-export([stop/1,
+         advance_seqnum/2,
+         get_proplist/1,
+         sync/1,
+         write_hunk/7,
+         get_current_seqnum/1
+        ]).
 %% Simple passthrough
--export([write_log_header/1, log_file_path/2, log_file_path/3, create_hunk/3,
-         find_current_log_seqnums/1, find_longterm_log_seqnums/3,
-         read_hunk_member_ll/4, md5_checksum_ok_p/1,
-         read_hunk_summary/3, read_hunk_summary/5,
-         fold/4, fold/5, open_log_file/3, move_seq_to_longterm/2,
-         find_current_log_files/1, get_all_seqnums/1,
-         log_name2data_dir/1, log_name2reg_name/1]).
+-export([write_log_header/1,
+         log_file_path/2,
+         log_file_path/3,
+         log_file_info/2,
+         create_hunk/3,
+         find_current_log_seqnums/1,
+         find_longterm_log_seqnums/3,
+         read_hunk_member_ll/4,
+         md5_checksum_ok_p/1,
+         read_hunk_summary/3,
+         read_hunk_summary/5,
+         fold/4,
+         fold/5,
+         open_log_file/3,
+         move_seq_to_longterm/2,
+         find_current_log_files/1,
+         get_all_seqnums/1,
+         log_name2data_dir/1,
+         log_name2reg_name/1
+        ]).
 %% API to be used on local node only
--export([read_bigblob_hunk_blob/2, read_bigblob_hunk_blob/3,
-         read_bigblob_hunk_blob/4, read_bigblob_hunk_blob/5]).
+-export([read_bigblob_hunk_blob/2,
+         read_bigblob_hunk_blob/3,
+         read_bigblob_hunk_blob/4,
+         read_bigblob_hunk_blob/5
+        ]).
 
 %% gen_server callbacks
--export([init/1, handle_call/3, handle_cast/2, handle_info/2,
-         terminate/2, code_change/3]).
+-export([init/1,
+         handle_call/3,
+         handle_cast/2,
+         handle_info/2,
+         terminate/2,
+         code_change/3
+        ]).
 
 %% TODO: Tune this value?  I've witnessed problems with
 %%       move_seq_to_longterm/2 hitting timeout when the disk has been
@@ -130,32 +156,6 @@
 
 -type proplist() :: list({atom(),term()}).
 
--spec advance_seqnum(pid(), incr()) -> {ok,seqnum()} | error | no_return().
--spec create_hunk(typenum(), CBlobs::blobs(), UBlobs::blobs()) -> {len(), bytes()}.
--spec find_current_log_files(dirname()) -> list(dirname()).
--spec find_current_log_seqnums(dirname()) -> list(seqnum()).
--spec fold(shortterm | longterm, dirname(), foldfun(), filtfun(), foldacc()) -> foldret().
--spec get_proplist(pid()) -> proplist().
--spec log_file_path(dirname(), seqnum()) -> dirname().
--spec log_name2data_dir(servername()) -> dirname().
--spec md5_checksum_ok_p(#hunk_summ{}) -> boolean().
--spec move_seq_to_longterm(server(), seqnum()) -> ok | error | {error,seqnum()} | no_return().
-
--spec read_bigblob_hunk_blob(seqnum(), offset()) -> no_return().
--spec read_bigblob_hunk_blob(seqnum(), offset(), checkmd5()) -> no_return().
--spec read_bigblob_hunk_blob(seqnum(), offset(), checkmd5(), lenhint()) -> #hunk_summ{} | eof | {error, term()}.
--spec read_bigblob_hunk_blob(dirname(), seqnum(), offset(), checkmd5(), lenhint()) -> #hunk_summ{} | eof | {error, term()}.
-
--spec read_hunk_member_ll(file:fd(), #hunk_summ{}, md5 | undefined, nth()) -> binary().
-
--spec stop(server()) -> ok | {error,term()}.
-
--spec sync(server()) -> {ok, seqnum(), offset()}.
-
--spec write_hunk(server(), brickname(), hlogtype(), key(), typenum(), CBlobs::blobs(), UBlobs::blobs()) -> {ok, seqnum(), offset()} | {hunk_too_big, len()} | no_return().
-
--spec write_log_header(file:fd()) -> ok | {error, term()}.
-
 
 %%%===================================================================
 %%% API
@@ -164,31 +164,40 @@
 start_link(PropList) ->
     gen_server:start_link(?MODULE, PropList, []).
 
+-spec stop(server()) -> ok | {error,term()}.
 stop(Pid) ->
     gen_server:call(Pid, {stop}).
 
+-spec advance_seqnum(pid(), incr()) -> {ok,seqnum()} | error | no_return().
 advance_seqnum(Pid, Num)
   when is_integer(Num), Num =/= 0 ->
     gen_server:call(Pid, {advance_seqnum, Num});
 advance_seqnum(_Pid, _Num) ->
     erlang:error(badarg).
 
+-spec get_proplist(pid()) -> proplist().
 get_proplist(Pid) ->
     gen_server:call(Pid, {get_proplist}).
 
 %% @doc Write a hunk (containing one or more blobs, checksummed or
 %%      un-checksummed) to a hunk log.
 
+-spec write_hunk(server(), brickname(), hlogtype(), key(), typenum(),
+                 CBlobs::blobs(), UBlobs::blobs()) ->
+                        {ok, seqnum(), offset()} | {hunk_too_big, len()} | no_return().
 write_hunk(Server, LocalLogName, HLogType, Key, TypeNum, CBlobs, UBlobs)
   when is_atom(HLogType), is_integer(TypeNum),
        is_list(CBlobs), is_list(UBlobs) ->
-    if HLogType == metadata -> ok;
-       HLogType == bigblob  -> ok
-    end,
-    {H_Len, H_Bytes} = gmt_hlog:create_hunk(TypeNum, CBlobs, UBlobs),
-    gen_server:call(Server, {write_hunk_bytes, LocalLogName, HLogType, Key,
-                             ?LOCAL_RECORD_TYPENUM, H_Len, H_Bytes}, ?TIMEOUT).
+    if
+        HLogType =:= metadata orelse HLogType =:= bigblob ->
+            {H_Len, H_Bytes} = gmt_hlog:create_hunk(TypeNum, CBlobs, UBlobs),
+            gen_server:call(Server, {write_hunk_bytes, LocalLogName, HLogType, Key,
+                                     ?LOCAL_RECORD_TYPENUM, H_Len, H_Bytes}, ?TIMEOUT);
+        true ->
+            {error, {invalid_hlog_type, HLogType}}
+    end.
 
+-spec sync(server()) -> {ok, seqnum(), offset()}.
 sync(Pid) ->
     gmt_hlog:sync(Pid).
 
@@ -197,27 +206,33 @@ get_current_seqnum(Pid) ->
 
 %% pass through
 
+-spec write_log_header(file:fd()) -> ok | {error, term()}.
 write_log_header(FH) ->
     gmt_hlog:write_log_header(FH).
 
+-spec log_file_path(dirname(), seqnum()) -> dirname().
 log_file_path(A, B) ->
     gmt_hlog:log_file_path(A, B).
 
 log_file_path(A, B, C) ->
     gmt_hlog:log_file_path(A, B, C).
 
+-spec create_hunk(typenum(), CBlobs::blobs(), UBlobs::blobs()) -> {len(), bytes()}.
 create_hunk(A, B, C) ->
     gmt_hlog:create_hunk(A, B, C).
 
+-spec find_current_log_seqnums(dirname()) -> list(seqnum()).
 find_current_log_seqnums(A) ->
     gmt_hlog:find_current_log_seqnums(A).
 
 find_longterm_log_seqnums(A, B, C) ->
     gmt_hlog:find_longterm_log_seqnums(A, B, C).
 
+-spec read_hunk_member_ll(file:fd(), #hunk_summ{}, md5 | undefined, nth()) -> binary().
 read_hunk_member_ll(A, B, C, D) ->
     gmt_hlog:read_hunk_member_ll(A, B, C, D).
 
+-spec md5_checksum_ok_p(#hunk_summ{}) -> boolean().
 md5_checksum_ok_p(A) ->
     gmt_hlog:md5_checksum_ok_p(A).
 
@@ -230,27 +245,36 @@ read_hunk_summary(A, B, C, D, E) ->
 fold(A, B, C, D) ->
     gmt_hlog:fold(A, B, C, D).
 
+-spec fold(shortterm | longterm, dirname(), foldfun(), filtfun(), foldacc()) -> foldret().
 fold(A, B, C, D, E) ->
     gmt_hlog:fold(A, B, C, D, E).
 
 open_log_file(A, B, C) ->
     gmt_hlog:open_log_file(A, B, C).
 
+-spec log_file_info(dirname(), seqnum()) -> {ok, filepath(), file:file_info()} | {error, atom()}.
+log_file_info(LogDir, SeqNum) ->
+    gmt_hlog:log_file_info(LogDir, SeqNum).
+
+-spec move_seq_to_longterm(server(), seqnum()) -> ok | error | {error,seqnum()} | no_return().
 move_seq_to_longterm(A, B) ->
     gmt_hlog:move_seq_to_longterm(A, B).
 
+-spec find_current_log_files(dirname()) -> list(dirname()).
 find_current_log_files(A) ->
     gmt_hlog:find_current_log_files(A).
 
 get_all_seqnums(A) ->
     gmt_hlog:get_all_seqnums(A).
 
+-spec log_name2data_dir(servername()) -> dirname().
 log_name2data_dir(A) ->
     gmt_hlog:log_name2data_dir(A).
 
 log_name2reg_name(A) ->
     gmt_hlog:log_name2reg_name(A).
 
+-spec read_bigblob_hunk_blob(seqnum(), offset()) -> no_return().
 read_bigblob_hunk_blob(SeqNum, Offset) ->
     read_bigblob_hunk_blob(SeqNum, Offset, true).
 
@@ -269,14 +293,19 @@ read_bigblob_hunk_blob(SeqNum, Offset) ->
 %%               shortterm 'metadata' blobs sequentially, there is no
 %%               need to provide a random access API function.
 
+-spec read_bigblob_hunk_blob(seqnum(), offset(), checkmd5()) -> no_return().
 read_bigblob_hunk_blob(SeqNum, Offset, CheckMD5_p) ->
     %% We don't know the blob size, but that's just a hint anyway.
     read_bigblob_hunk_blob(SeqNum, Offset, CheckMD5_p, 0).
 
+-spec read_bigblob_hunk_blob(seqnum(), offset(), checkmd5(), lenhint()) ->
+                                    #hunk_summ{} | eof | {error, term()}.
 read_bigblob_hunk_blob(SeqNum, Offset, CheckMD5_p, ValLen) ->
     Dir = get_common_server_dir(),
     read_bigblob_hunk_blob(Dir, SeqNum, Offset, CheckMD5_p, ValLen).
 
+-spec read_bigblob_hunk_blob(dirname(), seqnum(), offset(), checkmd5(), lenhint()) ->
+                                    #hunk_summ{} | eof | {error, term()}.
 read_bigblob_hunk_blob(Dir, SeqNum, Offset, CheckMD5_p, ValLen) ->
     gmt_hlog:read_bigblob_hunk_blob(Dir, SeqNum, Offset, CheckMD5_p, ValLen).
 
@@ -339,21 +368,21 @@ handle_call({write_hunk_bytes, LocalLogName, HLogType, Key,
              TypeNum, H_Len, H_Bytes}, _From,
             #state{last_seq = LastSeq, offset = LastOffset, file_len_min = FileLenMin} = State) ->
     {Len, Bytes} =
-        if HLogType == metadata ->
+        if HLogType =:= metadata ->
                 %% This tuple must be sortable by gmt_hlog_common by:
                 %% LocalLogName, LastSeq, LastOffset.
                 T = {eee, LocalLogName, LastSeq, LastOffset, Key, TypeNum,
                      H_Len, H_Bytes},
                 Encoded = term_to_binary(T),
                 gmt_hlog:create_hunk(?LOCAL_RECORD_TYPENUM, [], [Encoded]);
-           HLogType == bigblob ->
+           HLogType =:= bigblob ->
                 {H_Len, H_Bytes}
         end,
     case gmt_hlog:write_hunk_internalwrapper(
            State#state.common_log, LocalLogName, HLogType, Key, TypeNum,
            Len, Bytes) of
         {ok, RemoteSeq, RemoteOff} ->
-            if HLogType == metadata ->
+            if HLogType =:= metadata ->
                     Reply = {ok, LastSeq, LastOffset},
                     NewOffset = LastOffset + H_Len,
                     if NewOffset > FileLenMin ->

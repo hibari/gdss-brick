@@ -48,6 +48,7 @@
 -type bytes() :: iodata().
 -type checkmd5() :: boolean().
 -type dirname() :: nonempty_string().
+-type filepath() :: nonempty_string().
 -type eee() :: {eee, brickname(), seqnum(), offset(), key(), typenum(), len(), bytes()}.
 -type filtfun() :: fun((seqnum()) -> boolean()).
 -type foldacc() :: term().

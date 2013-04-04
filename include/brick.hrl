@@ -20,46 +20,45 @@
 -ifndef(ets_brick_hrl).
 -define(ets_brick_hrl, true).
 
+-include("gmt_hlog.hrl").
+
 -record(log_q, {
-          time,                                 % erlang:time() QQQ debugging only
-          logging_serial = 0,                   % logging_op_serial
-          thisdo_mods = [],                     % ops for this do
-          doflags,                              % DoFlags for this do
-          from,                                 % gen_server:reply() to
-          reply                                 % gen_server:reply() info
+          time,                                     % erlang:time() QQQ debugging only
+          logging_serial = 0,                       % logging_op_serial
+          thisdo_mods = [],                         % ops for this do
+          doflags,                                  % DoFlags for this do
+          from,                                     % gen_server:reply() to
+          reply                                     % gen_server:reply() info
          }).
 
 -record(dirty_q, {
-          from,                                 % gen_server:reply info
-          do_op                                 % {do, SentAt, DoList, DoFlags}
+          from,                                     % gen_server:reply info
+          do_op                                     % {do, SentAt, DoList, DoFlags}
          }).
 
 -record(scav, {
-          options = [],                         % prop_list()
-          work_dir,                             % string() Working files tmp dir
-          wal_mod,                              % atom()
-          destructive,                          % boolean() Do we
-                                                % delete/truncate/modify stuff?
-          skip_reads,                           % boolean() Do we skip blob
-                                                % reads also? For use with
-                                                % destructive=false only!
-          skip_live_percentage_greater_than = 0, % integer() skip threshold
-          name,                                 % atom() brick name
-          log,                                  % pid() log server
-          log_dir,                              % string() log dir path
-          cur_seq,                              % integer() current sequence #
-          last_check_seq,                       % integer() last checkpoint seq#
-          throttle_bytes,                       % integer() throttle byte rate
-          throttle_pid,                         % pid() private throttle server
-          sorter_size,                          % int() bytes
-          bricks = [],                          % list() CommonLog bricks
-          dead_paths = [],                      % list() Paths to dead sequences
-          dead_seq_bytes,                       % integer()
-          live_seq_bytes,                       % integer()
-          exclusive_p = true,                   % boolean() Avoid parallel runs
-          log_fun,                              % fun/2 info logging impl.
-          bottom_fun,                           % fun/7 scavenger botton half implementation
-          update_locations                      % fun/2
+          options = [],                             % prop_list()
+          work_dir :: string(),                     % Working files dir
+          wal_mod :: module(),
+          destructive=true :: boolean(),            % Do we delete/truncate/modify stuff?
+          skip_reads=false :: boolean(),            % Do we skip blob reads also? For use with
+                                                    % destructive =:= false only!
+          skip_live_percentage_greater_than = 0 :: non_neg_integer(), % skip threshold
+          name :: brickname(),
+          log :: pid(),                             % hlog server
+          log_dir :: string(),                      % hlog dir path
+          cur_seq :: seqnum(),                      % current sequence #
+          last_check_seq :: seqnum(),               % last checkpoint seq#
+          throttle_bytes = 0:: non_neg_integer(),   % throttle byte rate
+          throttle_pid :: pid(),                    % private throttle server
+          sorter_size = 0 :: non_neg_integer(),     % bytes
+          bricks = [] :: [brickname()],             % CommonLog bricks
+          dead_paths = [] :: [string()],            % paths to dead sequences
+          dead_seq_bytes = 0 :: non_neg_integer(),
+          live_seq_bytes = 0 :: non_neg_integer(),
+          exclusive_p = true :: boolean(),          % avoid parallel runs
+          bottom_fun :: fun(),                      % scavenger botton half implementation
+          update_locations :: fun()                 % fun/2
          }).
 -type scav_r() :: #scav{}.
 
