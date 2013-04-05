@@ -1294,7 +1294,7 @@ safe_log_close(S) ->
 
 -spec safe_log_close_short(state_r()) -> ok | {error, term()}.
 safe_log_close_short(#state{dir=Dir, cur_seqS=SeqNum, cur_fhS=FH}) ->
-    safe_log_close0("shor-term", Dir, SeqNum, FH).
+    safe_log_close0("short-term", Dir, SeqNum, FH).
 
 -spec safe_log_close_long(state_r()) -> ok | {error, term()}.
 safe_log_close_long(#state{dir=Dir, cur_seqL=SeqNum, cur_fhL=FH}) ->

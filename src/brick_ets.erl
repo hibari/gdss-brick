@@ -3527,35 +3527,25 @@ prepend_rs(Name, L1, L2) ->
 %%      {{integer(), integer()}, integer()} | error
 -spec copy_one_hunk(tuple(), term(), integer(), integer(), integer(), fun()) ->
                            {{integer(), integer()}, integer()} | error.
-copy_one_hunk(SA, FH, Key, SeqNum, Offset, Fread_blob) ->
-    try begin
-            Blob = if SA#scav.skip_reads == true ->
-                           <<>>;
-                      true ->
-                           %% TODO: Use a non-zero length hint here.
-                           (SA#scav.wal_mod):read_hunk_summary(
-                             FH, SeqNum, Offset, 0, Fread_blob)
-                   end,
-            if not is_binary(Blob) -> ?ELOG_ERROR("DEBUG: Blob = ~P", [Blob, 10]); true -> ok end,
-            true = is_binary(Blob),
-            if SA#scav.destructive =:= true ->
-                    case (SA#scav.wal_mod):write_hunk(
-                           SA#scav.log, SA#scav.name, bigblob_longterm,
-                           Key, ?LOGTYPE_BLOB, [Blob], []) of
-                        {ok, SeqNum2, Offset2} ->
-                            {{SeqNum2, Offset2}, size(Blob)};
-                        _ ->
-                            error
-                    end;
-               true ->
-                    {{SeqNum, Offset}, size(Blob)}
-            end
-        end
+copy_one_hunk(#scav{name=Name, wal_mod=WalMod, log=Log}, FH, Key, SeqNum, Offset, Fread_blob) ->
+    %% TODO: Use a non-zero length hint here.
+    try WalMod:read_hunk_summary(FH, SeqNum, Offset, 0, Fread_blob) of
+        Blob when is_binary(Blob) ->
+            case WalMod:write_hunk(Log, Name, bigblob_longterm,
+                                   Key, ?LOGTYPE_BLOB, [Blob], []) of
+                {ok, SeqNum2, Offset2} ->
+                    {{SeqNum2, Offset2}, size(Blob)};
+                _ ->
+                    error
+            end;
+        NotBlob ->
+            ?E_ERROR("Got non blob: ~P", [NotBlob, 10]),
+            error
     catch
         _X:_Y ->
             %% Be more helpful and add key to error msg.
             ?E_ERROR("copy_one_hunk: ~p: ~p ~p for key ~p seq ~p Offset ~p (~p)",
-                     [SA#scav.name, _X, _Y, Key, SeqNum, Offset,
+                     [Name, _X, _Y, Key, SeqNum, Offset,
                       %% hack: this info isn't too helpful: erlang:get_stacktrace()]),
                       []]),
             error

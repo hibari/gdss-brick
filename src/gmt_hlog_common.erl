@@ -45,8 +45,6 @@
 %% Scavenger API
 -export([start_scavenger_commonlog/1,
          stop_scavenger_commonlog/0,
-         resume_scavenger_commonlog/1,
-         resume_scavenger_commonlog/2,
          scavenger_commonlog/1                  % Not commonly used
         ]).
 
@@ -393,12 +391,11 @@ handle_info({async_writeback_finished, Pid, NewSeqNum, NewOffset},
     _ = [ gen_server:reply(From, ok) || From <- Reqs ],
     {noreply, NewState#state{async_writeback_reqs = []}};
 handle_info(start_daily_scavenger, State) ->
-    timer:sleep(2*1000),
+    timer:sleep(2 * 1000),
     {ok, ScavengerTRef} = schedule_next_daily_scavenger(),
     {ok, Percent} = application:get_env(gdss_brick, brick_skip_live_percentage_greater_than),
     {ok, WorkDir} = application:get_env(gdss_brick, brick_scavenger_temp_dir),
-    PropList = [destructive,
-                {skip_live_percentage_greater_than, Percent},
+    PropList = [{skip_live_percentage_greater_than, Percent},
                 {work_dir, WorkDir}],
     %% Self-deadlock with get_all_registrations(), must use worker.
     spawn(fun() -> start_scavenger_commonlog(PropList) end),
@@ -963,11 +960,6 @@ do_start_scavenger_commonlog2(Bricks, PropList) ->
     %% mess with any sequence at or above CurSeq1.
     CurSeq = erlang:min(CurSeq0, CurSeq1),
 
-    Destructive = proplists:get_value(destructive, PropList, true),
-    SkipReads = case proplists:get_value(skip_reads, PropList, false) of
-                    true -> not Destructive;
-                    _    -> false
-                end,
     MaximumLivePt = case proplists:get_value(skip_live_percentage_greater_than,
                                              PropList) of
                         N when N >= 0, N =< 100 -> N;
@@ -986,8 +978,6 @@ do_start_scavenger_commonlog2(Bricks, PropList) ->
     SA = #scav{options = PropList,
                work_dir = WorkDir,
                wal_mod = gmt_hlog_common,
-               destructive = Destructive,
-               skip_reads = SkipReads,
                name = ?GMT_HLOG_COMMON_LOG_NAME,
                log = gmt_hlog:log_name2reg_name(?GMT_HLOG_COMMON_LOG_NAME),
                log_dir = gmt_hlog:log_name2data_dir(?GMT_HLOG_COMMON_LOG_NAME),
@@ -997,47 +987,13 @@ do_start_scavenger_commonlog2(Bricks, PropList) ->
                skip_live_percentage_greater_than = MaximumLivePt,
                sorter_size = SorterSize, bricks = Bricks,
                throttle_bytes = ThrottleBytes,
-               bottom_fun = fun scavenger_commonlog_bottom/2,
-               update_locations = fun update_locations_commonlog/2},
+               bottom_fun = fun scavenger_commonlog_bottom/2},
     ?DBG_TLOG("scavenger ~w, last_check_seq ~w", [SA#scav.name, CurSeq]),
     Fdoit = fun() -> scavenger_commonlog(SA),
                      exit(normal)
             end,
     Pid = spawn(fun() -> link_catch_shutdowns(Fdoit) end),
     {ok, Pid}.
-
-resume_scavenger_commonlog(WorkDir) ->
-    resume_scavenger_commonlog(WorkDir, fun scavenger_commonlog_bottom/2).
-
-resume_scavenger_commonlog(WorkDir, BottomFunc) ->
-    case scav_read_resume(WorkDir) of
-        {SA, LiveHunkSizesBySeq_a} ->
-            %% Bottom status file contains seqnum that was in progress
-            %% when shutdown/interrupted/crashed/whatever.
-            LiveHunkSizesBySeq = case file:consult(scav_bottomstatus_path(WorkDir)) of
-                           {ok, [DoneSeq]} ->
-                               lists:dropwhile(
-                                 fun({X, _}) when X /= DoneSeq -> true;
-                                    (_) -> false
-                                 end, LiveHunkSizesBySeq_a);
-                           _ ->
-                               LiveHunkSizesBySeq_a
-                       end,
-            ?E_INFO("SCAV: Resuming at sequence ~p",
-                       [if LiveHunkSizesBySeq =/= [] ->
-                                hd(LiveHunkSizesBySeq);
-                           true ->
-                                []
-                        end]),
-            Fdoit = fun() ->
-                            _ = scav_exit_if_someone_else(),
-                            BottomFunc(SA, LiveHunkSizesBySeq)
-                    end,
-            Pid = spawn(fun() -> link_catch_shutdowns(Fdoit) end),
-            {ok, Pid};
-        _ ->
-            unable_to_resume
-    end.
 
 link_catch_shutdowns(Fun) ->
     try
@@ -1061,29 +1017,6 @@ link_catch_shutdowns(Fun) ->
         X:Y ->
             ?E_ERROR("Scavenger ~p error: ~p ~p @ ~p",
                      [self(), X, Y, erlang:get_stacktrace()])
-    end.
-
-scav_resumeok_path(WorkDir) ->
-    WorkDir ++ "/resume-ok".
-
-scav_bottomstatus_path(WorkDir) ->
-    WorkDir ++ "/working".
-
-scav_write_resume(#scav{work_dir=WorkDir}=SA, LiveStorageLocs)->
-    T = {SA, LiveStorageLocs},
-    Tbin = term_to_binary(T),
-    Fres = fun(FH) -> ok = file:write(FH, Tbin) end,
-    ok = brick_server:replace_file_sync(scav_resumeok_path(WorkDir), Fres).
-
-scav_read_resume(WorkDir) ->
-    case file:read_file_info(scav_resumeok_path(WorkDir)) of
-        {ok, _} ->
-            {ok, Bin} = file:read_file(scav_resumeok_path(WorkDir)),
-            T = binary_to_term(Bin),
-            true = (7 == size(T)), % Sanity check
-            T;
-        _ ->
-            error
     end.
 
 scav_excl_name() ->
@@ -1191,7 +1124,7 @@ scavenger_commonlog(#scav{name=Name, work_dir=WorkDir,
 %% locations via get_many hackery
 -spec scavenger_commonlog_save_storage_locations(scav_r(), [seqnum()]) -> 'ok'.
 scavenger_commonlog_save_storage_locations(#scav{name=Name, work_dir=WorkDir,
-                                                 bricks=Bricks}, _AllSeqs) ->
+                                                 bricks=Bricks}, AllSeqs) ->
     ?E_INFO("SCAV: ~w - Saving all keys and their raw storage locations.", [Name]),
 
     %% This function creates a dict with the followings:
@@ -1202,13 +1135,18 @@ scavenger_commonlog_save_storage_locations(#scav{name=Name, work_dir=WorkDir,
     F_k2d = fun({_BrickName, _Key, _TS, {0, 0}}, Dict) ->
                     Dict;
                ({BrickName, Key, TS, {SeqNum, Offset}, ValLen, ExpTime, Flags}, Dict) ->
-                    {Bytes, L} = case dict:find(SeqNum, Dict) of
-                                     {ok, {B_, L_}} -> {B_, L_};
-                                     error          -> {0, []}
-                                 end,
-                    %% StoreTuples will be sorted later by ascending offset
-                    StoreTuple = {Offset, BrickName, Key, TS, ValLen, ExpTime, Flags},
-                    dict:store(SeqNum, {Bytes + ValLen, [StoreTuple|L]}, Dict)
+                    case lists:member(SeqNum, AllSeqs) of
+                        true ->
+                            {Bytes, L} = case dict:find(SeqNum, Dict) of
+                                             {ok, {B_, L_}} -> {B_, L_};
+                                             error          -> {0, []}
+                                         end,
+                            %% StoreTuples will be sorted later by ascending offset
+                            StoreTuple = {Offset, BrickName, Key, TS, ValLen, ExpTime, Flags},
+                            dict:store(SeqNum, {Bytes + ValLen, [StoreTuple|L]}, Dict);
+                        false ->
+                            Dict
+                    end
             end,
     %% This function creates disk_log file, one per log sequence file,
     %% and write the following terms:
@@ -1264,6 +1202,12 @@ scavenger_sort_storage_locations(#scav{name=Name, work_dir=WorkDir,
                                                [{format, term},
                                                 {size, SorterSize}]),
                          ok = disk_log:close(Log),
+                         erlang:garbage_collect(),
+
+                         {ok, #file_info{size=OutSize}} = file:read_file_info(OutPath),
+                         ?E_INFO("SCAV: ~w - Sorted the contents of work file: ~s "
+                                 "(file size: ~w bytes)",
+                                 [Name, OutPath, OutSize]),
 
                          %% Count live bytes in Log.
                          {ok, Log} = disk_log:open([{name,InPath},
@@ -1273,9 +1217,10 @@ scavenger_sort_storage_locations(#scav{name=Name, work_dir=WorkDir,
                          ok = file:delete(InPath),
 
                          erlang:garbage_collect(),
+                         ?E_INFO("SCAV: ~w - Scanned the work file: ~s (live hunks: ~w bytes)",
+                                 [Name, OutPath, Bytes]),
+
                          SeqNum = brick_ets:temp_path_to_seqnum(OutPath),
-                         ?E_INFO("SCAV: ~w - Sorted the contents of work file: ~s",
-                                 [Name, OutPath]),
                          [{SeqNum, Bytes}|Acc]
 
                      catch Err1:Err2 ->
@@ -1358,11 +1303,11 @@ scavenger_find_live_sequences(#scav{name=Name, wal_mod=WalMod, log_dir=LogDir,
                               ShouldScavenge =
                                   LivePercentage =< (SkipLivePercentage / 100),
                               ?E_INFO("SCAV: ~w - Live hunks percentage for log sequence ~w - ~.2f% "
-                                      "live/total bytes: ~w/~w  ~s",
+                                      "live/total bytes: ~w/~w ~s",
                                       [Name, SeqNum1, LivePercentage * 100,
                                        Bytes, FileSize,
                                        if ShouldScavenge -> "";
-                                          true ->           " (won't be scavenged)"
+                                          true ->           "(won't be scavenged)"
                                        end]),
                               ShouldScavenge
                       end, lists:zip(SeqSizes, LiveBytesInLiveSeqs))),
@@ -1404,54 +1349,34 @@ scavenger_commonlog_bottom(#scav{name=Name, work_dir=WorkDir,
                                  dead_paths=DeadPaths,  %% DeadSeqs will be enough
                                  dead_seq_bytes=DeadSeqBytes,
                                  live_seq_bytes=LiveSeqBytes,
-                                 destructive=Destructive,
-                                 options=Options}=SA0,
+                                 options=Options}=SA,
                            LiveHunkSizesGroupBySeq) ->
 
-    %% We're now eligible for resuming if we're interrupted/shutdown.
-    scav_write_resume(SA0, LiveHunkSizesGroupBySeq),
-
-    {ok, ThrottlePid} = brick_ticket:start_link(undefined, ThrottleBytes),
-    SA = SA0#scav{throttle_pid = ThrottlePid},
-
     %% Step 7: Delete sequence files with no live hunks
-    if
-        Destructive ->
-            lists:foreach(fun({SeqNum, Path}) ->
-                                  case delete_log_file(SA, SeqNum) of
-                                      {ok, _Path, Size} ->
-                                          ?E_INFO("SCAV: ~w - Deleted a log sequence ~w "
-                                                  "with no live hunk: ~s (~w bytes)",
-                                                  [Name, SeqNum, Path, Size]);
-                                      {error, _}=Err ->
-                                          ?E_WARNING("SCAV: ~w - Failed to delete a log sequence ~w "
-                                                     "with no live hunk: ~s (~p)",
-                                                     [Name, SeqNum, Path, Err])
-                                  end
-                          end, DeadPaths);
-        true ->
-            ok
-    end,
+    lists:foreach(fun({SeqNum, Path}) ->
+                          case delete_log_file(SA, SeqNum) of
+                              {ok, _Path, Size} ->
+                                  ?E_INFO("SCAV: ~w - Deleted a log sequence ~w "
+                                          "with no live hunk: ~s (~w bytes)",
+                                          [Name, SeqNum, Path, Size]);
+                              {error, _}=Err ->
+                                  ?E_WARNING("SCAV: ~w - Failed to delete a log sequence ~w "
+                                             "with no live hunk: ~s (~p)",
+                                             [Name, SeqNum, Path, Err])
+                          end
+                  end, DeadPaths),
 
     %% Step 8: Copy hunks to a new long-term sequence. Advance the
     %% long-term counter to avoid chance of writing to the same
     %% sequence that we read from.
     ?E_INFO("SCAV: ~w - Copying hunks to a new long-term log sequence", [Name]),
     {ok, _} = gmt_hlog:advance_seqnum(HLog, -1),
-    Fread_blob = fun(Su, FH) ->
-                         ?LOGTYPE_BLOB = Su#hunk_summ.type,
-                         [Bytes] = Su#hunk_summ.c_len,
-                         brick_ticket:get(ThrottlePid, Bytes),
-                         Bin = gmt_hlog:read_hunk_member_ll(FH, Su, md5, 1),
-                         Su2 = Su#hunk_summ{c_blobs = [Bin]},
-                         %% TODO: In case of failure, don't crash.
-                         true = gmt_hlog:md5_checksum_ok_p(Su2),
-                         Bin
-                 end,
-    F1seq = scavenge_one_seq_file_fun(SA, Fread_blob),
-    {_, Hunks, CopiedBytes, Errs} = lists:foldl(F1seq,
-                                                {LiveHunkSizesGroupBySeq, 0, 0, 0},
-                                                LiveHunkSizesGroupBySeq),
+
+    {ok, ThrottlePid} = brick_ticket:start_link(undefined, ThrottleBytes),
+    {Hunks, CopiedBytes, Errs} = lists:foldl(
+                                   scavenge_one_seq_file_fun(SA#scav{throttle_pid=ThrottlePid}),
+                                   {0, 0, 0}, LiveHunkSizesGroupBySeq),
+
     ?E_INFO("SCAV: ~w - Finished copying hunks", [Name]),
 
     ?E_INFO("Scavenger ~w finished:\n"
@@ -1465,53 +1390,131 @@ scavenger_commonlog_bottom(#scav{name=Name, work_dir=WorkDir,
             length(LiveHunkSizesGroupBySeq),
             Hunks, CopiedBytes, Errs,
             LiveSeqBytes - CopiedBytes]),
-    if
-        Destructive ->
-            _ = os:cmd("/bin/rm -rf " ++ WorkDir);
-        true ->
-            ok
-    end,
+
+    %% Delete the work flies
+    _ = os:cmd("/bin/rm -rf " ++ WorkDir),
+
     brick_ticket:stop(ThrottlePid),
     normal.
 
-update_locations_commonlog(SA, DiskLog) ->
-    Res = brick_ets:disk_log_fold_bychunk(
-            fun(NewLocs0, Acc) ->
-                    scav_check_shutdown(),
-                    NewLocs = gmt_util:list_keypartition(1, lists:keysort(1, NewLocs0)),
-                    Updates = [update_locations_on_brick(SA, Brick, Locs) ||
-                                  {Brick, Locs} <- NewLocs],
-                    Acc + lists:sum(Updates)
-            end, 0, DiskLog),
-    Res.
+scavenge_one_seq_file_fun(#scav{name=Name, work_dir=WorkDir,
+                                wal_mod=WalMod,
+                                log_dir=LogDir,
+                                throttle_pid=ThrottlePid}=SA) ->
 
-%% -spec make_update_location({brick_name(), key(), timestamp(), value(), value()})
-%%                            -> fun().
-make_update_location({_BrickName, Key, OrigTS, OrigVal, NewVal}) ->
-    F = fun(Key0, _DoOp, _DoFlags, S0) ->
-                O2 = case brick_server:ssf_peek(Key0, false, S0) of
-                         [] ->
-                             key_not_exist;
-                         [{_Key, OrigTS, _OrigVal, OldExp, OldFlags}] ->
-                             {ImplMod, ImplState} = brick_server:ssf_impl_details(S0),
-                             Val0 = ImplMod:bcb_val_switcharoo(OrigVal, NewVal, ImplState),
-                             Fs = [{testset, OrigTS}|OldFlags],
-                             %% make_replace doesn't allow custom TS.
-                             brick_server:make_op6(replace, Key0, OrigTS, Val0, OldExp, Fs);
-                         [{_Key, RaceTS, _RaceVal, _RaceExp, _RaceFlags}] ->
-                             {ts_error, RaceTS}
+    BlobReader = fun(Su, FH) ->
+                         ?LOGTYPE_BLOB = Su#hunk_summ.type,
+                         [Bytes] = Su#hunk_summ.c_len,
+                         brick_ticket:get(ThrottlePid, Bytes),
+                         Bin = gmt_hlog:read_hunk_member_ll(FH, Su, md5, 1),
+                         Su2 = Su#hunk_summ{c_blobs = [Bin]},
+                         %% TODO: In case of failure, don't crash.
+                         true = gmt_hlog:md5_checksum_ok_p(Su2),
+                         Bin
+                 end,
+
+    fun({SeqNum, Bytes}, {Hs, Bs, Es}) ->
+            ?E_INFO("SCAV: ~w - Coping live hunks in log sequence ~w to the latest log: "
+                    "~w bytes to copy",
+                    [Name, SeqNum, Bytes]),
+            DPath = WorkDir ++ "/" ++ integer_to_list(SeqNum),
+            {ok, DiskLog} = disk_log:open([{name, DPath},
+                                          {file, DPath}, {mode,read_only}]),
+            {ok, InHLog} = WalMod:open_log_file(LogDir, SeqNum, [read, binary]),
+            Res = scavenger_move_hunks(SA, SeqNum, BlobReader, InHLog, DiskLog),
+            ok = disk_log:close(DiskLog),
+            ok = file:close(InHLog),
+
+            case Res of
+                {HunkCount, CopiedBytes, 0} ->
+                    ?E_INFO("SCAV: ~w - Finished coping live hunks in log sequence ~w "
+                            "to the latest log: ~w hunks, ~w bytes",
+                            [Name, SeqNum, HunkCount, CopiedBytes]),
+                    {ok, SleepTimeSec} = application:get_env(gdss_brick, brick_dirty_buffer_wait),
+                    spawn_log_file_eraser(SA, SeqNum, SleepTimeSec),
+                    {Hs + HunkCount, Bs + CopiedBytes, Es};
+                {HunkCount, CopiedBytes, ErrorCount} ->
+                    ?E_ERROR("SCAV: ~w sequence ~p: ~p errors", [Name, SeqNum, ErrorCount]),
+                    {Hs + HunkCount, Bs + CopiedBytes, Es + ErrorCount}
+            end
+    end.
+
+-type scavenger_move_hunks_result() :: {HunkCount::non_neg_integer(),
+                                        MovedBytes::byte_size(),
+                                        ErrorCount::non_neg_integer()}.
+
+-spec scavenger_move_hunks(scav_r(), SeqNum::seqnum(),
+                           BlobReader::fun(), InHLog::file:fd(), DiskLog::term()) ->
+                                  scavenger_move_hunks_result().
+scavenger_move_hunks(SA, SeqNum, BlobReader, InHLog, DiskLog) ->
+    scavenger_move_hunks1(SA, SeqNum, BlobReader, InHLog, DiskLog,
+                          disk_log:chunk(DiskLog, start), {0, 0, 0}).
+
+-spec scavenger_move_hunks1(scav_r(), SeqNum::seqnum(),
+                            BlobReader::fun(), InHLog::file:fd(), DiskLog::term(),
+                            Chunk::term(),
+                            Acc::scavenger_move_hunks_result()) -> scavenger_move_hunks_result().
+scavenger_move_hunks1(_SA, _SeqNum, _BlobReader, _InHLog, _DiskLog, eof, Acc) ->
+    Acc;
+scavenger_move_hunks1(#scav{name=Name}, SeqNum, _BlobReader, _InHLog, _DiskLog, {error, _}=Err,
+                      {TotalHunkCount, TotalBytes, TotalErrorCount}) ->
+    ?E_ERROR("SCAV: ~w - Error occured while reading the workfile for sequence ~w: ~p, "
+             "Canceled coping live hunks to the latest log",
+             [Name, SeqNum, Err]),
+    {TotalHunkCount, TotalBytes, TotalErrorCount + 1};
+scavenger_move_hunks1(SA, SeqNum, BlobReader, InHLog, DiskLog, {Count, Hunks},
+                      {TotalHunkCount, TotalBytes, TotalErrorCount}) ->
+    CopyOneHunkFun = fun({Offset, BrickName, Key, TS, _ValLen, _ExpTime, _Flags},
+                         {Locations, Hs1, Bs1, Es1}) ->
+                             case brick_ets:copy_one_hunk(SA, InHLog, Key,
+                                                          SeqNum, Offset, BlobReader) of
+                                 error ->
+                                     {Hs1, Bs1, Es1 + 1};
+                                 {NewLoc, Size} ->
+                                     %% We want a tuple sortable first by
+                                     %% brick name.
+                                     OldLoc = {SeqNum, Offset},
+                                     Tpl = {BrickName, Key, TS, OldLoc, NewLoc},
+                                     {[Tpl|Locations], Hs1 + 1, Bs1 + Size, Es1}
+                             end;
+                        ({live_bytes, _}, Acc) ->
+                             Acc
                      end,
-                {ok, [O2]}
-        end,
-    brick_server:make_ssf(Key, F).
+
+    case lists:foldl(CopyOneHunkFun, {[], 0, 0, 0}, Hunks) of
+        {Locations, HunkCount, MovedBytes, 0} ->
+            case (catch update_locations_commonlog(SA, Locations)) of
+                NumUpdates when is_integer(NumUpdates) ->
+                    NewAcc = {TotalHunkCount + HunkCount,
+                              TotalBytes + MovedBytes,
+                              TotalErrorCount},
+                    scav_check_shutdown(),
+                    scavenger_move_hunks1(SA, SeqNum, BlobReader, InHLog, DiskLog,
+                                          disk_log:chunk(DiskLog, Count), NewAcc);
+                _Err ->
+                    {TotalHunkCount + HunkCount,
+                     TotalBytes + MovedBytes,
+                     TotalErrorCount + 1} %% for now
+            end;
+        {_, HunkCount, MovedBytes, ErrorCount} ->
+            {TotalHunkCount + HunkCount,
+             TotalBytes + MovedBytes,
+             TotalErrorCount + ErrorCount}
+    end.
+
+%% -spec
+update_locations_commonlog(SA, Locations) ->
+    NewLocs = gmt_util:list_keypartition(1, lists:keysort(1, Locations)),
+    Updates = [update_locations_on_brick(SA, Brick, Locs) ||
+                  {Brick, Locs} <- NewLocs],
+    lists:sum(Updates).
 
 %% -spec update_locations_on_brick(scav_r(), brick(),
 %%                                 [{brick_name(), key(), timestamp(), value(), value()}])
 %%                                 -> {ok, SuccessCount::non_neg_integer()}
 %%                                        | {error, SuccessCount::non_neg_integer()}.
 update_locations_on_brick(#scav{name=Name}, Brick, NewLocs) ->
-    Dos = [make_update_location(NL) ||
-              NL <- NewLocs],
+    Dos = [make_update_location(NL) || NL <- NewLocs],
     DoRes = brick_server:do(Brick, node(), Dos,
                             [ignore_role,
                              {sync_override, false},
@@ -1534,82 +1537,25 @@ update_locations_on_brick(#scav{name=Name}, Brick, NewLocs) ->
             UpdateCount
     end.
 
-scavenge_one_seq_file_fun(#scav{name=Name, work_dir=WorkDir,
-                                destructive=Destructive,
-                                wal_mod=WalMod,
-                                log_dir=LogDir,
-                                update_locations=LocationUpdater}=SA, Fread_blob) ->
-    fun({SeqNum, Bytes}, {SeqNums, Hs, Bs, Es}) ->
-            scav_check_shutdown(),
-
-            %% Write status file, to resume later: store the sequence
-            %% number we're working on but have not finished yet.
-            %%
-            %% Will need to change if we end up doing these copies
-            %% with multiple procs.
-            {MySeqNum, _} = hd(SeqNums),
-            WFun = fun(FH2) -> ok = io:format(FH2, "~w.\n", [MySeqNum]) end,
-            ok = brick_server:replace_file_sync(scav_bottomstatus_path(WorkDir),
-                                                WFun),
-
-            DInPath = WorkDir ++ "/" ++ integer_to_list(SeqNum),
-            DOutPath = WorkDir ++ "/" ++ integer_to_list(SeqNum) ++ ".out",
-            {ok, DInLog} = disk_log:open([{name, DInPath},
-                                          {file, DInPath}, {mode,read_only}]),
-            {ok, DOutLog} = disk_log:open([{name, DOutPath}, {file, DOutPath}]),
-            {ok, FH} = WalMod:open_log_file(LogDir, SeqNum, [read, binary]),
-            %% NOTE: Bytes is bound var!
-            {Hunks, Bytes__, Errs} =
-                brick_ets:disk_log_fold(
-                  fun({Offset, BrickName, Key, TS, _ValLen, _ExpTime, _Flags},
-                      {Hs1, Bs1, Es1}) ->
-                          scav_check_shutdown(),
-                          OldLoc = {SeqNum, Offset},
-                          case brick_ets:copy_one_hunk(SA, FH, Key, SeqNum,
-                                                       Offset, Fread_blob) of
-                              error ->
-                                  {Hs1, Bs1, Es1 + 1};
-                              {NewLoc, Size} ->
-                                  %% We want a tuple sortable first by
-                                  %% brick name.
-                                  Tpl = {BrickName, Key, TS, OldLoc, NewLoc},
-                                  ok = disk_log:log(DOutLog, Tpl),
-                                  {Hs1 + 1, Bs1 + Size, Es1}
-                          end;
-                     ({live_bytes, _}, Acc) ->
-                          Acc
-                  end, {0, 0, 0}, DInLog),
-            ok = file:close(FH),
-            ok = disk_log:close(DInLog),
-            ok = disk_log:close(DOutLog),
-            if Errs =:= 0, Destructive ->
-                    ?E_INFO("SCAV: ~w - Updating locations for log sequence ~w (~w)",
-                            [Name, SeqNum, Bytes =:= Bytes__]),
-                    {ok, DOutLog} = disk_log:open([{name, DOutPath},
-                                                   {file, DOutPath}]),
-                    case (catch LocationUpdater(SA, DOutLog)) of
-                        NumUpdates when is_integer(NumUpdates) ->
-                            ?E_INFO("SCAV: ~w - Updated locations for log sequence ~w: UpRes ok, "
-                                    "~w updates",
-                                   [Name, SeqNum, NumUpdates]),
-                            {ok, SleepTimeSec} =
-                                application:get_env(gdss_brick, brick_dirty_buffer_wait),
-                            spawn_log_file_eraser(SA, SeqNum, SleepTimeSec);
-                        UpRes ->
-                            ?E_INFO("SCAV: ~w - sequence ~w: UpRes ~p",
-                                    [Name, SeqNum, UpRes])
-                    end;
-               Errs =:= 0, not Destructive ->
-                    ?E_INFO("SCAV: ~w - zero errors for sequence ~w", [Name, SeqNum]);
-               Errs > 0 ->
-                    ?E_ERROR("SCAV: ~p sequence ~p: ~p errors", [Name, SeqNum, Errs]);
-               true ->
-                    ok
-            end,
-            ok = disk_log:close(DOutLog),
-
-            {tl(SeqNums), Hs + Hunks, Bs + Bytes, Es + Errs}
-    end.
+%% -spec make_update_location({brick_name(), key(), timestamp(), value(), value()})
+%%                            -> fun().
+make_update_location({_BrickName, Key, OrigTS, OrigVal, NewVal}) ->
+    F = fun(Key0, _DoOp, _DoFlags, S0) ->
+                O2 = case brick_server:ssf_peek(Key0, false, S0) of
+                         [] ->
+                             key_not_exist;
+                         [{_Key, OrigTS, _OrigVal, OldExp, OldFlags}] ->
+                             {ImplMod, ImplState} = brick_server:ssf_impl_details(S0),
+                             Val0 = ImplMod:bcb_val_switcharoo(OrigVal, NewVal, ImplState),
+                             Fs = [{testset, OrigTS}|OldFlags],
+                             %% make_replace doesn't allow custom TS.
+                             brick_server:make_op6(replace, Key0, OrigTS, Val0, OldExp, Fs);
+                         [{_Key, RaceTS, _RaceVal, _RaceExp, _RaceFlags}] ->
+                             {ts_error, RaceTS}
+                     end,
+                {ok, [O2]}
+        end,
+    brick_server:make_ssf(Key, F).
 
 -spec spawn_log_file_eraser(scav_r(), seqnum(), non_neg_integer()) -> pid().
 spawn_log_file_eraser(#scav{name=Name}=SA, SeqNum, SleepTimeSec) ->
@@ -1679,4 +1625,3 @@ do_sequence_file_is_bad(SeqNum, Offset, S) ->
                  end || Brick <- LocalBricks],
             S
     end.
-

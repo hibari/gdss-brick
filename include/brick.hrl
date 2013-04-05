@@ -40,9 +40,6 @@
           options = [],                             % prop_list()
           work_dir :: string(),                     % Working files dir
           wal_mod :: module(),
-          destructive=true :: boolean(),            % Do we delete/truncate/modify stuff?
-          skip_reads=false :: boolean(),            % Do we skip blob reads also? For use with
-                                                    % destructive =:= false only!
           skip_live_percentage_greater_than = 0 :: non_neg_integer(), % skip threshold
           name :: brickname(),
           log :: pid(),                             % hlog server
@@ -57,8 +54,7 @@
           dead_seq_bytes = 0 :: non_neg_integer(),
           live_seq_bytes = 0 :: non_neg_integer(),
           exclusive_p = true :: boolean(),          % avoid parallel runs
-          bottom_fun :: fun(),                      % scavenger botton half implementation
-          update_locations :: fun()                 % fun/2
+          bottom_fun :: fun()                       % scavenger botton half implementation
          }).
 -type scav_r() :: #scav{}.
 
