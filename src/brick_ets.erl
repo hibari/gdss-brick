@@ -203,6 +203,7 @@
 -export_type([extern_tuple/0, state_r/0]).
 
 -type proplist() :: [ atom() | {any(),any()} ].
+-type do_mod() :: tuple(). %% an internal representation of a do op
 
 -record(state, {
           name :: atom(),                       % My registered name
@@ -212,6 +213,9 @@
           do_sync = true :: boolean(),
           log_dir :: string(),
           bigdata_dir :: string(),
+
+          %% @TODO: gdss-brick >> GH9 - Refactor #state record in brick_ets
+          %% The following operation counters can be moved to the process dictionary.
           n_add = 0 :: non_neg_integer(),
           n_replace = 0 :: non_neg_integer(),
           n_set = 0 :: non_neg_integer(),
@@ -222,13 +226,23 @@
           n_txn = 0 :: non_neg_integer(),
           n_do = 0 :: non_neg_integer(),
           n_expired = 0 :: non_neg_integer(),
+
           %% CHAIN TODO: Do these 2 items really belong here??
           logging_op_serial = 42 :: non_neg_integer(), % Serial # of logging op
           logging_op_q = queue:new() :: queue(),  % Queue of logged ops for
                                                   % replay when log sync is done.
           %% n_log_replay = 0,
           log :: pid(),                           % disk_log for data mod cmds
-          thisdo_mods :: [tuple()],               % List of mods by this 'do'
+
+
+          %% @TODO: gdss-brick >> GH9 - Refactor #state record in brick_ets
+          %% e.g. thisdo_mods and wait_on_dirty_q will be updated multiple times
+          %% within a gen server call.
+          %% Move this kind of frequently updated fields into a sub record, so that
+          %% we don't have to shallow-copy all 45 fields is this record to a new record
+          %% too many times.
+          thisdo_mods :: [do_mod()],              % List of mods by this 'do'
+
           check_pid :: pid(),                     % Pid of checkpoint helper
           check_lastseqnum :: seqnum(),           % integer() seq # of last checkpoint
           ctab :: table_name(),                   % ETS table for cache
@@ -247,10 +261,15 @@
           expiry_tref :: reference(),             % Timer ref for expiry events
           scavenger_pid :: 'undefined' | pid(),   % undefined | pid()
           scavenger_tref :: reference(),          % tref()
+
+          %% @TODO: gdss-brick >> GH9 - Refactor #state record in brick_ets
+          %% Do we really need the following syncsum_* fields? If so, move them
+          %% to the process dictionary
           syncsum_count = 0 :: non_neg_integer(), % DEBUG?? syncsum stats
           syncsum_msec = 0 :: non_neg_integer(),
           syncsum_len = 0 :: integer(),
           syncsum_tref :: reference(),
+
           do_expiry_fun :: fun(),                 % fun
           wal_mod :: atom(),                      % atom()
           max_log_size = 0 :: non_neg_integer()   % max log size
@@ -1820,8 +1839,7 @@ my_insert2(#state{thisdo_mods=Mods, max_log_size=MaxLogSize}=S, Key, TStamp, Val
             %% downstream that we didn't include the value in this
             %% update.  {sigh}
             Mod = {insert_constant_value,
-                   storetuple_make(Key, TStamp, CurVal, CurValLen, ExpTime,
-                                   Flags)},
+                   storetuple_make(Key, TStamp, CurVal, CurValLen, ExpTime, Flags)},
             {{ok, TStamp}, S#state{thisdo_mods = [Mod|Mods]}};
         {?VALUE_SWITCHAROO, OldVal, NewVal} ->
             %% @TODO - value_in_ram support?
@@ -2583,16 +2601,17 @@ pull_items_out_of_logging_queue(_, Acc, Q, _LastLogSerial,
                                 _UpstreamSerial, S) ->
     {lists:reverse(Acc), S#state{logging_op_q = Q}}.
 
-%% @spec (list(thisdo_mods()), true | false | undefined, state_r()) ->
-%%       {goahead, state_r()} | {wait, state_r()}
 %% @doc Write a set of Thisdo_Mods to disk, with the option of overriding sync.
-
+-spec log_mods2([do_mod()], boolean() | undefined, state_r()) ->
+                       {goahead, state_r()} | {wait, state_r()}.
 log_mods2(Thisdo_Mods, SyncOverride, S) ->
     log_mods2_b(Thisdo_Mods, S, SyncOverride).  % thin shim nowadays
 
+-spec log_mods2_b([do_mod()], state_r(), boolean() | undefined) ->
+                         {goahead, state_r()} | {wait, state_r()}.
 log_mods2_b([], S, _) ->                        % dialyzer: can never match...
     {goahead, S#state{thisdo_mods = []}};
-log_mods2_b(Thisdo_Mods0, S, SyncOverride) ->
+log_mods2_b(Thisdo_Mods0, #state{do_sync=DoSync}=S, SyncOverride) ->
     Thisdo_Mods = lists:map(
                     fun({insert, _ChainStoreTuple, StoreTuple}) ->
                             {insert, StoreTuple};
@@ -2600,24 +2619,20 @@ log_mods2_b(Thisdo_Mods0, S, SyncOverride) ->
                             X
                     end, Thisdo_Mods0),
     {ok, _, _} = wal_write_metadata_term(Thisdo_Mods, S),
-    if S#state.do_sync == true ->
-            %% Guard test SyncOverride::'undefined' == 'true' can never succeed
-            if SyncOverride == false ->
-                    %% NOTICE: This clobbering of #state.thisdo_mods
-                    %% should not cause problems when called outside
-                    %% the context of a handle_call({do, ...}, ...)
-                    %% call, right?
-                    {goahead, S#state{thisdo_mods = []}};
-               true ->
-                    {wait, S}
-            end;
-       S#state.do_sync == false ->
-            %% Guard test SyncOverride::'undefined' == 'true' can never succeed
-            if SyncOverride == true ->
-                    {wait, S};
-               true ->
-                    {goahead, S#state{thisdo_mods = []}}
-            end
+
+    case {DoSync, SyncOverride} of
+        {true, false} ->
+            %% NOTICE: This clobbering of #state.thisdo_mods
+            %% should not cause problems when called outside
+            %% the context of a handle_call({do, ...}, ...)
+            %% call, right?
+            {goahead, S#state{thisdo_mods = []}};
+        {true, _TrueOrUndefined} ->
+            {wait, S};
+        {false, true} ->
+            {wait, S};
+        {false, _FalseOrUndefined} ->
+            {goahead, S#state{thisdo_mods = []}}
     end.
 
 any_dirty_keys_p(DoKeys, State) ->
@@ -2941,12 +2956,10 @@ delete_remaining_keys(Key, S, Deletes) ->
 %%
 
 bigdata_dir_store_val(_Key, <<>>, _S) ->
-    {0, 0};                                     % Special case for 0 len binary
-bigdata_dir_store_val(Key, Val, S) ->
-    {ok, Seq, Off} = (S#state.wal_mod):write_hunk(
-                       S#state.log, S#state.name, bigblob, Key,
-                       ?LOGTYPE_BLOB, [Val],[]),
-    ?DBG_GEN("bigdate_store_val ~w at seq ~w, off ~w", [Key, Seq, Off]),
+    {0, 0}; % Don't write blob hunk if value is empty.
+bigdata_dir_store_val(Key, Val, #state{wal_mod=WalMod, log=HLogPid, name=Name}) ->
+    {ok, Seq, Off} = WalMod:write_hunk(HLogPid, Name, bigblob, Key, ?LOGTYPE_BLOB, [Val],[]),
+    %% ?DBG_GEN("bigdate_store_val ~w at seq ~w, off ~w", [Key, Seq, Off]),
     {Seq, Off}.
 
 bigdata_dir_delete_val(_Key, _S) ->
@@ -3174,10 +3187,11 @@ wal_load_recs_from_log([H|T], S) ->
 wal_load_recs_from_log([], _S) ->
     ok.
 
-wal_write_metadata_term(Term, S) ->
-    (S#state.wal_mod):write_hunk(
-      S#state.log, S#state.name, metadata, <<"k:md">>, ?LOGTYPE_METADATA,
-      [term_to_binary(Term)], []).
+-spec wal_write_metadata_term(term(), state_r()) ->
+                                     {ok, seqnum(), offset()} | {hunk_too_big, len()} | no_return().
+wal_write_metadata_term(Term, #state{wal_mod=WalMod, log=HLogPid, name=Name}) ->
+    WalMod:write_hunk(HLogPid, Name, metadata, <<"k:md">>, ?LOGTYPE_METADATA,
+                      [term_to_binary(Term)], []).
 
 wal_sync(Pid, WalMod) when is_pid(Pid) ->
     WalMod:sync(Pid).

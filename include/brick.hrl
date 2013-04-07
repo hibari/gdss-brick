@@ -39,7 +39,7 @@
 -record(scav, {
           options = [],                             % prop_list()
           work_dir :: string(),                     % Working files dir
-          wal_mod :: module(),
+          wal_mod :: module(),                      % WAL module
           skip_live_percentage_greater_than = 0 :: non_neg_integer(), % skip threshold
           name :: brickname(),
           log :: pid(),                             % hlog server
@@ -53,6 +53,7 @@
           dead_paths = [] :: [string()],            % paths to dead sequences
           dead_seq_bytes = 0 :: non_neg_integer(),
           live_seq_bytes = 0 :: non_neg_integer(),
+          live_hunk_sizes = [] :: [{seqnum(), non_neg_integer()}],
           exclusive_p = true :: boolean(),          % avoid parallel runs
           bottom_fun :: fun()                       % scavenger botton half implementation
          }).

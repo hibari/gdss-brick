@@ -777,6 +777,9 @@ do_write_hunk(HLogType, _TypeNum, H_Len, H_Bytes,
             end
     end.
 
+%% @doc Create a hunk.
+%%      CBlobs: A list of blobs that also has an MD5 checksum stored inside the hunk.
+%%      UBlobs: A list of blobs without an MD5 checksum.
 -spec create_hunk(typenum(), CBlobs::blobs(), UBlobs::blobs()) -> {len(), bytes()}.
 create_hunk(TypeNum, CBlobs, UBlobs) ->
     Hdr = hunk_header_v1(),
@@ -804,14 +807,14 @@ create_hunk(TypeNum, CBlobs, UBlobs) ->
     T = {MD5s, LenAllCB, LenAllUB},
     BinT = term_to_binary(T),
     LenBinT = size(BinT),
-    H_Len = size(Hdr) + 4 + 4 + 4 + LenBinT + LenAll,
+    Hunk_Len = size(Hdr) + 4 + 4 + 4 + LenBinT + LenAll,
     %% TODO: In an ideal world, we should be checking ?MAX_HUNK_HEADER_BYTES
     %%       here.  But throwing an exception here can cause weird
     %%       problems, such as bootstrapping a single simple developer
     %%       node can fail.
-    H = [<<Hdr/binary, H_Len:32, LenBinT:32, TypeNum:32, BinT/binary>>,
-         CBlobs, UBlobs],
-    {H_Len, H}.
+    Hunk = [<<Hdr/binary, Hunk_Len:32, LenBinT:32, TypeNum:32, BinT/binary>>,
+            CBlobs, UBlobs],
+    {Hunk_Len, Hunk}.
 
 
 %% YIKES, I was bitten by a really pernicious bug.  Took about 6 hours

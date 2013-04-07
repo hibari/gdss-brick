@@ -24,59 +24,60 @@
 %% In the original gmt_hlog.erl implementation, write_hunk() made a
 %% distinction between two types of storage:
 %%
-%%   * shortterm: Any shortterm data is scanned by a brick at startup
-%%       for key metadata info.  However, because only shortterm log
+%%   * short-term: Any short-term data is scanned by a brick at startup
+%%       for key metadata info. However, because only short-term log
 %%       can be fsync'ed for stable storage, bigdata_dir blobs
 %%       (i.e. values blobs to be stored on disk) must also be written
-%%       to shortterm storage.  This allows a single file:sync() to
+%%       to short-term storage. This allows a single file:sync() to
 %%       get both the value blob hunk and the key metadata hunk.
 %%       (After a checkpoint is finished, the brick will then move
-%%       shortterm hunk files into longterm storage area.)
+%%       short-term hunk files into longterm storage area.)
 %%
-%%       Hunks stored in the shortterm area have SeqNum values > 0.
+%%       Hunks stored in the short-term area have SeqNum values > 0.
 %%
-%%   * longterm: Data in longterm storage cannot be scanned by a
+%%   * long-term: Data in long-term storage cannot be scanned by a
 %%       brick's startup sequence, which can reduce brick startup time
 %%       dramatically.
 %%
-%%       Hunks stored in the longterm area have SeqNum values &lt; 0.
+%%       Hunks stored in the long-term area have SeqNum values &lt; 0.
 %%
 %% In this new scheme, logs are further subdivided into "local" and
-%% "common".  The details of "where" physically a hunk is stored shall
+%% "common". The details of "where" physically a hunk is stored shall
 %% be hidden from the client (e.g. brick_ets.erl) at all times.
 %% However, we need the client to give us more information than
 %% 'shortterm' or 'longterm' to be able to make physical storage
-%% location decisions.  The HLogType argument gives us that extra
+%% location decisions. The HLogType argument gives us that extra
 %% info:
 %%
-%%   * metadata: For storing GDSS hunks of type ?LOGTYPE_METADATA and
+%%   * metadata: For storing Hibari hunks of type ?LOGTYPE_METADATA and
 %%               ?LOGTYPE_BAD_SEQUENCE (and perhaps others in the
-%%               future).  All data of this type will be stored in RAM
-%%               for quick access at all times.
+%%               future). brick_ets will load all data of this type in
+%%               RAM for quick access at all times.
 %%
-%%   * bigblob: For storing GDSS hunks of type ?LOGTYPE_BLOB.  The
+%%   * bigblob: For storing Hibari hunks of type ?LOGTYPE_BLOB. The
 %%              size of these blobs makes storage in RAM infeasible
 %%              and thus will always be accessed from disk.
 %%
 %% All hunks, of both 'metadata' and 'bigblob' types, will be written
-%% and fsync'ed (if necessary) to the common log first.  A lazy
-%% "flusher" process will copy 'metadata' hunks to their owner local
-%% log storage.  The same flusher will copy 'bigblob' types to
-%% longterm storage within the *common* log.  Both types of copy will
-%% by asynchronous (i.e. not use fsync()).
+%% and fsync'ed (if necessary) to the common log first. A lazy
+%% write-back process will copy 'metadata' hunks to their owner local
+%% log storage. The same write-back process will copy 'bigblob' types
+%% to longterm storage within the *common* log if gmt_hlog_common's
+%% #state.short_long_same_dev_p is set to false. Both types of copy will
+%% be asynchronous (i.e. not use fsync()).
 %%
 %% Hunks of type 'bigblob' can (and will) still be stored in the
-%% shortterm area of the common log: the underlying gmt_hlog's sync
-%% behavior has not changed.  (Recall, only shortterm data can be
-%% fsynced.)  The common log's "flusher" will move those blobs to
-%% longterm storage and then notify their respective owner bricks that
-%% they've been relocated (using the same update mechanism that the
-%% scavenger uses).
+%% short-term area of the common log: the underlying gmt_hlog's sync
+%% behavior has not changed. (Recall, only short-term data can be
+%% fsynced.)  The common log's write-back process will move those blobs
+%% to longterm storage and then notify their respective owner bricks
+%% that they've been relocated (using the same update mechanism that
+%% the scavenger uses).
 %%
 %% One effect of the specialization of 'metadata' and 'bigblob' types
 %% is that this module, gmt_hlog_local.erl, is much less generic than
 %% gmt_hlog.erl is, and it is also much more closely tied to a single
-%% application, GDSS, than gmt_hlog.erl is.
+%% application, Hibari, than gmt_hlog.erl is.
 
 -include("gmt_hlog.hrl").
 -include("brick.hrl").
@@ -179,9 +180,9 @@ advance_seqnum(_Pid, _Num) ->
 get_proplist(Pid) ->
     gen_server:call(Pid, {get_proplist}).
 
-%% @doc Write a hunk (containing one or more blobs, checksummed or
-%%      un-checksummed) to a hunk log.
-
+%% @doc Write a hunk to a log.
+%%      CBlobs: A list of blobs that also has an MD5 checksum stored inside the hunk.
+%%      UBlobs: A list of blobs without an MD5 checksum.
 -spec write_hunk(server(), brickname(), hlogtype(), key(), typenum(),
                  CBlobs::blobs(), UBlobs::blobs()) ->
                         {ok, seqnum(), offset()} | {hunk_too_big, len()} | no_return().
@@ -282,13 +283,13 @@ read_bigblob_hunk_blob(SeqNum, Offset) ->
 %% common log.
 %%
 %% NOTE: This function can be used only on the same node as the common
-%%       log gen_server process is running.  Furthermore, it can only
+%%       log gen_server process is running. Furthermore, it can only
 %%       be used to read hunks of type 'bigblob'.
 %%
 %%       Question: How do you read hunks of type 'metadata'?
-%%       Answer: You don't, not individually.  Because our API is
-%%               tightly tied to the GDSS application, and the only
-%%               times that GDSS reads 'metadata' blobs is at brick
+%%       Answer: You don't, not individually. Because our API is
+%%               tightly tied to the Hibari application, and the only
+%%               times that Hibari reads 'metadata' blobs is at brick
 %%               startup, and because startup uses fold() to read all
 %%               shortterm 'metadata' blobs sequentially, there is no
 %%               need to provide a random access API function.
@@ -364,36 +365,40 @@ init(PropList) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_call({write_hunk_bytes, LocalLogName, HLogType, Key,
-             TypeNum, H_Len, H_Bytes}, _From,
-            #state{last_seq = LastSeq, offset = LastOffset, file_len_min = FileLenMin} = State) ->
-    {Len, Bytes} =
-        if HLogType =:= metadata ->
-                %% This tuple must be sortable by gmt_hlog_common by:
-                %% LocalLogName, LastSeq, LastOffset.
-                T = {eee, LocalLogName, LastSeq, LastOffset, Key, TypeNum,
-                     H_Len, H_Bytes},
-                Encoded = term_to_binary(T),
-                gmt_hlog:create_hunk(?LOCAL_RECORD_TYPENUM, [], [Encoded]);
-           HLogType =:= bigblob ->
-                {H_Len, H_Bytes}
-        end,
-    case gmt_hlog:write_hunk_internalwrapper(
-           State#state.common_log, LocalLogName, HLogType, Key, TypeNum,
-           Len, Bytes) of
-        {ok, RemoteSeq, RemoteOff} ->
-            if HLogType =:= metadata ->
-                    Reply = {ok, LastSeq, LastOffset},
-                    NewOffset = LastOffset + H_Len,
-                    if NewOffset > FileLenMin ->
-                            {_, NewState} = do_advance_seqnum(1, State),
-                            {reply, Reply, NewState};
-                       true ->
-                            {reply, Reply, State#state{offset = NewOffset}}
-                    end;
+handle_call({write_hunk_bytes, LocalLogName, metadata, Key, TypeNum, H_Len, H_Bytes},
+            _From,
+            #state{common_log=CommonLogPid,
+                   last_seq=LastSeq, offset=LastOffset,
+                   file_len_min=FileLenMin}=State) ->
+
+    %% This tuple must be sortable by gmt_hlog_common by:
+    %% LocalLogName, LastSeq, LastOffset.
+    %% Note: the orginal CBlob and UBlob from brick_ets have been already
+    %% translated into a hunk by write_hunk/7 and passed as H_Bytes.
+    T = make_metadata_tuple(LocalLogName, LastSeq, LastOffset, Key, TypeNum, H_Len, H_Bytes),
+    {RealLen, RealBytes} =
+        gmt_hlog:create_hunk(?LOCAL_RECORD_TYPENUM, [], [term_to_binary(T)]),
+
+    case gmt_hlog:write_hunk_internalwrapper(CommonLogPid, LocalLogName, metadata,
+                                             Key, TypeNum, RealLen, RealBytes) of
+        {ok, _RemoteSeq, _RemoteOff} ->
+            Reply = {ok, LastSeq, LastOffset},
+            NewOffset = LastOffset + RealLen,
+            if NewOffset > FileLenMin ->
+                    {_, NewState} = do_advance_seqnum(1, State),
+                    {reply, Reply, NewState};
                true ->
-                    {reply, {ok, RemoteSeq, RemoteOff}, State}
+                    {reply, Reply, State#state{offset=NewOffset}}
             end;
+        Err ->
+            {reply, Err, State}
+    end;
+handle_call({write_hunk_bytes, LocalLogName, bigblob, Key, TypeNum, H_Len, H_Bytes},
+            _From, #state{common_log=CommonLogPid}=State) ->
+    case gmt_hlog:write_hunk_internalwrapper(CommonLogPid, LocalLogName, bigblob,
+                                             Key, TypeNum, H_Len, H_Bytes) of
+        {ok, RemoteSeq, RemoteOff} ->
+            {reply, {ok, RemoteSeq, RemoteOff}, State};
         Err ->
             {reply, Err, State}
     end;
@@ -496,6 +501,11 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+
+-spec make_metadata_tuple(brickname(), seqnum(), offset(), key(), typenum(), len(), bytes()) ->
+                                 metadata_tuple().
+make_metadata_tuple(LocalLogName, LastSeq, LastOffset, Key, TypeNum, Len, Bytes) ->
+    {eee, LocalLogName, LastSeq, LastOffset, Key, TypeNum, Len, Bytes}.
 
 do_advance_seqnum(Incr, S) ->
     NewSeq = S#state.last_seq + abs(Incr),

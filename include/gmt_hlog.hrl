@@ -49,12 +49,12 @@
 -type checkmd5() :: boolean().
 -type dirname() :: nonempty_string().
 -type filepath() :: nonempty_string().
--type eee() :: {eee, brickname(), seqnum(), offset(), key(), typenum(), len(), bytes()}.
 -type filtfun() :: fun((seqnum()) -> boolean()).
 -type foldacc() :: term().
 -type foldfun() :: fun((#hunk_summ{}, file:fd(), foldacc()) -> foldacc()).
 -type foldret() :: {foldacc(), list({term(), [{seq, seqnum(), err, term()}]})} | no_return().
 -type hlogtype() :: 'metadata' | 'bigblob' | 'bigblob_longterm'.
+-type metadata_tuple() :: {'eee', brickname(), seqnum(), offset(), key(), typenum(), len(), bytes()}.
 -type incr() :: integer().
 -type lenhint() :: len().
 -type lenhintORxformfun() :: lenhint() | xformfun().
