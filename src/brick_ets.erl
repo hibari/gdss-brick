@@ -3133,7 +3133,7 @@ sequence_file_is_bad_common(LogDir, WalMod, _Log, Name, SeqNum, Offset) ->
 
 wal_scan_all(S, MinimumSeqNum) ->
     put(wal_scan_cast_count, 0),
-    F = fun(H, FH, Acc) when H#hunk_summ.type == ?LOGTYPE_METADATA ->
+    F = fun(H, FH, Acc) when H#hunk_summ.type =:= ?LOGTYPE_METADATA ->
                 %% This function may run for hours or perhaps even days.
                 flush_gen_server_calls(),       % Clear any mailbox backlog
                 flush_gen_cast_calls(S),        % Clear any mailbox backlog
@@ -3143,17 +3143,17 @@ wal_scan_all(S, MinimumSeqNum) ->
 
                 CB = (S#state.wal_mod):read_hunk_member_ll(FH, H, md5, 1),
                 %% LTODO: Don't crash if there's a failure.
-                %% Hibari: TODO: Be robust here.  If the checksum does not match,
-                %%      then we have a problem to solve.  If we're not the
-                %%      only in the chain, we can punt.  If we are the
-                %%      only/best of the chain, then we have a data loss
-                %%      problem that we need to report, somehow.
+                %% Hibari: TODO: Be robust here. If the checksum does not match,
+                %%         then we have a problem to solve. If we're not the
+                %%         only in the chain, we can punt. If we are the
+                %%         only/best of the chain, then we have a data loss
+                %%         problem that we need to report, somehow.
                 true = (S#state.wal_mod):md5_checksum_ok_p(H#hunk_summ{c_blobs = [CB]}),
                 wal_load_recs_from_log(binary_to_term(CB), S),
                 Acc + 1;
-           (H, _FH, Acc) when H#hunk_summ.type == ?LOGTYPE_BLOB ->
+           (H, _FH, Acc) when H#hunk_summ.type =:= ?LOGTYPE_BLOB ->
                 Acc;
-           (H, FH, Acc) when H#hunk_summ.type == ?LOGTYPE_BAD_SEQUENCE ->
+           (H, FH, Acc) when H#hunk_summ.type =:= ?LOGTYPE_BAD_SEQUENCE ->
                 [_] = H#hunk_summ.c_len,        % sanity
                 []  = H#hunk_summ.u_len,        % sanity
                 CB = (S#state.wal_mod):read_hunk_member_ll(FH, H, md5, 1),

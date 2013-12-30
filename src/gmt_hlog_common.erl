@@ -26,7 +26,7 @@
 -include("gmt_hlog.hrl").
 -include_lib("kernel/include/file.hrl").
 
--define(WB_COUNT, 200). % For write_back buffering.
+-define(WB_BATCH_SIZE, 200). % For write_back buffering.
 -define(WAIT_BEFORE_EXIT, timer:sleep(1500)). %% milliseconds
 
 %% API
@@ -77,15 +77,14 @@
 %%% Types/Specs/Records
 %%%----------------------------------------------------------------------
 
--opaque from() :: {pid(),term()}.
+-opaque from() :: {pid(), term()}.
 
 -type orddict() :: list().
 
--type props() :: list({common_log_name,servername()}).
+-type props() :: list({common_log_name, servername()}).
 
 -type byte_size() :: non_neg_integer().
 -type seqnum_hunk_size() :: {seqnum(), byte_size()}.
--type file_path() :: string().
 
 -record(state, {
           name                            :: file:name(),
@@ -98,18 +97,20 @@
           tref                            :: timer:tref(),
           scavenger_tref                  :: timer:tref() | undefined,
           async_writeback_pid             :: pid() | undefined,
-          async_writeback_reqs=[]         :: list(from()),
-          async_writebacks_next_round=[]  :: list(from()),
+          async_writeback_reqs=[]         :: [from()],                 % requesters of current async writeback
+          async_writebacks_next_round=[]  :: [from()],                 % requesters of next async writeback
           dirty_buffer_wait               :: non_neg_integer(),        % seconds
           short_long_same_dev_p           :: boolean(),
           first_writeback                 :: boolean()
          }).
+%% -type state_r() :: #state{}.
 
 %% write-back info
 -record(wb, {
           exactly_count = 0   :: non_neg_integer(),  % number of metadata tuples to write-back
           exactly_ts = []     :: [metadata_tuple()]  % metadata tuples to write-back
          }).
+%% -type wb_r() :: #wb{}.
 
 -record(scav_progress, {
           copied_hunks = 0    :: non_neg_integer(),
@@ -263,8 +264,7 @@ init(PropList) ->
     end.
 
 prop_or_application_env_bool(ConfName, PropName, PropList, Default) ->
-    gmt_util:boolean_ify(
-      prop_or_application_env(ConfName, PropName, PropList, Default)).
+    gmt_util:boolean_ify(prop_or_application_env(ConfName, PropName, PropList, Default)).
 
 prop_or_application_env(ConfName, PropName, PropList, Default) ->
     case proplists:get_value(PropName, PropList, not_in_list) of
@@ -351,13 +351,12 @@ handle_info(do_sync_writeback, State) ->
     %%io:format("TOP: info: do_sync_writeback\n"),
     NewState = do_sync_writeback(State),
     {noreply, NewState#state{first_writeback = false}};
-handle_info(do_async_writeback, #state{async_writeback_pid = undefined
-                                       , async_writeback_reqs = []
-                                       , async_writebacks_next_round = NextReqs
-                                      } = State) ->
+handle_info(do_async_writeback, #state{async_writeback_pid = undefined,
+                                       async_writeback_reqs = [],
+                                       async_writebacks_next_round = NextReqs} = State) ->
     ParentPid = self(),
     %% Pattern-matching should assure that do_sync_writeback() has
-    %% encountered no errors if it returns.  A pattern match failure
+    %% encountered no errors if it returns. A pattern match failure
     %% will kill the child, so it can't update our parent.
     {Pid, _Ref} = spawn_monitor(fun() ->
                                         S = do_sync_writeback(State),
@@ -367,11 +366,13 @@ handle_info(do_async_writeback, #state{async_writeback_pid = undefined
                                                      S#state.last_offset},
                                         exit(normal)
                                 end),
-    {noreply, State#state{async_writeback_pid = Pid, async_writeback_reqs = NextReqs, async_writebacks_next_round = []}};
-handle_info(do_async_writeback, #state{async_writeback_pid = Pid, async_writeback_reqs = Reqs} = State)
+    {noreply, State#state{async_writeback_pid=Pid,
+                          async_writeback_reqs=NextReqs,
+                          async_writebacks_next_round = []}};
+handle_info(do_async_writeback, #state{async_writeback_pid=Pid,
+                                       async_writeback_reqs=Reqs}=State)
   when is_pid(Pid) ->
     if Reqs =:= [] ->
-            %% Last async writeback proc hasn't finished yet.
             ?E_WARNING("async writeback proc ~p hasn't finished yet", [Pid]);
        true ->
             %% don't warn if in progress due to an external request
@@ -379,18 +380,20 @@ handle_info(do_async_writeback, #state{async_writeback_pid = Pid, async_writebac
     end,
     {noreply, State};
 handle_info({async_writeback_finished, Pid, NewSeqNum, NewOffset},
-            #state{async_writeback_pid = Pid, async_writeback_reqs = Reqs
-                   , last_seqnum = SeqNum, last_offset = Offset} = State) ->
+            #state{async_writeback_pid=Pid,
+                   async_writeback_reqs=Reqs,
+                   last_seqnum=SeqNum,
+                   last_offset=Offset}=State) ->
     %% update state
     NewState = if NewSeqNum > SeqNum orelse
-                  (NewSeqNum == SeqNum andalso NewOffset > Offset) ->
-                       State#state{last_seqnum = NewSeqNum, last_offset = NewOffset};
-                  (NewSeqNum == SeqNum andalso NewOffset == Offset) ->
+                  (NewSeqNum =:= SeqNum andalso NewOffset > Offset) ->
+                       State#state{last_seqnum=NewSeqNum, last_offset=NewOffset};
+                  (NewSeqNum =:= SeqNum andalso NewOffset =:= Offset) ->
                        State;
                   true ->
-                       ?E_NOTICE("Notice: last seq/off ~p ~p new seq/off ~p ~p",
+                       ?E_NOTICE("async_writeback_finished - Illegal position: "
+                                 "last seq/off ~p ~p, new seq/off ~p ~p",
                                [SeqNum, Offset, NewSeqNum, NewOffset]),
-                       %% exit({hibari_debug, SeqNum, Offset, NewSeqNum, NewOffset}),
                        State
                end,
     %% reply to callers
@@ -405,21 +408,21 @@ handle_info(start_daily_scavenger, State) ->
                 {work_dir, WorkDir}],
     %% Self-deadlock with get_all_registrations(), must use worker.
     spawn(fun() -> start_scavenger_commonlog(PropList) end),
-    {noreply, State#state{scavenger_tref = ScavengerTRef}};
+    {noreply, State#state{scavenger_tref=ScavengerTRef}};
 handle_info({'DOWN', _Ref, _, Pid, Reason},
-            #state{async_writeback_pid = Pid, async_writeback_reqs = Reqs} = State) ->
+            #state{async_writeback_pid=Pid, async_writeback_reqs=Reqs}=State) ->
     %% schedule next round
     _ = schedule_async_writeback(State),
     %% if any, reply to callers with error
-    _ = [ gen_server:reply(From, {error,Reason}) || From <- Reqs ],
-    {noreply, State#state{async_writeback_pid = undefined, async_writeback_reqs = []}};
-handle_info({'DOWN', Ref, _, _, _}, #state{reg_dict = Dict} = State) ->
+    _ = [ gen_server:reply(From, {error, Reason}) || From <- Reqs ],
+    {noreply, State#state{async_writeback_pid=undefined, async_writeback_reqs=[]}};
+handle_info({'DOWN', Ref, _, _, _}, #state{reg_dict=Dict}=State) ->
     NewDict = orddict:filter(fun(_K, V) when V /= Ref -> true;
                                 (_, _)                -> false
                              end, Dict),
-    {noreply, State#state{reg_dict = NewDict}};
+    {noreply, State#state{reg_dict=NewDict}};
 handle_info({'EXIT', Pid, Reason}, #state{hlog_pid = Pid} = State) ->
-    {stop,Reason,State#state{hlog_pid = undefined}};
+    {stop,Reason,State#state{hlog_pid=undefined}};
 handle_info(_Info, State) ->
     ?E_ERROR("~p got msg ~p", [self(), _Info]),
     {noreply, State}.
@@ -497,7 +500,7 @@ schedule_async_writeback(#state{async_writebacks_next_round=NextReqs}=S) ->
     end,
     S.
 
-schedule_async_writeback(From,#state{async_writebacks_next_round=NextReqs}=S) ->
+schedule_async_writeback(From, #state{async_writebacks_next_round=NextReqs}=S) ->
     if NextReqs =:= [] ->
             self() ! do_async_writeback;
        true ->
@@ -550,61 +553,50 @@ do_sync_writeback(S) ->
     end,
     S#state{last_seqnum = EndSeqNum, last_offset = EndOffset}.
 
-do_metadata_hunk_writeback(OldSeqNum, OldOffset, StopSeqNum, StopOffset, S_ro)->
+do_metadata_hunk_writeback(OldSeqNum, OldOffset, StopSeqNum, StopOffset, S)->
     FiltFun = fun(N) ->
                       N >= OldSeqNum
               end,
-    Fun = fun(#hunk_summ{seq = SeqNum, off = Offset} = _H, _FH, _WB)
-                when SeqNum == OldSeqNum, Offset < OldOffset ->
+    Fun = fun(#hunk_summ{seq=SeqNum, off=Offset}=_H, _FH, _WB)
+                when SeqNum =:= OldSeqNum, Offset < OldOffset ->
                   %% It would be really cool if we could advance the
                   %% file pos of FH, but our caller is keeping track
                   %% of its own file offsets, so calling
                   %% file:position/2 on this file handle doesn't do
-                  %% anything useful, alas.  Instead, we'll use the
+                  %% anything useful, alas. Instead, we'll use the
                   %% magic return value to tell fold_a_file() to use a
                   %% new offset for the next iteration.
-
-                  %% ?DBG_TLOG("do_metadata_hunk_writeback [new_offset] seq ~w, off ~w", [SeqNum, OldOffset]),
                   {{{new_offset, OldOffset}}};
-             (#hunk_summ{seq = SeqNum, off = Offset} = _H, _FH, WB)
+             (#hunk_summ{seq=SeqNum, off=Offset}=_H, _FH, WB)
                 when {SeqNum, Offset} >= {StopSeqNum, StopOffset} ->
                   %% Do nothing here: our folding has moved past where
                   %% we need to process ... this hunk will be
                   %% processed later.
-
-                  %% ?DBG_TLOG("do_metadata_hunk_writeback [stop] seq ~w, off ~w", [SeqNum, Offset]),
                   WB;
-             (#hunk_summ{type = ?LOCAL_RECORD_TYPENUM, u_len = [BLen]} = H, FH,
-              #wb{exactly_count = Count, exactly_ts = Ts} = WB) ->
-                  %% ?DBG_TLOG("do_metadata_hunk_writeback [metadata] seq ~w, off ~w", [H#hunk_summ.seq, H#hunk_summ.off]),
+             (#hunk_summ{type=?LOCAL_RECORD_TYPENUM, u_len=[BLen]}=H, FH,
+              #wb{exactly_count=Count, exactly_ts=Ts}=WB) ->
                   UBlob = gmt_hlog:read_hunk_member_ll(FH, H, undefined, 1),
-                  if size(UBlob) /= BLen ->
+                  if size(UBlob) =/= BLen ->
                           %% This should never happen.
-                          QQQPath = "/tmp/foo.QQQbummer."++integer_to_list(element(3,now())),
-                          ok = file:write_file(QQQPath, term_to_binary([{args, [OldSeqNum, OldOffset, StopSeqNum, StopOffset, S_ro]}, {h, H}, {wb, WB}, {info, process_info(self())}])),
-                          ?E_WARNING("DBG: See ~p", [QQQPath]),
-                          ?E_WARNING("DBG: ~p ~p wanted blob size ~p but got ~p",
-                                     [H#hunk_summ.seq,H#hunk_summ.off,BLen,size(UBlob)]);
+                          QQQPath = "/tmp/foo.QQQbummer." ++ integer_to_list(element(3, now())),
+                          DebugInfo = [{args, [OldSeqNum, OldOffset, StopSeqNum, StopOffset, S]},
+                                       {h, H}, {wb, WB}, {info, process_info(self())}],
+                          ok = file:write_file(QQQPath, term_to_binary(DebugInfo)),
+                          ?E_CRITICAL("Error during write back: ~p ~p wanted blob size ~p but got ~p",
+                                      [H#hunk_summ.seq, H#hunk_summ.off, BLen, size(UBlob)]);
                      true ->
                           ok
                   end,
                   T = binary_to_term(UBlob),
                   %% This tuple is sortable the way we need it, as-is.
-                  WB#wb{exactly_count = Count + 1, exactly_ts = [T|Ts]};
+                  WB#wb{exactly_count= Count + 1, exactly_ts= [T|Ts]};
              (_H, _FH, WB) ->
-                  %% ?DBG_TLOG("do_metadata_hunk_writeback [bigblob_hunk] seq ~w, off ~w", [_H#hunk_summ.seq, _H#hunk_summ.off]),
                   %% These are copied by do_bigblob_hunk_writeback() instead.
                   WB
           end,
-    %% START = now(),  % Test pathological GC
 
     {WB2, ErrList} =
-        gmt_hlog:fold(shortterm, S_ro#state.hlog_dir, Fun, FiltFun, #wb{}),
-
-    %% END = now(),
-    %%io:format("exactly_ts length = ~p, elapsed ~p\n", [length(WB2#wb.exactly_ts), timer:now_diff(END, START)]),
-    %% with R13B04: exactly_ts length = 83053, elapsed   3816906
-    %% with R13B03: exactly_ts length = 83053, elapsed 156089269
+        gmt_hlog:fold(shortterm, S#state.hlog_dir, Fun, FiltFun, #wb{}),
 
     if ErrList == [] ->
             if not is_record(WB2, wb) -> % Sanity check
@@ -612,7 +604,7 @@ do_metadata_hunk_writeback(OldSeqNum, OldOffset, StopSeqNum, StopOffset, S_ro)->
                true ->
                     ok
             end,
-            ok = write_back_exactly_to_logs(WB2#wb.exactly_ts, S_ro),
+            ok = write_back_exactly_to_logs(WB2#wb.exactly_ts, S),
             {ok, WB2#wb.exactly_count};
        true ->
             %% The fold that we just finished is: a). data that's
@@ -634,9 +626,9 @@ do_metadata_hunk_writeback(OldSeqNum, OldOffset, StopSeqNum, StopOffset, S_ro)->
             gmt_util:set_alarm({?MODULE, ErrStr},
                                "Potential data-corrupting error occurred, "
                                "check all log files for details"),
-            if S_ro#state.first_writeback == false ->
+            if S#state.first_writeback =:= false ->
                     ?WAIT_BEFORE_EXIT,
-                    exit({error_list, S_ro#state.hlog_dir, ErrList});
+                    exit({error_list, S#state.hlog_dir, ErrList});
                true ->
                     %% If we exit() here when we're doing our initial
                     %% writeback after init time, then we can never
@@ -656,7 +648,7 @@ write_back_exactly_to_logs(Ts, S_ro) ->
     FirstBrickName = peek_first_brick_name(SortTs),
     write_back_to_local_log(SortTs, undefined, 0,
                             undefined, FirstBrickName,
-                            [], ?WB_COUNT, S_ro).
+                            [], ?WB_BATCH_SIZE, S_ro).
 
 %%
 %% TODO: This func/Aegean stable needs a major cleanup/refactoring/Hercules.
@@ -670,7 +662,7 @@ write_back_to_local_log([{eee, LocalBrickName, SeqNum, Offset, _Key, _TypeNum,
                         LastBrickName,
                         I_TsAcc,
                         Count,
-                        S_ro)
+                        S)
   when Count > 0,
        LocalBrickName =:= LastBrickName ->
 
@@ -679,7 +671,7 @@ write_back_to_local_log([{eee, LocalBrickName, SeqNum, Offset, _Key, _TypeNum,
                 {I_LogFH, I_TsAcc};
            true ->
                 if I_LogFH =/= undefined ->
-                        write_stuff(I_LogFH, lists:reverse(I_TsAcc));
+                        write_back_metadata_hunk(I_LogFH, lists:reverse(I_TsAcc));
                    true ->
                         ok
                 end,
@@ -693,64 +685,64 @@ write_back_to_local_log([{eee, LocalBrickName, SeqNum, Offset, _Key, _TypeNum,
                         ?E_INFO("Created local log file with sequence ~w: ~s",
                                 [SeqNum, gmt_hlog:log_file_path(LogDir, SeqNum)]);
                     ok ->
-                        %% ?DBG_TLOG("write_back_to_local_log [open] ~w, nbytes ~w", [Lfh, _NBytes]),
-                        %% ?E_DBG("Opened local log file with sequence ~w: ~s",
-                        %%        [SeqNum, gmt_hlog:log_file_path(LogDir, SeqNum)])
                         ok
                 end,
                 {Lfh, []}
         end,
     if TsAcc =:= [] ->
+            %% ?E_DBG("1a", []),
             {ok, Offset} = file:position(LogFH, {bof, Offset}),
-            %% ?DBG_TLOG("write_back_to_local_log [new_pos] ~w, off ~w", [LogFH, Offset]),
             write_back_to_local_log(Ts, SeqNum, Offset + H_Len,
                                     LogFH, LocalBrickName,
                                     [H_Bytes|TsAcc],
-                                    Count - 1, S_ro);
+                                    Count - 1, S);
 
        LogSeqNum =:= SeqNum, LogFH_pos =:= Offset ->
-            %% ?DBG_TLOG("write_back_to_local_log [append_pos] ~w, off ~w", [LogFH, Offset]),
+            %% ?E_DBG("1b", []),
             write_back_to_local_log(Ts, SeqNum, Offset + H_Len,
                                     LogFH, LocalBrickName,
                                     [H_Bytes|TsAcc],
-                                    Count - 1, S_ro);
+                                    Count - 1, S);
        true ->
+            %% ?E_DBG("1c", []),
             %% Writeback!
-            %% ?DBG_TLOG("write_back_to_local_log [writeback] ~w, off ~w", [LogFH, Offset]),
             write_back_to_local_log(AllTs, SeqNum, LogFH_pos, LogFH,
-                                    LastBrickName, TsAcc, 0, S_ro)
+                                    LastBrickName, TsAcc, 0, S)
     end;
 
 %% Writeback what we have at the current LogFH file position (already
 %% set!), then reset accumulators & counter and resume iteration.
 write_back_to_local_log(AllTs, SeqNum, _LogFH_pos, LogFH,
-                        LastBrickName, TsAcc, _Count, S_ro)
+                        LastBrickName, TsAcc, _Count, S)
   when LogFH =/= undefined ->
-    write_stuff(LogFH, lists:reverse(TsAcc)),
+    %% ?E_DBG("2", []),
+    write_back_metadata_hunk(LogFH, lists:reverse(TsAcc)),
+    ?E_DBG("Wrote ~w hunks for ~w", [length(TsAcc), LastBrickName]),
     case peek_first_brick_name(AllTs) of
         LastBrickName ->
-            %% ?DBG_TLOG("write_back_to_local_log [peek_last] ~w", [LogFH]),
+            %% ?E_DBG("2a", []),
             write_back_to_local_log(AllTs, SeqNum, 0, LogFH,
-                                    LastBrickName, [], ?WB_COUNT, S_ro);
+                                    LastBrickName, [], ?WB_BATCH_SIZE, S);
         OtherBrickName ->
-            %% ?DBG_TLOG("write_back_to_local_log [other_close] ~w", [LogFH]),
+            %% ?E_DBG("2b", []),
             (catch file:close(LogFH)),
             write_back_to_local_log(AllTs, undefined, 0, undefined,
-                                    OtherBrickName, [], ?WB_COUNT, S_ro)
+                                    OtherBrickName, [], ?WB_BATCH_SIZE, S)
     end;
 
 %% No more input, perhaps one last writeback?
 write_back_to_local_log([] = AllTs, SeqNum, FH_pos, LogFH,
-                        LastBrickName, TsAcc, _Count, S_ro) ->
+                        LastBrickName, TsAcc, _Count, S) ->
+    %% ?E_DBG("3", []),
     if TsAcc =:= [] ->
-            %% ?DBG_TLOG("write_back_to_local_log [empty_close] ~w", [LogFH]),
+            %% ?E_DBG("3a", []),
             (catch file:close(LogFH)),
             ok;
        true ->
+            %% ?E_DBG("3b", []),
             %% Writeback one last time.
-            %% ?DBG_TLOG("write_back_to_local_log [one_last_time] ~w", [LogFH]),
             write_back_to_local_log(AllTs, SeqNum, FH_pos, LogFH,
-                                    LastBrickName, TsAcc, 0, S_ro)
+                                    LastBrickName, TsAcc, 0, S)
     end.
 
 -spec check_hlog_header(file:fd()) -> ok | created.
@@ -779,8 +771,8 @@ open_log_file_mkdir(Dir, SeqNum, Options) when SeqNum > 0 ->
             Res
     end.
 
-write_stuff(LogFH, LogBytes) ->
-    %%?DBG_TLOG("write_stuff: ~w, size ~w", [LogFH, erlang:iolist_size(LogBytes)]),
+-spec write_back_metadata_hunk(file:fd(), iodata()) -> ok.
+write_back_metadata_hunk(LogFH, LogBytes) ->
     ok = file:write(LogFH, LogBytes),
     ok.
 
@@ -1292,7 +1284,7 @@ count_live_bytes_in_log(Log) ->
 
 %% @doc Scavenger step 4: Identify sequences that contains 0 live hunks.
 -spec scavenger_find_dead_sequences(scav_r(), [seqnum()], [seqnum_hunk_size()]) ->
-                                           {[seqnum()], [file_path()]}.
+                                           {[seqnum()], [file:name()]}.
 scavenger_find_dead_sequences(#scav{name=Name, log_dir=LogDir, wal_mod=WalMod},
                               AllSeqs, HunkSizesGroupBySeq) ->
     %% Note: Because of movement of sequence #s from shortterm to longterm
@@ -1357,7 +1349,7 @@ scavenger_find_live_sequences(#scav{name=Name, wal_mod=WalMod, log_dir=LogDir,
 
 %% @doc Scavenger step 6: Count all byets in sequences
 -spec scavenger_count_all_bytes_in_sequences(scav_r(),
-                                             DeadPaths::[file_path()], LiveSeqs::[seqnum()]) ->
+                                             DeadPaths::[file:name()], LiveSeqs::[seqnum()]) ->
                                                     {DeadSeqBytes::byte_size(),
                                                      LiveSeqBytes::byte_size()}.
 scavenger_count_all_bytes_in_sequences(#scav{log_dir=LogDir, wal_mod=WalMod}, DeadPaths, LiveSeqs) ->
@@ -1614,7 +1606,7 @@ spawn_log_file_eraser(#scav{name=Name}=SA, SeqNum, SleepTimeSec) ->
           end).
 
 -spec delete_log_file(scav_r(), seqnum()) ->
-                             {ok, Path::file_path(), FileSize::byte_size()} | {error, term()}.
+                             {ok, Path::file:name(), FileSize::byte_size()} | {error, term()}.
 delete_log_file(#scav{wal_mod=WalMod, log_dir=LogDir}, SeqNum) ->
     case WalMod:log_file_info(LogDir, SeqNum) of
         {ok, Path, #file_info{size=Size}} ->

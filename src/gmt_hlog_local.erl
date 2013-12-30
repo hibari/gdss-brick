@@ -371,10 +371,10 @@ handle_call({write_hunk_bytes, LocalLogName, metadata, Key, TypeNum, H_Len, H_By
                    last_seq=LastSeq, offset=LastOffset,
                    file_len_min=FileLenMin}=State) ->
 
-    %% This tuple must be sortable by gmt_hlog_common by:
-    %% LocalLogName, LastSeq, LastOffset.
-    %% Note: the orginal CBlob and UBlob from brick_ets have been already
-    %% translated into a hunk by write_hunk/7 and passed as H_Bytes.
+    %% Write to the common hlog. This tuple must be sortable by gmt_hlog_common
+    %% by LocalLogName, LastSeq, LastOffset, so the original hunk bytes (H_Bytes)
+    %% has to be wrapped with such info. Later, gmt_hlog_common:write_back_to_local_log/8
+    %% will unwrap H_Bytes and copy it to the local hlog.
     T = make_metadata_tuple(LocalLogName, LastSeq, LastOffset, Key, TypeNum, H_Len, H_Bytes),
     {RealLen, RealBytes} =
         gmt_hlog:create_hunk(?LOCAL_RECORD_TYPENUM, [], [term_to_binary(T)]),

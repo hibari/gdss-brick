@@ -925,7 +925,7 @@ read_hunk_member_ll(FH, Summ, MemberType, MemberNum) ->
 
 -spec read_hunk_member_ll(file:fd(), #hunk_summ{}, md5 | undefined, nth(), offset()) -> binary().
 read_hunk_member_ll(FH, Summ, md5, 1, ExtraOffset)
-  when length(Summ#hunk_summ.c_len) == 1 ->
+  when length(Summ#hunk_summ.c_len) =:= 1 ->
     ByteOff = Summ#hunk_summ.off + Summ#hunk_summ.first_off,
     [ByteLen] = Summ#hunk_summ.c_len,
     {ok, Bin} = my_pread(FH, ByteOff + ExtraOffset, ByteLen - ExtraOffset, 0),
