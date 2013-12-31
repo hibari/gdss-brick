@@ -383,7 +383,7 @@ handle_call({write_hunk_bytes, LocalLogName, metadata, Key, TypeNum, H_Len, H_By
                                              Key, TypeNum, RealLen, RealBytes) of
         {ok, _RemoteSeq, _RemoteOff} ->
             Reply = {ok, LastSeq, LastOffset},
-            NewOffset = LastOffset + RealLen,
+            NewOffset = LastOffset + H_Len,
             if NewOffset > FileLenMin ->
                     {_, NewState} = do_advance_seqnum(1, State),
                     {reply, Reply, NewState};
