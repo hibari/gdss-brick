@@ -1112,15 +1112,16 @@ scav_print_summary(#scav{name=Name, options=Options,
                                  }) ->
     ?E_INFO("Scavenger ~w finished:\n"
             "\tOptions: ~p\n"
+            "\tTotal ~p bytes reclaimed.\n"
             "\tLogs deleted without scavenging: ~p (~p bytes)\n"
-            "\tLogs scavenged: ~p\n"
-            "\tCopied: hunks bytes errs = ~p ~p ~p\n"
-            "\tReclaimed bytes = ~p",
-            [Name, Options,
+            "\tLogs scavenged: ~p (~p bytes)\n"
+            "\t\tCopied: hunks, bytes, errs = ~p, ~p, ~p",
+            [Name,
+             Options,
+             DeadSeqBytes + (LiveSeqBytes - CopiedBytes),
              length(DeadPaths), DeadSeqBytes,
-             length(LiveHunkSizesGroupBySeq),
-             CopiedHunks, CopiedBytes, Errors,
-             LiveSeqBytes - CopiedBytes]),
+             length(LiveHunkSizesGroupBySeq), (LiveSeqBytes - CopiedBytes),
+             CopiedHunks, CopiedBytes, Errors]),
     ok.
 
 -spec scav_delete_work_files(scav_r()) -> ok.
