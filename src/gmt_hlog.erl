@@ -169,6 +169,8 @@
          read_hunk_member_ll/5,
          read_hunk_summary/3,
          read_hunk_summary/5,
+         parse_hunk_summary/1,
+         get_hunk_cblob_member/3,
          get_current_seqnum/1,
          get_current_seqnum_and_offset/1,
          get_current_seqnum_and_file_position/1,
@@ -983,6 +985,45 @@ read_hunk_summary(FH, N, Offset, HunkLenHint, XformFun) ->
         Err ->
             Err
     end.
+
+-spec parse_hunk_summary(iodata()) -> hunk_summ() | too_big.
+parse_hunk_summary(L) when is_list(L) ->
+    parse_hunk_summary(list_to_binary(L));
+parse_hunk_summary(Bin) ->
+    Hdr = <<(16#feedbeef):32>>,  %% gmt_hlog:hunk_header_v1()
+    case Bin of
+        <<Hdr2:4/binary, HunkLen:32, LenBinT:32, TypeNum:32, Rest/binary>>
+          when Hdr =:= Hdr2 ->
+            HdrLen = gmt_util:io_list_len(Hdr),
+            FirstOff = HdrLen + 4 + 4 + 4 + LenBinT,
+            if LenBinT > size(Rest) ->
+                    too_big;
+               true ->
+                    <<BinT:LenBinT/binary, _/binary>> = Rest,
+                    {MD5s, LenAllCB, LenAllUB} = binary_to_term(BinT),
+                    #hunk_summ{len=HunkLen,
+                               type=TypeNum,
+                               c_len=LenAllCB,
+                               u_len=LenAllUB,
+                               md5s=MD5s,
+                               first_off=FirstOff
+                              }
+            end;
+        _ ->
+            error(invalid_hunk_summary)
+    end.
+
+-spec get_hunk_cblob_member(hunk_summ(), iodata(), non_neg_integer()) -> binary().
+get_hunk_cblob_member(HunkSummary, CBlob, MemberNum)
+  when is_list(CBlob) ->
+    get_hunk_cblob_member(HunkSummary, list_to_binary(CBlob), MemberNum);
+get_hunk_cblob_member(#hunk_summ{c_len=[ByteLen]}, CBlob, 1) ->
+    binary:part(CBlob, 0, ByteLen);
+get_hunk_cblob_member(#hunk_summ{c_len=CLens}, CBlob, MemberNum) ->
+    [Len1, Len2] = lists:nthtail(MemberNum, [0 | CLens]),
+    Offset = lists:sum(Len1),
+    Len = hd(Len2),
+    binary:part(CBlob, Offset, Len).
 
 do_move_seq_to_longterm(SeqNum, S) when SeqNum >= S#state.cur_seqS ->
     {{error, S#state.cur_seqS}, S};

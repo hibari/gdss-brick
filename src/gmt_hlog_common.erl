@@ -103,14 +103,14 @@
           short_long_same_dev_p           :: boolean(),
           first_writeback                 :: boolean()
          }).
-%% -type state_r() :: #state{}.
+-type state_r() :: #state{}.
 
 %% write-back info
 -record(wb, {
           exactly_count = 0   :: non_neg_integer(),  % number of metadata tuples to write-back
           exactly_ts = []     :: [metadata_tuple()]  % metadata tuples to write-back
          }).
-%% -type wb_r() :: #wb{}.
+-type wb_r() :: #wb{}.
 
 -record(scav_progress, {
           copied_hunks = 0    :: non_neg_integer(),
@@ -595,18 +595,17 @@ do_metadata_hunk_writeback(OldSeqNum, OldOffset, StopSeqNum, StopOffset, S)->
                   WB
           end,
 
-    {WB2, ErrList} =
-        gmt_hlog:fold(shortterm, S#state.hlog_dir, Fun, FiltFun, #wb{}),
+    case gmt_hlog:fold(shortterm, S#state.hlog_dir, Fun, FiltFun, #wb{}) of
+        {#wb{exactly_count=0}, []} ->
+            {ok, 0};
 
-    if ErrList == [] ->
-            if not is_record(WB2, wb) -> % Sanity check
-                    ?E_ERROR("fold term: ~p", [WB2]);
-               true ->
-                    ok
-            end,
-            ok = write_back_exactly_to_logs(WB2#wb.exactly_ts, S),
-            {ok, WB2#wb.exactly_count};
-       true ->
+        {#wb{exactly_ts=Ts, exactly_count=Count}=WB, []} ->
+            ?E_DBG("~w hunks to write back", [Count]),
+            ok = write_back_exactly_to_logs(Ts, S),
+            ok = write_back_to_stable_storege(WB, S),
+            {ok, Count};
+
+        {#wb{exactly_count=Count}, ErrList} ->
             %% The fold that we just finished is: a). data that's
             %% likely less than 1 second old, and b). data that has
             %% some sanity checking that will be checked later:
@@ -632,28 +631,27 @@ do_metadata_hunk_writeback(OldSeqNum, OldOffset, StopSeqNum, StopOffset, S)->
                true ->
                     %% If we exit() here when we're doing our initial
                     %% writeback after init time, then we can never
-                    %% start.  It's better to start than to never be
+                    %% start. It's better to start than to never be
                     %% able to start.
-                    {ok, WB2#wb.exactly_count}
+                    %% {ok, WB2#wb.exactly_count}
+                    {ok, Count}
             end
     end.
 
 peek_first_brick_name(Ts) ->
-    case Ts of [T|_] -> element(2, T);
+    case Ts of
+        [T|_] -> element(2, T);
         []    -> ''
     end.
 
-write_back_exactly_to_logs(Ts, S_ro) ->
-    SortTs = lists:sort(Ts),
-    FirstBrickName = peek_first_brick_name(SortTs),
-    write_back_to_local_log(SortTs, undefined, 0,
-                            undefined, FirstBrickName,
-                            [], ?WB_BATCH_SIZE, S_ro).
+write_back_exactly_to_logs(Ts, S) ->
+    %% Sort metadata tuples by brickname, seqnum, and offset.
+    SortedTs = lists:sort(Ts),
+    FirstBrickName = peek_first_brick_name(SortedTs),
+    write_back_to_local_log(SortedTs, undefined, 0, undefined,
+                            FirstBrickName, [], ?WB_BATCH_SIZE, S).
 
-%%
-%% TODO: This func/Aegean stable needs a major cleanup/refactoring/Hercules.
-%%
-
+%% -spec write_back_to_local_log([metadata_tuple()], state_r()) -> ????.
 write_back_to_local_log([{eee, LocalBrickName, SeqNum, Offset, _Key, _TypeNum,
                           H_Len, H_Bytes}|Ts] = AllTs,
                         LogSeqNum,
@@ -744,6 +742,60 @@ write_back_to_local_log([] = AllTs, SeqNum, FH_pos, LogFH,
             write_back_to_local_log(AllTs, SeqNum, FH_pos, LogFH,
                                     LastBrickName, TsAcc, 0, S)
     end.
+
+-spec write_back_to_stable_storege(wb_r(), state_r()) -> ok | {error, [term()]}.
+write_back_to_stable_storege(#wb{exactly_ts=MetadataTuples}, S) ->
+    %% Sort metadata tuples by brickname, seqnum, and offset.
+    GroupedByBrick = group_store_tuples_by_brick(MetadataTuples),
+    Errors0 = [write_back_to_stable_storege1(BrickName, Tuples, S, [])
+               || {BrickName, Tuples} <- GroupedByBrick ],
+    case lists:filter(fun(Error) -> Error =/= [] end, Errors0) of
+        [] ->
+            ok;
+        Errors1 ->
+            {error, Errors1}
+    end.
+
+%% @doc Returns a list of {brickname(), [metadata_tuple()]}. Each store tuples
+%% are sorted by seqnum() and offset().
+-spec group_store_tuples_by_brick([metadata_tuple()]) -> [{brickname(), [metadata_tuple()]}].
+group_store_tuples_by_brick(MetaDataTuples) ->
+    GroupedByBrick = lists:foldl(fun({eee, BrickName, _SeqNum, _Offset, _Key, _TypeNum,
+                                      _HunkLen, _HunkBytes}=Tuple, Dict) ->
+                                         case Dict:find(BrickName) of
+                                             {ok, Tuples} ->
+                                                 Dict:store(BrickName, [Tuple|Tuples]);
+                                             error ->
+                                                 Dict:store(BrickName, [Tuple])
+                                         end
+                                 end, dict:new(), MetaDataTuples),
+    [ {BrickName, lists:sort(Tuples)} || {BrickName, Tuples} <- dict:to_list(GroupedByBrick) ].
+
+-spec write_back_to_stable_storege1(brickname(), [metadata_tuple()], state_r(), [term()]) -> [term()].
+write_back_to_stable_storege1(_BrickName, [], _Status, Errors) ->
+    lists:reverse(Errors);
+write_back_to_stable_storege1(BrickName,
+                              [{eee, _BrickName, _SeqNum, _Offset, _Key, _TypeNum,
+                                _H_Len, [Summary, CBlobs, _UBlobs]} | MetaDataTuples],
+                              Status,
+                              Errors) ->
+    case gmt_hlog:parse_hunk_summary(Summary) of
+        #hunk_summ{c_len=CLen}=ParsedSummary ->
+            MetadataBin = gmt_hlog:get_hunk_cblob_member(ParsedSummary, CBlobs, 1),
+            MetadataTuples = binary_to_term(MetadataBin),
+            DoOps = [ element(1, M) || M <- MetadataTuples ],
+            CLenWarning = if
+                              length(CLen) =:= 1 ->
+                                  "";
+                              true ->
+                                  " !!!!!!!!!!!!!!!!!!!!!!!!"
+                          end,
+            ?E_DBG("BrickName: ~w, DoOps: ~p, CLen: ~w~s",
+                   [BrickName, DoOps, CLen, CLenWarning]);
+        too_big ->
+            ?E_DBG("Hunk is too big to parse !!!!!!!!!!!!!!!!!", [])
+    end,
+    write_back_to_stable_storege1(BrickName, MetaDataTuples, Status, Errors).
 
 -spec check_hlog_header(file:fd()) -> ok | created.
 check_hlog_header(FH) ->

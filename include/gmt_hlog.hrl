@@ -38,7 +38,8 @@
           md5s=[]       :: list(binary()),         % MD5 values
           c_blobs=[]    :: list(binary()),         % optional!
           u_blobs=[]    :: list(binary())          % optional!
-          }).
+         }).
+-type hunk_summ() :: #hunk_summ{}.
 
 -type servername() :: atom().
 -type server() :: servername() | {atom(),node()} | {global,atom()} | pid().
