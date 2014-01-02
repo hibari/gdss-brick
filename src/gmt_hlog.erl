@@ -236,7 +236,7 @@
                       | {long_h1_size,integer()}
                       | {long_h2_size,integer()}).
 
--opaque from() :: {pid(), term()}.
+-type from() :: {pid(),term()}.
 
 -record(state, {
           props                       :: props(),
@@ -1419,7 +1419,7 @@ do_md5(X) ->
         yes ->
             erlang:md5(X);
         no ->
-            crypto:md5(X)
+            crypto:hash(md5, X)
     end.
 
 do_sync_asyncly(From, #state{syncer_pid = undefined} = S) ->

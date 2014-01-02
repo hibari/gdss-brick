@@ -77,7 +77,7 @@
 %%% Types/Specs/Records
 %%%----------------------------------------------------------------------
 
--opaque from() :: {pid(), term()}.
+-type from() :: {pid(), term()}.
 
 -type orddict() :: list().
 
