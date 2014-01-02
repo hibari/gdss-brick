@@ -128,6 +128,10 @@
 -export([disk_log_fold/3,
          disk_log_fold_bychunk/3
         ]).
+-export([externtuple_to_storetuple/1,
+         storetuple_key/1,
+         storetuple_ts/1
+        ]).
 
 %% Internal exports
 -export([sync_pid_loop/1,
@@ -188,22 +192,69 @@
 %%%    table. When the checkpoint is finished, the contents of this
 %%%    table are applied to the contents table, and then the shadow
 %%%    table is deleted.
-%%%
-%%% ctab format:
-%%%    {Key = binary()|term(),         binary is preferred
-%%%     TStamp = bignum(),             whatever brick_server:make_timestamp() makes
-%%%     Val = binary()|term(),         binary is preferred
-%%%    }
-%%%    Flags and ExpTime are _not_ stored at this time.
+
 
 %%%----------------------------------------------------------------------
 %%% Types/Specs/Records
 %%%----------------------------------------------------------------------
 
--export_type([extern_tuple/0, state_r/0]).
+-export_type([store_tuple/0,
+              extern_tuple/0,
+              do_mod/0,
+              state_r/0
+             ]).
 
 -type proplist() :: [ atom() | {any(),any()} ].
--type do_mod() :: tuple(). %% an internal representation of a do op
+
+%% @doc Use variable-sized tuples to try to avoid storing unnecessary
+%% common values.
+%%
+%% Store tuple formats:
+%% <ul>
+%% <!--  1    2       3      4         5        6        -->
+%% <li> {Key, TStamp, Value, ValueLen}                 </li>
+%% <li> {Key, TStamp, Value, ValueLen, Flags}          </li>
+%% <li> {Key, TStamp, Value, ValueLen, ExpTime}        </li>
+%% <li> {Key, TStamp, Value, ValueLen, ExpTime, Flags} </li>
+%% </ul>
+
+-type storetuple_val() :: val() | {integer(), integer()}.
+
+-type store_tuple() :: {key(), ts(), storetuple_val(), integer()} |
+                       {key(), ts(), storetuple_val(), integer(), exp_time()} |
+                       {key(), ts(), storetuple_val(), integer(), flags_list()} |
+                       {key(), ts(), storetuple_val(), integer(), exp_time(), flags_list()}.
+
+%% extern_tuple() is used for inter-bricks communication.
+-type extern_tuple() :: {key(), ts(), storetuple_val()} |
+                        {key(), ts(), storetuple_val(), exp_time(), flags_list()}.
+
+%% an internal representation of a do op
+-type do_mod() :: {insert, store_tuple()} |
+                  %% KV with value_in_ram, or a table with no bigdata_dir
+                  {insert_value_into_ram, store_tuple()} |
+                  %% ?VALUE_REMAINS_CONSTANT
+                  %% or ?VALUE_SWITCHAROO (e.g. bcb_val_switcharoo used by the scavenger)
+                  {insert_constant_value, store_tuple()} |
+                  %% ?KEY_SWITCHAROO (e.g. rename)
+                  {insert_existing_value, store_tuple(), key()} | %% key is for OldKey
+
+                  {delete, key(), exp_time()} |
+                  %% Only used by chain migration(?)
+                  {delete_noexptime, key()} |
+
+                  %% Delete all objects from mdtab, etab and ctab.
+                  %% Recorded at the beginning of a checkpoint file.
+                  {delete_all_table_items} |
+
+                  %% Brick Privete Metadata
+                  {md_insert, tuple()} |
+                  {md_delete, key()} |
+
+                  %% Log Directive
+                  {log_directive, sync_override, false} |
+                  {log_directive, map_sleep, non_neg_integer()} | %% non_neg_integer is for Delay
+                  {log_noop}.
 
 -record(state, {
           name :: atom(),                       % My registered name
@@ -1673,27 +1724,6 @@ check_flaglist(Flag, [{Flag,FlagVal}|_T]) ->
     {true, FlagVal};
 check_flaglist(Flag, [_H|T]) ->
     check_flaglist(Flag, T).
-
-%% @doc Use variable-sized tuples to try to avoid storing unnecessary
-%% common values.
-%%
-%% Store tuple formats:
-%% <ul>
-%% <!--  1    2       3      4         5        6        -->
-%% <li> {Key, TStamp, Value, ValueLen}                 </li>
-%% <li> {Key, TStamp, Value, ValueLen, Flags}          </li>
-%% <li> {Key, TStamp, Value, ValueLen, ExpTime}        </li>
-%% <li> {Key, TStamp, Value, ValueLen, ExpTime, Flags} </li>
-%% </ul>
-
--type storetuple_val() :: val() | {integer(), integer()}.
-
--type store_tuple() :: {key(), ts(), storetuple_val(), integer()} |
-                       {key(), ts(), storetuple_val(), integer(), exp_time()} |
-                       {key(), ts(), storetuple_val(), integer(), flags_list()} |
-                       {key(), ts(), storetuple_val(), integer(), exp_time(), flags_list()}.
--type extern_tuple() :: {key(), ts(), storetuple_val()} |
-                        {key(), ts(), storetuple_val(), exp_time(), flags_list()}.
 
 storetuple_make(Key, TStamp, Value, ValueLen, 0, []) ->
     {Key, TStamp, Value, ValueLen};

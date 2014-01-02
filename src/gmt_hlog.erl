@@ -181,6 +181,7 @@
          sync/2,
          get_proplist/1,
          log_name2data_dir/1,
+         log_name2metadata_dir/1,
          log_name2reg_name/1,
          fold/3,
          fold/4,
@@ -236,7 +237,7 @@
                       | {long_h1_size,integer()}
                       | {long_h2_size,integer()}).
 
--type from() :: {pid(),term()}.
+-type from() :: {pid(), term()}.
 
 -record(state, {
           props                       :: props(),
@@ -990,7 +991,7 @@ read_hunk_summary(FH, N, Offset, HunkLenHint, XformFun) ->
 parse_hunk_summary(L) when is_list(L) ->
     parse_hunk_summary(list_to_binary(L));
 parse_hunk_summary(Bin) ->
-    Hdr = <<(16#feedbeef):32>>,  %% gmt_hlog:hunk_header_v1()
+    Hdr = hunk_header_v1(),
     case Bin of
         <<Hdr2:4/binary, HunkLen:32, LenBinT:32, TypeNum:32, Rest/binary>>
           when Hdr =:= Hdr2 ->
@@ -1541,6 +1542,11 @@ do_sync_longterm_asyncly(From, S) ->
 log_name2data_dir(ServerName) ->
     {ok, FileDir} = application:get_env(gdss_brick, brick_default_data_dir),
     filename:join([FileDir, "hlog." ++ atom_to_list(ServerName)]).
+
+-spec log_name2metadata_dir(servername()) -> dirname().
+log_name2metadata_dir(ServerName) ->
+    {ok, FileDir} = application:get_env(gdss_brick, brick_default_data_dir),
+    filename:join([FileDir, "metadata." ++ atom_to_list(ServerName)]).
 
 -spec log_name2reg_name(atom()) -> atom().
 log_name2reg_name(Name) ->

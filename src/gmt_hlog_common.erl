@@ -72,10 +72,16 @@
          write_hunk/7
         ]).
 
+%% Tool
+-export([tool_list_md/2]).
 
 %%%----------------------------------------------------------------------
 %%% Types/Specs/Records
 %%%----------------------------------------------------------------------
+
+-type do_mod() :: brick_ets:do_mod().
+-type store_tuple() :: brick_ets:store_tuple().
+-type write_batch() :: leveldb:batch_write().
 
 -type from() :: {pid(), term()}.
 
@@ -603,6 +609,7 @@ do_metadata_hunk_writeback(OldSeqNum, OldOffset, StopSeqNum, StopOffset, S)->
             ?E_DBG("~w hunks to write back", [Count]),
             ok = write_back_exactly_to_logs(Ts, S),
             ok = write_back_to_stable_storege(WB, S),
+            %% catch write_back_to_stable_storege(WB, S),
             {ok, Count};
 
         {#wb{exactly_count=Count}, ErrList} ->
@@ -771,6 +778,64 @@ group_store_tuples_by_brick(MetaDataTuples) ->
                                  end, dict:new(), MetaDataTuples),
     [ {BrickName, lists:sort(Tuples)} || {BrickName, Tuples} <- dict:to_list(GroupedByBrick) ].
 
+
+
+
+
+%% -- WIP Start ----------------------------------------------------
+
+%% @TODO gdss-brick >> GH17
+%%       "Redesign disk storage and checkpoint/scavenger processes"
+%%
+%%  1. Add timestamp to the do_mods for 'delete' and 'delete_noexptime',
+%%     so that it can store delete-markers.
+%%  2. Finish implementing the write-back process (including LevelDB
+%%     disk sync).
+%%  3. Implement the new scavenger logic.
+%%  4. Implement the new housekeeping logic.
+%%  5. Run lengthy tests (and develop some tools) to ensure that the
+%%     metadata DB is working correctly.
+%%  6. Rewrite brick_ets:wal_scan_all/2 to utilize the metadata DB.
+%%  7. Remove the brick local log and checkpoint process.
+%%
+
+%% New Scavenger Logic
+%%
+%%    (SCV: Scavenger, WBP: Write-Back Process)
+%%  1. SCV: Ensure no housekeeping process is running.
+%%  2. SCV: Lists log sequence numbers eligible for scavenging.
+%%  3. WBP: Start to record do_mods with insert_existing_value (for
+%%          the sequence numbers) to separate log file(s). - (A)
+%%  4. SCV: Dump store tuples and sort them by log-seq and position.
+%%  5. SCV: Move live hunks (up-to the batch size and bandwidth limit)
+%%          to new log-seqs and update their locations in brick servers.
+%%          Repeat this step until all live hunks are moved.
+%%  6. WBP: Record the current timestamp. - (B)
+%%  7. WBP: When it sees a do_mod having a newer timestamp than (B),
+%%         stop recording on (A).
+%%  8. SCV: Scan (A) and update their locations in brick servers.
+%%  9. WBP: Delete (A).
+%% 10. SCV: Delete the freed log sequences.
+%%
+%% NOTE: The repair process should restart
+%%
+
+%% New Housekeeping Logic
+%%
+%% Periodically do the followings.
+%% (every N inserts/deletes or every N minutes.)
+%%
+%%    (HKP: House Keeping Process)
+%%  1. HKP: Ensure no scavenger process is running.
+%%  2. HKP: Start to run a full key-scan in a metadata DB (with a
+%%          bandwidth limit).
+%%  3. HKP: If it finds duplicate keys with different timestamps, or
+%%          a delete-marker, update the live hunk statistics table
+%%          (which is a LevelDB table) for free hunk/bytes.
+%%  4. HKP: Delete the older keys. (In a future version, keep this
+%%          log de-allocation info in somewhere?)
+%%
+
 -spec write_back_to_stable_storege1(brickname(), [metadata_tuple()], state_r(), [term()]) -> [term()].
 write_back_to_stable_storege1(_BrickName, [], _Status, Errors) ->
     lists:reverse(Errors);
@@ -780,22 +845,152 @@ write_back_to_stable_storege1(BrickName,
                               Status,
                               Errors) ->
     case gmt_hlog:parse_hunk_summary(Summary) of
-        #hunk_summ{c_len=CLen}=ParsedSummary ->
+        #hunk_summ{c_len=CLen, u_len=ULen}=ParsedSummary ->
+            [_] = CLen,        % sanity
+            []  = ULen,        % sanity
             MetadataBin = gmt_hlog:get_hunk_cblob_member(ParsedSummary, CBlobs, 1),
-            MetadataTuples = binary_to_term(MetadataBin),
-            DoOps = [ element(1, M) || M <- MetadataTuples ],
-            CLenWarning = if
-                              length(CLen) =:= 1 ->
-                                  "";
-                              true ->
-                                  " !!!!!!!!!!!!!!!!!!!!!!!!"
-                          end,
-            ?E_DBG("BrickName: ~w, DoOps: ~p, CLen: ~w~s",
-                   [BrickName, DoOps, CLen, CLenWarning]);
+            case gmt_hlog:md5_checksum_ok_p(ParsedSummary#hunk_summ{c_blobs = [MetadataBin]}) of
+                true ->
+                    LocalLog = whereis(gmt_hlog:log_name2reg_name(BrickName)),
+                    ?E_DBG("BrickName: ~w (~w) -------------------------------", [BrickName, LocalLog]),
+                    Batch = lists:foldl(fun add_metadata_db_op/2,
+                                        leveldb:new_write_batch(),
+                                        binary_to_term(MetadataBin)),
+                    DB = gmt_hlog_local:get_metadata_db(LocalLog),
+                    true = leveldb:write(DB, Batch, []);  %% @TODO: sync periodically
+                false ->
+                    %% @TODO: Do not crash
+                    error({invalid_checksum, {_BrickName, _SeqNum, _Offset, _Key}})
+            end;
         too_big ->
-            ?E_DBG("Hunk is too big to parse !!!!!!!!!!!!!!!!!", [])
+            error({hunk_is_too_big_to_parse, {_BrickName, _SeqNum, _Offset, _Key}})
     end,
     write_back_to_stable_storege1(BrickName, MetaDataTuples, Status, Errors).
+
+-spec add_metadata_db_op(do_mod(), write_batch()) -> write_batch().
+add_metadata_db_op({insert, StoreTuple}, Batch) ->
+    Key = brick_ets:storetuple_key(StoreTuple),
+    Timestamp = brick_ets:storetuple_ts(StoreTuple),
+    ?E_DBG("store_tuple: insert - key: ~p, ts: ~w", [Key, Timestamp]),
+    leveldb:add_put(metadata_db_key(StoreTuple), term_to_binary(StoreTuple), Batch);
+add_metadata_db_op({insert_value_into_ram, StoreTuple}, Batch) ->
+    Key = brick_ets:storetuple_key(StoreTuple),
+    Timestamp = brick_ets:storetuple_ts(StoreTuple),
+    ?E_DBG("store_tuple: insert_value_into_ram - key: ~p, ts: ~w", [Key, Timestamp]),
+    leveldb:add_put(metadata_db_key(StoreTuple), term_to_binary(StoreTuple), Batch);
+add_metadata_db_op({insert_constant_value, StoreTuple}, Batch) ->
+    Key = brick_ets:storetuple_key(StoreTuple),
+    Timestamp = brick_ets:storetuple_ts(StoreTuple),
+    ?E_DBG("store_tuple: insert_constant_value - key: ~p, ts: ~w", [Key, Timestamp]),
+    leveldb:add_put(metadata_db_key(StoreTuple), term_to_binary(StoreTuple), Batch);
+add_metadata_db_op({insert_existing_value, StoreTuple, OldKey}, Batch) ->
+    Key = brick_ets:storetuple_key(StoreTuple),
+    Timestamp = brick_ets:storetuple_ts(StoreTuple),
+    ?E_DBG("store_tuple: insert_existing_value - key: ~p, ts: ~w, oldkey: ~p",
+           [Key, Timestamp, OldKey]),
+    leveldb:add_put(metadata_db_key(StoreTuple), term_to_binary(StoreTuple), Batch);
+add_metadata_db_op({delete, Key, ExpTime}, Batch) ->
+    ?E_DBG("TODO: store_tuple: delete - key: ~p, ts: ~w", [Key, ExpTime]),
+    %% DeleteMarker = make_delete_marker(Key, Timestamp),
+    %% leveldb:add_put(metadata_db_key(Key, Timestamp), DeleteMarker, Batch);
+    Batch;
+add_metadata_db_op({delete_noexptime, Key}, Batch) ->
+    ?E_DBG("TODO: store_tuple: delete_noexptime - key: ~p", [Key]),
+    %% DeleteMarker = make_delete_marker(Key, Timestamp),
+    %% leveldb:add_put(metadata_db_key(Key, Timestamp), DeleteMarker, Batch);
+    Batch;
+add_metadata_db_op({delete_all_table_items}, Batch) ->
+    ?E_DBG("TODO: store_tuple: delete_all_table_items =====================",
+           []),
+    Batch;
+add_metadata_db_op({md_insert, Tuple}, Batch) ->
+    ?E_DBG("TODO: store_tuple: md_insert - tuple: ~p ======================",
+           [Tuple]),
+    Batch;
+add_metadata_db_op({md_delete, Key}, Batch) ->
+    ?E_DBG("TODO: store_tuple: md_delete - key: ~p ========================",
+           [Key]),
+    Batch;
+add_metadata_db_op({log_directive, sync_override, false}, Batch) ->
+    ?E_DBG("TODO: store_tuple: log_directive - sync_override ==============",
+           []),
+    Batch;
+add_metadata_db_op({log_directive, map_sleep, Delay}, Batch) ->
+    ?E_DBG("TODO: store_tuple: log_directive - map_sleep: ~w ==============",
+           [Delay]),
+    Batch;
+add_metadata_db_op({log_noop}, Batch) ->
+    ?E_DBG("TODO: store_tuple: log_noop ===================================",
+           []),
+    Batch.
+
+-spec metadata_db_key(store_tuple()) -> binary().
+metadata_db_key(StoreTuple) ->
+    Key = brick_ets:storetuple_key(StoreTuple),
+    %% NOTE: Using reversed timestamp, so that Key-values will be sorted
+    %%       in LevelDB from newer to older.
+    ReversedTimestamp = -(brick_ets:storetuple_ts(StoreTuple)),
+    sext:encode({Key, ReversedTimestamp}).
+
+
+%% 17: --------------------
+%% MDKey: <<16,0,0,0,2,18,152,203,224,16,8,15,88,8,8,255,255,255,254,128,127,255,
+%%          113,24,93,94,221,93,158,128,8,255>>
+%% Metadata: {<<49,47,0,0,1,214>>,
+%%            1388634474390210,
+%%            {6,86448},
+%%            100,
+%%            [{md5,<<43,87,53,201,138,7,67,41,164,170,33,154,221,246,102,237>>}]}
+%% 18: --------------------
+%% MDKey: <<16,0,0,0,2,18,152,203,224,16,8,15,88,8,8,255,255,255,254,128,127,255,
+%%          113,24,93,107,131,154,236,0,8,255>>
+%% Metadata: {<<49,47,0,0,1,214>>,
+%%            1388634418603303,
+%%            {4,211443},
+%%            100,
+%%            [{md5,<<65,63,13,176,42,0,17,128,57,86,28,146,8,108,154,0>>}]}
+
+%% After a Scavenger run:
+%%
+%% 17: --------------------
+%% MDKey: <<16,0,0,0,2,18,152,203,224,16,8,15,88,8,8,255,255,255,254,128,127,255,
+%%          113,24,93,94,221,93,158,128,8,255>>
+%% Metadata: {<<49,47,0,0,1,214>>,
+%%            1388634474390210,
+%%            {-11,9072},
+%%            100,
+%%            [{md5,<<43,87,53,201,138,7,67,41,164,170,33,154,221,246,102,237>>}]}
+%% 18: --------------------
+%% MDKey: <<16,0,0,0,2,18,152,203,224,16,8,15,88,8,8,255,255,255,254,128,127,255,
+%%          113,24,93,107,131,154,236,0,8,255>>
+%% Metadata: {<<49,47,0,0,1,214>>,
+%%            1388634418603303,
+%%            {4,211443},
+%%            100,
+%%            [{md5,<<65,63,13,176,42,0,17,128,57,86,28,146,8,108,154,0>>}]}
+
+%% @TODO Move the tool to a separate module.
+
+tool_list_md(BrickName, Limit) when is_atom(BrickName), is_integer(Limit), Limit > 0 ->
+    LocalLog = whereis(gmt_hlog:log_name2reg_name(BrickName)),
+    DB = gmt_hlog_local:get_metadata_db(LocalLog),
+    FirstKey = leveldb:first(DB, []),
+    tool_list_md1(DB, FirstKey, 1, Limit).
+
+tool_list_md1(_DB, _Key, Count, Limit) when Count >= Limit ->
+    ok;
+tool_list_md1(_DB, '$end_of_table', _Count, _Limit) ->
+    ok;
+tool_list_md1(DB, Key, Count, Limit) ->
+    Metadata = binary_to_term(leveldb:get(DB, Key, [])),
+    io:format("~w: --------------------~nMDKey: ~w~nMetadata: ~p~n",
+              [Count, Key, Metadata]),
+    tool_list_md1(DB, leveldb:next(DB, Key, []), Count + 1, Limit).
+
+%% -- WIP End ----------------------------------------------------
+
+
+
 
 -spec check_hlog_header(file:fd()) -> ok | created.
 check_hlog_header(FH) ->
@@ -1262,6 +1457,7 @@ scavenger_commonlog_save_storage_locations(#scav{name=Name, work_dir=WorkDir,
              end,
     _ = [ ok = brick_ets:scavenger_get_keys(Br, Fs, FirstKey, F_k2d, F_lump) || Br <- Bricks ],
     ok.
+
 %% @doc Scavenger step 3: Sort store tuples in each work file.
 -spec scavenger_sort_storage_locations(scav_r()) -> [seqnum_hunk_size()].
 scavenger_sort_storage_locations(#scav{name=Name, work_dir=WorkDir,
