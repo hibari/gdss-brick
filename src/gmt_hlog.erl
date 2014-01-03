@@ -20,6 +20,18 @@
 %% @doc A hunk-based log server, a partial replacement for the
 %% Erlang/OTP `disk_log' module, plus support for random access to
 %% hunks stored within the log.
+
+%% IMPORTANT: Be careful about gen_server names:
+%%
+%% - ?GMT_HLOG_COMMON_LOG_NAME - the (default) registered name of
+%%   the 'gmt_hlog_common' gen_server
+%% - gmt_hlog:log_name2reg_name(?GMT_HLOG_COMMON_LOG_NAME) -
+%%   the registered name of the 'gmt_hlog' gen_server
+%% - By some reason, gmt_hlog's #state.name is the same to the
+%%   *registered* name of the 'gmt_hlog_common' gen_server
+
+
+%% Notes from the original author.
 %%
 %% It's really, really useful to be able to have random access into
 %% the middle of a transaction log file.  The Berkeley DB logging
@@ -180,6 +192,7 @@
          sync/1,
          sync/2,
          get_proplist/1,
+         get_metadata_db/2,
          log_name2data_dir/1,
          log_name2metadata_dir/1,
          log_name2reg_name/1,
@@ -262,7 +275,8 @@
           %% long-term state
           cur_seqL                    :: integer(),                % current sequence #
           cur_offL                    :: integer(),                % current offset
-          cur_fhL                     :: file:fd()                 % current file
+          cur_fhL                     :: file:fd(),                % current file
+          leveldb_registory=orddict:new() :: term()                % Registered LevelDB ports
          }).
 -type state_r() :: #state{}.
 
@@ -454,6 +468,10 @@ read_bigblob_hunk_blob(Dir, SeqNum, Offset, CheckMD5_p, ValLen) ->
           end,
     read_hunk_summary(Dir, SeqNum, Offset, ValLen, Fun).
 
+-spec get_metadata_db(atom() | pid(), brickname()) -> term().
+get_metadata_db(Server, BrickName) ->
+    gen_server:call(Server, {get_metadata_db, BrickName}).
+
 %%%----------------------------------------------------------------------
 %%% Callback functions from gen_server
 %%%----------------------------------------------------------------------
@@ -475,7 +493,12 @@ read_bigblob_hunk_blob(Dir, SeqNum, Offset, CheckMD5_p, ValLen) ->
 
 init(PropList) ->
     process_flag(priority, high),
-    Name = proplists:get_value(name, PropList, foofoo),
+
+    %% @TODO: ENHANCEME: Very confusing.
+    %% Name:    The *internal name* of the gmt_hlog gen_server, which is
+    %%          also the *registered name* of the 'gmt_hlog_common' gen_server!
+    %% RegName: The *registered name* of this 'gmt_hlog' gen_server.
+    Name = proplists:get_value(name, PropList),
     RegName = log_name2reg_name(Name),
     register(RegName, self()),
 
@@ -579,6 +602,9 @@ handle_call({get_all_seqnums}, From, State) ->
 handle_call({advance_seqnum, Incr}, From, State) ->
     NewState = do_advance_seqnum(Incr, From, State),
     {noreply, NewState};
+handle_call({get_metadata_db, BrickName}, _From, State) ->
+    {Reply, NewState} = do_get_or_open_metadata_db(BrickName, State),
+    {reply, Reply, NewState};
 handle_call({stop}, _From, State) ->
     {stop, normal, ok, State};
 handle_call(_Request, _From, State) ->
@@ -615,6 +641,7 @@ handle_info(_Info, State) ->
 terminate(_Reason, S) ->
     write_shortterm_backlog(S, false),
     catch safe_log_close(S),
+    catch do_close_all_metadata_db(S),
     ok.
 
 %%----------------------------------------------------------------------
@@ -862,6 +889,41 @@ do_advance_seqnum(Incr, From, #state{syncer_pid = SyncPid,
     end;
 do_advance_seqnum(Incr, From, #state{syncer_advance_reqs = Rs} = S) ->
     S#state{syncer_advance_reqs = [{Incr, From}|Rs]}.
+
+-spec do_get_or_open_metadata_db(brickname(), state_r()) -> {leveldb:db(), state_r()}.
+do_get_or_open_metadata_db(LocalBrick, #state{leveldb_registory=Reg}=State) ->
+    case orddict:find(LocalBrick, Reg) of
+        {ok, MetadataDB} ->
+            {MetadataDB, State};
+        error ->
+            MDBDir = gmt_hlog:log_name2metadata_dir(LocalBrick),
+            catch file:make_dir(MDBDir),
+
+            %% @TODO Create a function to return the metadata DB path.
+            MDBPath = filename:join(MDBDir, "leveldb"),
+            MetadataDB = leveldb:open_db(MDBPath, [create_if_missing]),
+            ?ELOG_INFO("Opened the metadata DB: ~s", [MDBPath]),
+            NewReg = orddict:store(LocalBrick, MetadataDB, Reg),
+            NewState = State#state{leveldb_registory=NewReg},
+            {MetadataDB, NewState}
+    end.
+
+-spec do_close_all_metadata_db(state_r()) -> ok.
+do_close_all_metadata_db(#state{leveldb_registory=Reg}) ->
+    CloseMDB =
+        fun({LocalBrick, MetadataDB}) ->
+                %% @TODO Create a function to return the metadata DB path.
+                MDBPath = filename:join(gmt_hlog:log_name2metadata_dir(LocalBrick),
+                                        "leveldb"),
+                try leveldb:close_db(MetadataDB) of
+                    true ->
+                        ?ELOG_INFO("Closed the metadata DB: ~s", [MDBPath])
+                catch _:_=Error ->
+                        ?ELOG_WARNING("Failed to close the metadata DB: ~s (Error: ~p)",
+                                      [MDBPath, Error])
+                end
+        end,
+    lists:foreach(CloseMDB, orddict:to_list(Reg)).
 
 %% @spec (file:fd(), integer()) ->
 %%       {ok, hunk_summ_r()} | eof | {bof, integer} | {error, term()}

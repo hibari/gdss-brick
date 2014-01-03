@@ -17,6 +17,13 @@
 %%% Purpose : Common Hunk log server.
 %%%-------------------------------------------------------------------
 
+%% IMPORTANT: Be careful about gen_server names:
+%% - ?GMT_HLOG_COMMON_LOG_NAME -> the name of the 'gmt_hlog_common' gen_server
+%% - gmt_hlog:log_name2reg_name(?GMT_HLOG_COMMON_LOG_NAME) returns ->
+%%   the name for the 'gmt_hlog' gen_server
+%%
+%% gmt_hlog_common's #state.hlog_pid holds the pid of 'gmt_hlog' gen_server.
+
 -module(gmt_hlog_common).
 
 -behaviour(gen_server).
@@ -34,8 +41,8 @@
          hlog_pid/1,
          stop/1,
          register_local_brick/2,
-         unregister_local_brick/2,
-         permanently_unregister_local_brick/2,
+         %% unregister_local_brick/2,
+         %% permanently_unregister_local_brick/2,
          full_writeback/0,
          full_writeback/1,
          get_all_registrations/0,
@@ -85,7 +92,7 @@
 
 -type from() :: {pid(), term()}.
 
--type orddict() :: list().
+%% -type orddict() :: list().
 
 -type props() :: list({common_log_name, servername()}).
 
@@ -95,17 +102,17 @@
 -record(state, {
           name                            :: file:name(),
           hlog_name                       :: file:name(),
-          hlog_pid                        :: pid(),
+          hlog_pid                        :: pid(),                    %% Pid of the gmt_hlog
           hlog_dir                        :: dirname(),
-          last_seqnum                     :: seqnum(),                 % SeqNum of last writeback
-          last_offset                     :: offset(),                 % Offset of last writeback
-          reg_dict=orddict:new()          :: orddict(),
+          last_seqnum                     :: seqnum(),                 %% SeqNum of last writeback
+          last_offset                     :: offset(),                 %% Offset of last writeback
+          %% brick_registory=orddict:new()   :: orddict(),                %% Registered local bricks
           tref                            :: timer:tref(),
           scavenger_tref                  :: timer:tref() | undefined,
           async_writeback_pid             :: pid() | undefined,
-          async_writeback_reqs=[]         :: [from()],                 % requesters of current async writeback
-          async_writebacks_next_round=[]  :: [from()],                 % requesters of next async writeback
-          dirty_buffer_wait               :: non_neg_integer(),        % seconds
+          async_writeback_reqs=[]         :: [from()],                 %% requesters of current async writeback
+          async_writebacks_next_round=[]  :: [from()],                 %% requesters of next async writeback
+          dirty_buffer_wait               :: non_neg_integer(),        %% seconds
           short_long_same_dev_p           :: boolean(),
           first_writeback                 :: boolean()
          }).
@@ -150,13 +157,13 @@ stop(Server) ->
 register_local_brick(Server, LocalBrick) when is_atom(LocalBrick) ->
     gen_server:call(Server, {register_local_brick, LocalBrick}).
 
--spec unregister_local_brick(server(), brickname()) -> ok.
-unregister_local_brick(Server, LocalBrick) when is_atom(LocalBrick) ->
-    gen_server:call(Server, {unregister_local_brick, LocalBrick}).
+%% -spec unregister_local_brick(server(), brickname()) -> ok.
+%% unregister_local_brick(Server, LocalBrick) when is_atom(LocalBrick) ->
+%%     gen_server:call(Server, {unregister_local_brick, LocalBrick}).
 
--spec permanently_unregister_local_brick(server(), brickname()) -> ok.
-permanently_unregister_local_brick(Server, LocalBrick) when is_atom(LocalBrick) ->
-    gen_server:call(Server, {permanently_unregister_local_brick, LocalBrick}).
+%% -spec permanently_unregister_local_brick(server(), brickname()) -> ok.
+%% permanently_unregister_local_brick(Server, LocalBrick) when is_atom(LocalBrick) ->
+%%     gen_server:call(Server, {permanently_unregister_local_brick, LocalBrick}).
 
 full_writeback() ->
     full_writeback(?GMT_HLOG_COMMON_LOG_NAME).
@@ -218,6 +225,7 @@ sequence_file_is_bad(SeqNum, Offset) ->
 %% @end
 %%--------------------------------------------------------------------
 init(PropList) ->
+    %% The registered name of the gmt_hlog_common gen_server.
     CName = proplists:get_value(common_log_name, PropList, commonLogDefault),
     undefined = proplists:get_value(dir, PropList), % sanity: do not use
     try
@@ -226,9 +234,16 @@ init(PropList) ->
                 register(CName, self()),
                 process_flag(priority, high),
                 process_flag(trap_exit, true),
-                (catch exit(whereis(gmt_hlog:log_name2reg_name(CName)), kill)),
+
+                %% The registered name of the gmt_hlog gen_server.
+                HLogName = gmt_hlog:log_name2reg_name(CName),
+                (catch exit(whereis(HLogName), kill)),
                 timer:sleep(150),
+                %% @TODO: ENHANCEME: Very confusing. The *internal name* of
+                %% the gmt_hlog gen_server is the *registered name* of
+                %% the gmt_hlog_common gen_server!
                 {ok, Log} = gmt_hlog:start_link([{name, CName}|PropList]),
+
                 LogDir = gmt_hlog:log_name2data_dir(CName),
                 {SeqNum, Off} = read_flush_file(LogDir),
                 self() ! do_sync_writeback,
@@ -311,12 +326,12 @@ handle_call({register_local_brick, Brick}, From, State) ->
         {ok, NewState} ->
             {noreply, schedule_async_writeback(From, NewState)}
     end;
-handle_call({unregister_local_brick, Brick}, _From, State) ->
-    {Reply, NewState} = do_unregister_local_brick(Brick, State),
-    {reply, Reply, NewState};
-handle_call({permanently_unregister_local_brick, Brick}, _From, State) ->
-    {Reply, NewState} = do_permanently_unregister_local_brick(Brick, State),
-    {reply, Reply, NewState};
+%% handle_call({unregister_local_brick, Brick}, _From, State) ->
+%%     {Reply, NewState} = do_unregister_local_brick(Brick, State),
+%%     {reply, Reply, NewState};
+%% handle_call({permanently_unregister_local_brick, Brick}, _From, State) ->
+%%     {Reply, NewState} = do_permanently_unregister_local_brick(Brick, State),
+%%     {reply, Reply, NewState};
 handle_call({full_writeback}, From, State) ->
     NewState = schedule_async_writeback(From, State),
     {noreply, NewState};
@@ -422,11 +437,13 @@ handle_info({'DOWN', _Ref, _, Pid, Reason},
     %% if any, reply to callers with error
     _ = [ gen_server:reply(From, {error, Reason}) || From <- Reqs ],
     {noreply, State#state{async_writeback_pid=undefined, async_writeback_reqs=[]}};
-handle_info({'DOWN', Ref, _, _, _}, #state{reg_dict=Dict}=State) ->
-    NewDict = orddict:filter(fun(_K, V) when V /= Ref -> true;
-                                (_, _)                -> false
-                             end, Dict),
-    {noreply, State#state{reg_dict=NewDict}};
+%% handle_info({'DOWN', Ref, _, _, _}, #state{brick_registory=Dict}=State) ->
+%%     NewDict = orddict:filter(fun(_K, V) when V /= Ref -> true;
+%%                                 (_, _)                -> false
+%%                              end, Dict),
+%%     {noreply, State#state{brick_registory=NewDict}};
+handle_info({'DOWN', _Ref, _, _, _}, State) ->
+    {noreply, State};
 handle_info({'EXIT', Pid, Reason}, #state{hlog_pid = Pid} = State) ->
     {stop,Reason,State#state{hlog_pid=undefined}};
 handle_info(_Info, State) ->
@@ -609,7 +626,6 @@ do_metadata_hunk_writeback(OldSeqNum, OldOffset, StopSeqNum, StopOffset, S)->
             ?E_DBG("~w hunks to write back", [Count]),
             ok = write_back_exactly_to_logs(Ts, S),
             ok = write_back_to_stable_storege(WB, S),
-            %% catch write_back_to_stable_storege(WB, S),
             {ok, Count};
 
         {#wb{exactly_count=Count}, ErrList} ->
@@ -751,10 +767,10 @@ write_back_to_local_log([] = AllTs, SeqNum, FH_pos, LogFH,
     end.
 
 -spec write_back_to_stable_storege(wb_r(), state_r()) -> ok | {error, [term()]}.
-write_back_to_stable_storege(#wb{exactly_ts=MetadataTuples}, S) ->
+write_back_to_stable_storege(#wb{exactly_ts=MetadataTuples}, State) ->
     %% Sort metadata tuples by brickname, seqnum, and offset.
     GroupedByBrick = group_store_tuples_by_brick(MetadataTuples),
-    Errors0 = [write_back_to_stable_storege1(BrickName, Tuples, S, [])
+    Errors0 = [write_back_to_stable_storege1(BrickName, Tuples, State, [])
                || {BrickName, Tuples} <- GroupedByBrick ],
     case lists:filter(fun(Error) -> Error =/= [] end, Errors0) of
         [] ->
@@ -788,9 +804,9 @@ group_store_tuples_by_brick(MetaDataTuples) ->
 %%       "Redesign disk storage and checkpoint/scavenger processes"
 %%
 %%  1. Add timestamp to the do_mods for 'delete' and 'delete_noexptime',
-%%     so that it can store delete-markers.
+%%     so that it can store delete-markers. - *DONE*
 %%  2. Finish implementing the write-back process (including LevelDB
-%%     disk sync).
+%%     disk sync). Test with a 3-node config.
 %%  3. Implement the new scavenger logic.
 %%  4. Implement the new housekeeping logic.
 %%  5. Run lengthy tests (and develop some tools) to ensure that the
@@ -803,7 +819,7 @@ group_store_tuples_by_brick(MetaDataTuples) ->
 %%
 %%    (SCV: Scavenger, WBP: Write-Back Process)
 %%  1. SCV: Ensure no housekeeping process is running.
-%%  2. SCV: Lists log sequence numbers eligible for scavenging.
+%%  2. SCV: List log sequence numbers eligible for scavenging.
 %%  3. WBP: Start to record do_mods with insert_existing_value (for
 %%          the sequence numbers) to separate log file(s). - (A)
 %%  4. SCV: Dump store tuples and sort them by log-seq and position.
@@ -836,13 +852,23 @@ group_store_tuples_by_brick(MetaDataTuples) ->
 %%          log de-allocation info in somewhere?)
 %%
 
+%% NOTE: a rename op does two ops in this order:
+%%
+%% (1) delete OldKey
+%% (2) insert_existing_value for NewKey
+%%
+%% 11:49:15.729 ... delete - key: <<49,50,47,0,0,2,68>>, ts: 1388720955419232
+%% 11:49:15.730 ... insert_existing_value - key: <<49,50,47,0,0,1,218>>, ts: 1388720955419214,
+%%                                          oldkey: <<49,50,47,0,0,2,68>>
+%%
+
 -spec write_back_to_stable_storege1(brickname(), [metadata_tuple()], state_r(), [term()]) -> [term()].
-write_back_to_stable_storege1(_BrickName, [], _Status, Errors) ->
+write_back_to_stable_storege1(_BrickName, [], _State, Errors) ->
     lists:reverse(Errors);
 write_back_to_stable_storege1(BrickName,
                               [{eee, _BrickName, _SeqNum, _Offset, _Key, _TypeNum,
                                 _H_Len, [Summary, CBlobs, _UBlobs]} | MetaDataTuples],
-                              Status,
+                              #state{hlog_pid=HLog}=State,
                               Errors) ->
     case gmt_hlog:parse_hunk_summary(Summary) of
         #hunk_summ{c_len=CLen, u_len=ULen}=ParsedSummary ->
@@ -851,12 +877,10 @@ write_back_to_stable_storege1(BrickName,
             MetadataBin = gmt_hlog:get_hunk_cblob_member(ParsedSummary, CBlobs, 1),
             case gmt_hlog:md5_checksum_ok_p(ParsedSummary#hunk_summ{c_blobs = [MetadataBin]}) of
                 true ->
-                    LocalLog = whereis(gmt_hlog:log_name2reg_name(BrickName)),
-                    ?E_DBG("BrickName: ~w (~w) -------------------------------", [BrickName, LocalLog]),
                     Batch = lists:foldl(fun add_metadata_db_op/2,
                                         leveldb:new_write_batch(),
                                         binary_to_term(MetadataBin)),
-                    DB = gmt_hlog_local:get_metadata_db(LocalLog),
+                    DB = gmt_hlog:get_metadata_db(HLog, BrickName),
                     true = leveldb:write(DB, Batch, []);  %% @TODO: sync periodically
                 false ->
                     %% @TODO: Do not crash
@@ -865,7 +889,7 @@ write_back_to_stable_storege1(BrickName,
         too_big ->
             error({hunk_is_too_big_to_parse, {_BrickName, _SeqNum, _Offset, _Key}})
     end,
-    write_back_to_stable_storege1(BrickName, MetaDataTuples, Status, Errors).
+    write_back_to_stable_storege1(BrickName, MetaDataTuples, State, Errors).
 
 -spec add_metadata_db_op(do_mod(), write_batch()) -> write_batch().
 add_metadata_db_op({insert, StoreTuple}, Batch) ->
@@ -889,49 +913,49 @@ add_metadata_db_op({insert_existing_value, StoreTuple, OldKey}, Batch) ->
     ?E_DBG("store_tuple: insert_existing_value - key: ~p, ts: ~w, oldkey: ~p",
            [Key, Timestamp, OldKey]),
     leveldb:add_put(metadata_db_key(StoreTuple), term_to_binary(StoreTuple), Batch);
-add_metadata_db_op({delete, Key, ExpTime}, Batch) ->
-    ?E_DBG("TODO: store_tuple: delete - key: ~p, ts: ~w", [Key, ExpTime]),
-    %% DeleteMarker = make_delete_marker(Key, Timestamp),
-    %% leveldb:add_put(metadata_db_key(Key, Timestamp), DeleteMarker, Batch);
-    Batch;
-add_metadata_db_op({delete_noexptime, Key}, Batch) ->
-    ?E_DBG("TODO: store_tuple: delete_noexptime - key: ~p", [Key]),
-    %% DeleteMarker = make_delete_marker(Key, Timestamp),
-    %% leveldb:add_put(metadata_db_key(Key, Timestamp), DeleteMarker, Batch);
-    Batch;
-add_metadata_db_op({delete_all_table_items}, Batch) ->
-    ?E_DBG("TODO: store_tuple: delete_all_table_items =====================",
-           []),
-    Batch;
-add_metadata_db_op({md_insert, Tuple}, Batch) ->
-    ?E_DBG("TODO: store_tuple: md_insert - tuple: ~p ======================",
-           [Tuple]),
-    Batch;
-add_metadata_db_op({md_delete, Key}, Batch) ->
-    ?E_DBG("TODO: store_tuple: md_delete - key: ~p ========================",
-           [Key]),
-    Batch;
-add_metadata_db_op({log_directive, sync_override, false}, Batch) ->
-    ?E_DBG("TODO: store_tuple: log_directive - sync_override ==============",
-           []),
-    Batch;
-add_metadata_db_op({log_directive, map_sleep, Delay}, Batch) ->
-    ?E_DBG("TODO: store_tuple: log_directive - map_sleep: ~w ==============",
-           [Delay]),
-    Batch;
-add_metadata_db_op({log_noop}, Batch) ->
-    ?E_DBG("TODO: store_tuple: log_noop ===================================",
-           []),
-    Batch.
+add_metadata_db_op({delete, _Key, 0, _ExpTime}=Op, _Batch) ->
+    error({timestamp_is_zero, Op});
+add_metadata_db_op({delete, Key, Timestamp, _ExpTime}, Batch) ->
+    ?E_DBG("store_tuple: delete - key: ~p, ts: ~w", [Key, Timestamp]),
+    DeleteMarker = make_delete_marker(Key, Timestamp),
+    leveldb:add_put(metadata_db_key(Key, Timestamp),
+                    term_to_binary(DeleteMarker), Batch);
+add_metadata_db_op({delete_noexptime, _Key, 0}=Op, _Batch) ->
+    error({timestamp_is_zero, Op});
+add_metadata_db_op({delete_noexptime, Key, Timestamp}, Batch) ->
+    ?E_DBG("store_tuple: delete_noexptime - key: ~p", [Key]),
+    DeleteMarker = make_delete_marker(Key, Timestamp),
+    leveldb:add_put(metadata_db_key(Key, Timestamp),
+                    term_to_binary(DeleteMarker), Batch);
+add_metadata_db_op({delete_all_table_items}=Op, _Batch) ->
+    error({writeback_not_implemented, Op});
+add_metadata_db_op({md_insert, _Tuple}=Op, _Batch) ->
+    error({writeback_not_implemented, Op});
+add_metadata_db_op({md_delete, _Key}=Op, _Batch) ->
+    error({writeback_not_implemented, Op});
+add_metadata_db_op({log_directive, sync_override, false}=Op, _Batch) ->
+    error({writeback_not_implemented, Op});
+add_metadata_db_op({log_directive, map_sleep, _Delay}=Op, _Batch) ->
+    error({writeback_not_implemented, Op});
+add_metadata_db_op({log_noop}=Op, _Batch) ->
+    error({writeback_not_implemented, Op}).
 
 -spec metadata_db_key(store_tuple()) -> binary().
 metadata_db_key(StoreTuple) ->
     Key = brick_ets:storetuple_key(StoreTuple),
+    Timestamp = brick_ets:storetuple_ts(StoreTuple),
+    metadata_db_key(Key, Timestamp).
+
+-spec metadata_db_key(key(), integer()) -> binary().
+metadata_db_key(Key, Timestamp) ->
     %% NOTE: Using reversed timestamp, so that Key-values will be sorted
     %%       in LevelDB from newer to older.
-    ReversedTimestamp = -(brick_ets:storetuple_ts(StoreTuple)),
+    ReversedTimestamp = -(Timestamp),
     sext:encode({Key, ReversedTimestamp}).
 
+-spec make_delete_marker(key(), integer()) -> tuple().
+make_delete_marker(Key, Timestamp) ->
+    {Key, Timestamp, delete_marker}.
 
 %% 17: --------------------
 %% MDKey: <<16,0,0,0,2,18,152,203,224,16,8,15,88,8,8,255,255,255,254,128,127,255,
@@ -972,12 +996,12 @@ metadata_db_key(StoreTuple) ->
 %% @TODO Move the tool to a separate module.
 
 tool_list_md(BrickName, Limit) when is_atom(BrickName), is_integer(Limit), Limit > 0 ->
-    LocalLog = whereis(gmt_hlog:log_name2reg_name(BrickName)),
-    DB = gmt_hlog_local:get_metadata_db(LocalLog),
+    HLog = gmt_hlog:log_name2reg_name(?GMT_HLOG_COMMON_LOG_NAME),
+    DB = gmt_hlog:get_metadata_db(HLog, BrickName),
     FirstKey = leveldb:first(DB, []),
     tool_list_md1(DB, FirstKey, 1, Limit).
 
-tool_list_md1(_DB, _Key, Count, Limit) when Count >= Limit ->
+tool_list_md1(_DB, _Key, Count, Limit) when Count > Limit ->
     ok;
 tool_list_md1(_DB, '$end_of_table', _Count, _Limit) ->
     ok;
@@ -1023,22 +1047,23 @@ write_back_metadata_hunk(LogFH, LogBytes) ->
     ok = file:write(LogFH, LogBytes),
     ok.
 
-do_register_local_brick(Brick, #state{reg_dict = _Dict} = S) ->
+%% do_register_local_brick(Brick, #state{brick_registory = _Dict} = S) ->
+do_register_local_brick(Brick, S) ->
     _ = file:make_dir(brick_registration_dir(S)),
     ok = create_registration_file(Brick, S),
     {ok, S}.
 
-do_unregister_local_brick(_Brick, #state{reg_dict = _Dict} = S) ->
-    {ok, S}.
+%% do_unregister_local_brick(_Brick, #state{brick_registory = _Dict} = S) ->
+%%     {ok, S}.
 
-do_permanently_unregister_local_brick(Brick, S) ->
-    case lists:member(Brick, do_get_all_registrations(S)) of
-        true ->
-            ok = delete_registration_file(Brick, S),
-            {ok, S};
-        false ->
-            {not_found, S}
-    end.
+%% do_permanently_unregister_local_brick(Brick, S) ->
+%%     case lists:member(Brick, do_get_all_registrations(S)) of
+%%         true ->
+%%             ok = delete_registration_file(Brick, S),
+%%             {ok, S};
+%%         false ->
+%%             {not_found, S}
+%%     end.
 
 spawn_future_tasks_after_dirty_buffer_wait(EndSeqNum, EndOffset, S) ->
     %% Advancing the common log's sequence number isn't really a
@@ -1154,13 +1179,14 @@ create_registration_file(BrickName, S) ->
     {ok, FH} = file:open(brick_registration_file(BrickName, S), [write]),
     ok = file:close(FH).
 
-delete_registration_file(BrickName, S) ->
-    file:delete(brick_registration_file(BrickName, S)).
+%% delete_registration_file(BrickName, S) ->
+%%     file:delete(brick_registration_file(BrickName, S)).
 
 do_get_all_registrations(S) ->
     Paths = filelib:fold_files(brick_registration_dir(S),
                                ".*", false, fun(F, Acc) -> [F|Acc] end, []),
     [list_to_atom(filename:basename(X)) || X <- Paths].
+
 
 %% TODO: Perhaps have multiple procs working on copying from different
 %%       sequence files?  Just in case we have too much idle disk I/O

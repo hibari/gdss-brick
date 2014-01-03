@@ -93,7 +93,7 @@
 -export([stop/1,
          advance_seqnum/2,
          get_proplist/1,
-         get_metadata_db/1,
+         %% get_metadata_db/1,
          sync/1,
          write_hunk/7,
          get_current_seqnum/1
@@ -153,8 +153,7 @@
           common_server               :: servername(),
           common_log                  :: pid() | undefined,
           last_seq=0                  :: seqnum(),
-          offset=0                    :: offset(),
-          metadata_db                 :: term()
+          offset=0                    :: offset()
          }).
 
 -type proplist() :: list({atom(),term()}).
@@ -163,10 +162,6 @@
 %%%===================================================================
 %%% API
 %%%===================================================================
-
--spec get_metadata_db(server()) -> term().
-get_metadata_db(Pid) ->
-    gen_server:call(Pid, {get_metadata_db}).
 
 start_link(PropList) ->
     gen_server:start_link(?MODULE, PropList, []).
@@ -278,10 +273,6 @@ get_all_seqnums(A) ->
 log_name2data_dir(A) ->
     gmt_hlog:log_name2data_dir(A).
 
--spec log_name2metadata_dir(servername()) -> dirname().
-log_name2metadata_dir(A) ->
-    gmt_hlog:log_name2metadata_dir(A).
-
 log_name2reg_name(A) ->
     gmt_hlog:log_name2reg_name(A).
 
@@ -353,22 +344,13 @@ init(PropList) ->
     catch file:make_dir(Dir),
     catch file:make_dir(Dir ++ "/s"),
 
-    MDBDir = log_name2metadata_dir(Name),
-    catch file:make_dir(MDBDir),
-
-    %% @TODO Create a function to return the metadata DB path.
-    MDBPath = filename:join(MDBDir, "leveldb"),
-    MetadataDB = leveldb:open_db(MDBPath, [create_if_missing]),
-    ?ELOG_INFO("Opened the metadata DB: ~s", [MDBPath]),
-
     S = #state{props = PropList,
                name = Name,
                dir = Dir,
                file_len_max = FileLenMax,
                file_len_min = FileLenMin,
                common_server = CServerName,
-               last_seq = LastSeq,
-               metadata_db = MetadataDB
+               last_seq = LastSeq
               },
     {_, NewS} = do_advance_seqnum(1, S),
     %%io:format("DBG: ~s: init done\n", [?MODULE]),
@@ -459,8 +441,6 @@ handle_call({get_common_log_name}, _From, State) ->
 handle_call({get_proplist}, _From, State) ->
     Res = State#state.props,
     {reply, Res, State};
-handle_call({get_metadata_db}, _From, #state{metadata_db=MetadataDB}=State) ->
-    {reply, MetadataDB, State};
 handle_call({stop}, _From, State) ->
     {stop, normal, ok, State}.
 
@@ -509,16 +489,7 @@ handle_info(_Info, State) ->
 %% @spec terminate(Reason, State) -> void()
 %% @end
 %%--------------------------------------------------------------------
-terminate(_Reason, #state{name=Name, metadata_db=MetadataDB}) ->
-    %% @TODO Create a function to return the metadata DB path.
-    MDBPath = filename:join(log_name2metadata_dir(Name), "leveldb"),
-    try leveldb:close_db(MetadataDB) of
-        true ->
-            ?ELOG_INFO("Closed the metadata DB: ~s", [MDBPath])
-    catch _:_=Error ->
-            ?ELOG_WARNING("Failed to close the metadata DB: ~s (Error: ~p)",
-                          [MDBPath, Error])
-    end,
+terminate(_Reason, _State) ->
     ok.
 
 %%--------------------------------------------------------------------
@@ -560,7 +531,10 @@ read_last_sequence_number(Dir) ->
 sequence_number_path(Dir) ->
     Dir ++ "/sequence_number".
 
+%% @doc Get the registered name of the gmt_hlog_common gen_server.
+%% If it's not started, start it here by using gmt_hlog_common:start/1.
 get_or_start_common_log(PropList) ->
+    %% CName: the name of the gmt_hlog_common gen_server.
     CName = proplists:get_value(common_log_name, PropList,
                                 ?GMT_HLOG_COMMON_LOG_NAME),
     case whereis(CName) of

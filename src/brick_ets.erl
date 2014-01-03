@@ -176,6 +176,14 @@
 %%%    micro-transaction, where race conditions are possible. See
 %%%    Section 2.3.14.6, "The dirty keys table".
 %%%
+%%% #state.shadowtab, the shadow table:
+%%%    During checkpoints, the contents table is frozen while the
+%%%    checkpoint process dumps its contents. All updates made while
+%%%    the checkpoint is running (insert or delete) are stored in this
+%%%    table. When the checkpoint is finished, the contents of this
+%%%    table are applied to the contents table, and then the shadow
+%%%    table is deleted.
+%%%
 %%% #state.etab, the expiry table:
 %%%    If a key has a non-zero expiry time associated with it (an
 %%%    integer in UNIX time_t form), then the expiry time appears in
@@ -185,13 +193,70 @@
 %%%    Used for private state management during data migration and
 %%%    other tasks.
 %%%
-%%% #state.shadowtab, the shadow table:
-%%%    During checkpoints, the contents table is frozen while the
-%%%    checkpoint process dumps its contents. All updates made while
-%%%    the checkpoint is running (insert or delete) are stored in this
-%%%    table. When the checkpoint is finished, the contents of this
-%%%    table are applied to the contents table, and then the shadow
-%%%    table is deleted.
+
+%%%
+%%% Request Path
+%%%
+%%% (@TODO: Refactor the path. Functions are nested too deep and
+%%%         all levels have almost the same abstruction level.
+%%%         It's very hard to understand the flow.
+%%%
+%%%   1.  brick_server:get/5, set/7, etc.
+%%%   2.    brick_server:do/5
+%%%   3.      brick_server:handle_call({do, _, _, _}, _, _)
+%%%   4.        brick_server:handle_call_do_prescreen/3
+%%%   5.          brick_server:handle_call_do_prescreen2/3
+%%%   6.            brick_server:handle_call_do/3
+%%%   7.              brick_server:preprocess_fold/4
+%%%   8.                {ok, ...} -> brick_server:handle_call_via_impl({do, _, _, _}=Msg, _, _)
+%%%   9.                  brick_ets:handle_call({do, ...}, ...)  (NOTE: Not gen_server)
+%%%  10.                    brick_ets:do_do/6
+%%%  11.                      brick_ets:do_do1b/7
+%%%  12.                        brick_ets:do_do2/3
+%%%  13.                          brick_ets:do_txnlist/3 or do_dolist/4
+%%%  14.                            brick_ets:get_key/3, set_key/6, etc.
+%%%  15.  (e.g. set_key/6)            brick_ets:my_insert/6
+%%%  16.                                brick_ets:my_insert2/6
+%%%  17.                                  brick_ets:bigdata_dir_store_val/3
+%%%  18.  (return to #16 my_insert2)    -> add a do_mod() to #state.thisdo_mod.
+%%%  19.  (return to #13 do_txnlist or do_dolist)
+%%%                                     -> processes all DoList and builds up #state.thisdo_mod.)
+%%%       (return to #9 handle_call)
+%%%  17.                    brick_ets:log_mods/2
+%%%  18.                      brick_ets:log_mods2/3
+%%%  19.                        brick_ets:log_mods2_b/3
+%%%  20.                          brick_ets:wal_write_metadata_term/3
+%%%  21.                            gmt_log_local:write_hunk/7
+%%%  22.  (return to #9 handle_call)
+
+%%%  23a.                   {goahead, state_r()} ->
+%%%                           brick_ets:map_mods_into_ets/2
+%%%  24a.                       brick_ets:my_insert_ignore_logging/3 or my_delete_ignore_logging/4
+%%%  25a. (e.g. my_insert_ig..)   brick_ets:delete_prior_expirf/2
+%%%  26a.                         brick_ets:my_insert_ignore_logging10/3
+%%%  27a.                           brick_ets:my_insert_ignore_logging3/3
+%%%  28a.                             brick_ets:exptime_insert/3
+%%%  29a.                             ets:insert/2 (ctab)
+%%%  30a.                     (return reply for propagating to next brick in the chain)
+
+%%%  23b.                   {wait, state_r()} ->
+%%%  24b.                     brick_ets:add_mods_to_dirty_tab/2
+%%%  25b.                       ets:insert/2  (dirty_tab)
+%%%  26b.                     quene:in/2  (#state.logging.op_q)
+%%%  27b.                     (later, handle_info({sync_done, ...}, ...) will be called,
+%%%                           then, do map_mods_into_ets/2 and clear_dirty_tab/2
+
+%%%  31. (return to #8 handle_call_via_impl)
+%%%  32a.                  {up1, ToDos, OrigReturn} ->
+%%%  33a.                    brick_server:do_chain_todos_iff_empty_log_q/2
+%%%  34a.                      lists:foldl/3,
+%%%  35a.                        brick_server:do_a_chain_todo_iff_empty_log_q/2
+%%%  36a.                          brick_server:chain_send_downstream_iff_empty_log_q/6
+%%%  37a.                            brick_server:chain_send_downstream/7
+%%%  38a.                    brick_server:calc_original_return/2
+
+%%%  32b.                  OrigReturn ->
+%%%  33b.                    brick_server:calc_original_return/2
 
 
 %%%----------------------------------------------------------------------
@@ -239,9 +304,12 @@
                   %% ?KEY_SWITCHAROO (e.g. rename)
                   {insert_existing_value, store_tuple(), key()} | %% key is for OldKey
 
-                  {delete, key(), exp_time()} |
+                  {delete, key(), ts(), exp_time()} |  %% Hibari 0.3 or newer
+                  {delete, key(), exp_time()} |        %% Hibari 0.1.x (gdss_client still uses this)
+
                   %% Only used by chain migration(?)
-                  {delete_noexptime, key()} |
+                  {delete_noexptime, key(), ts()} |    %% Hibari 0.3 or newer
+                  %% {delete_noexptime, key()} |       %% Hibari 0.1.x
 
                   %% Delete all objects from mdtab, etab and ctab.
                   %% Recorded at the beginning of a checkpoint file.
@@ -257,9 +325,9 @@
                   {log_noop}.
 
 -record(state, {
-          name :: atom(),                       % My registered name
+          name :: atom(),                       % Registered name
           options :: proplist(),
-          start_time :: {non_neg_integer(),non_neg_integer(),non_neg_integer()},
+          start_time :: {non_neg_integer(), non_neg_integer(), non_neg_integer()},
           do_logging = true :: boolean(),
           do_sync = true :: boolean(),
           log_dir :: string(),
@@ -388,10 +456,8 @@ brick_name2data_dir(ServerName) ->
 %%          {stop, Reason}
 %%----------------------------------------------------------------------
 init([ServerName, Options]) ->
-    ?DBG_GEN("qqq_starting ~w", [ServerName]),
-
     process_flag(trap_exit, true),
-    ?E_INFO("top of init: ~w, ~p", [ServerName, Options]),
+    ?E_INFO("Initializing brick server: ~w~n\t~p", [ServerName, Options]),
 
     %% Avoid race conditions where a quick restart of the brick
     %% catches up with the not-yet-finished death of the previous log
@@ -519,7 +585,7 @@ handle_call({do, _SentAt, L, DoFlags} = DoOp, From, State) ->
                             %% weird, bad situations with out-of-order
                             %% sync'ing.  So, only increment the
                             %% serial if we've actually got mods.
-                            NL = if Thisdo_Mods == [] -> LoggingSerial;
+                            NL = if Thisdo_Mods =:= [] -> LoggingSerial;
                                     true              -> LoggingSerial + 1
                                  end,
                             case proplists:get_value(local_op_only_do_not_forward, DoFlags) of
@@ -755,11 +821,11 @@ handle_info(_Info, State) ->
 %% Returns: any (ignored by gen_server)
 %%----------------------------------------------------------------------
 terminate(Reason, State) ->
-    ?DBG_GEN("qqq_stopping ~w, reason ~w", [State#state.name, Reason]),
+    ?E_INFO("Stopping brick server: ~w, reason ~w", [State#state.name, Reason]),
     catch ets:delete(State#state.ctab),
     catch ets:delete(State#state.etab),
     catch ets:delete(State#state.shadowtab),
-    _X = (catch (State#state.wal_mod):stop(State#state.log)),
+    _ = (catch (State#state.wal_mod):stop(State#state.log)),
     ok.
 
 %%----------------------------------------------------------------------
@@ -823,15 +889,18 @@ do_do(L, DoFlags, DoOp, From, State, CheckDirty) ->
 %% @doc Do a 'do', phase 1b: Check for any dirty keys.
 
 do_do1b(DoKeys0, L, DoFlags, DoOp, From, State, check_dirty)
-  when State#state.do_logging == true ->
-    DoKeys = if DoKeys0 == not_calculated -> brick_server:harvest_do_keys(L);
-                true                      -> DoKeys0
+  when State#state.do_logging =:= true ->
+    DoKeys = if
+                 DoKeys0 =:= not_calculated ->
+                     brick_server:harvest_do_keys(L);
+                 true ->
+                     DoKeys0
              end,
     case any_dirty_keys_p(DoKeys, State) of
         true ->
             has_dirty_keys;
         false ->
-            if State#state.bigdata_dir == undefined ->
+            if State#state.bigdata_dir =:= undefined ->
                     %% QQQ TODO Is it a good idea to stash DoKeys
                     %% inside State at this point, or do it someplace
                     %% else?  Earlier?  Later?  But later would mean
@@ -844,14 +913,15 @@ do_do1b(DoKeys0, L, DoFlags, DoOp, From, State, check_dirty)
                true ->
                     ReadP = any_readonly_keys_p(DoKeys),
                     Resub = proplists:get_value(squidflash_resubmit, DoFlags),
-                    if ReadP == true andalso Resub == undefined ->
+                    if
+                        ReadP =:= true andalso Resub =:= undefined ->
                             case squidflash_primer(DoOp, From, State) of
                                 goahead ->
                                     {no_dirty_keys, do_do2(L, DoFlags, State)};
                                 _Else ->
                                     {noreply_now, State}
                             end;
-                       true ->
+                        true ->
                             {no_dirty_keys, do_do2(L, DoFlags, State)}
                     end
             end
@@ -874,46 +944,60 @@ do_do2(L, DoFlags, State) ->
 %%% TODO Good candidate for replacement with lists:map() or fold*()?
 do_dolist([], State, _DoFlags, Acc) ->
     {lists:reverse(Acc), State};
-do_dolist([{add, Key, TStamp, Value, ExpTime, Flags}|T], State, DoFlags, Acc) ->
-    if TStamp =:= 0 -> EffTStamp = brick_server:make_timestamp(); true -> EffTStamp = TStamp end,
-    {Res, NewState} = add_key(Key, EffTStamp, Value, ExpTime, Flags, State),
+do_dolist([{add, Key, Timestamp, Value, ExpTime, Flags} | T], State, DoFlags, Acc) ->
+    EffTimestamp = make_timestamp_if_zero(Timestamp),
+    {Res, NewState} = add_key(Key, EffTimestamp, Value, ExpTime, Flags, State),
     N_add = NewState#state.n_add,
     do_dolist(T, NewState#state{n_add = N_add + 1}, DoFlags, [Res|Acc]);
-do_dolist([{replace, Key, TStamp, Value, ExpTime, Flags}|T], State, DoFlags, Acc) ->
-    if TStamp =:= 0 -> EffTStamp = brick_server:make_timestamp(); true -> EffTStamp = TStamp end,
-    {Res, NewState} = replace_key(Key, EffTStamp, Value, ExpTime, Flags, State),
+do_dolist([{replace, Key, Timestamp, Value, ExpTime, Flags}|T], State, DoFlags, Acc) ->
+    EffTimestamp = make_timestamp_if_zero(Timestamp),
+    {Res, NewState} = replace_key(Key, EffTimestamp, Value, ExpTime, Flags, State),
     N_replace = NewState#state.n_replace,
     do_dolist(T, NewState#state{n_replace = N_replace + 1}, DoFlags, [Res|Acc]);
-do_dolist([{set, Key, TStamp, Value, ExpTime, Flags}|T], State, DoFlags, Acc) ->
-    if TStamp =:= 0 -> EffTStamp = brick_server:make_timestamp(); true -> EffTStamp = TStamp end,
-    {Res, NewState} = set_key(Key, EffTStamp, Value, ExpTime, Flags, State),
+do_dolist([{set, Key, Timestamp, Value, ExpTime, Flags} | T], State, DoFlags, Acc) ->
+    EffTimestamp = make_timestamp_if_zero(Timestamp),
+    {Res, NewState} = set_key(Key, EffTimestamp, Value, ExpTime, Flags, State),
     N_set = NewState#state.n_set,
     do_dolist(T, NewState#state{n_set = N_set + 1}, DoFlags, [Res|Acc]);
-do_dolist([{rename, Key, TStamp, NewKey, ExpTime, Flags}|T], State, DoFlags, Acc) ->
-    if TStamp =:= 0 -> EffTStamp = brick_server:make_timestamp(); true -> EffTStamp = TStamp end,
-    {Res, NewState} = rename_key(Key, EffTStamp, NewKey, ExpTime, Flags, State),
+do_dolist([{rename, Key, Timestamp, NewKey, ExpTime, Flags} | T], State, DoFlags, Acc) ->
+    EffTimestamp = make_timestamp_if_zero(Timestamp),
+    {Res, NewState} = rename_key(Key, EffTimestamp, NewKey, ExpTime, Flags, State),
     N_rename = NewState#state.n_rename,
     do_dolist(T, NewState#state{n_rename = N_rename + 1}, DoFlags, [Res|Acc]);
-do_dolist([{get, Key, Flags}|T], State, DoFlags, Acc) ->
+do_dolist([{get, Key, Flags} | T], State, DoFlags, Acc) ->
     Res = get_key(Key, Flags, State),
     N_get = State#state.n_get,
     do_dolist(T, State#state{n_get = N_get + 1}, DoFlags, [Res|Acc]);
-do_dolist([{delete, Key, Flags}|T], State, DoFlags, Acc) ->
-    {Res, NewState} = delete_key(Key, Flags, State),
+do_dolist([{delete, Key, Flags} | T], State, DoFlags, Acc) ->
+    %% This {delete, key(), flags()} is an old form for Hibari 0.1
+    %% but brick_simple is still using it.
+    EffTimestamp = make_timestamp_if_zero(0),
+    {Res, NewState} = delete_key(Key, EffTimestamp, Flags, State),
     N_delete = NewState#state.n_delete,
     do_dolist(T, NewState#state{n_delete = N_delete + 1}, DoFlags, [Res|Acc]);
-do_dolist([{get_many, Key, Flags}|T], State, DoFlags, Acc) ->
+do_dolist([{delete, Key, Timestamp, Flags} | T], State, DoFlags, Acc) ->
+    EffTimestamp = make_timestamp_if_zero(Timestamp),
+    {Res, NewState} = delete_key(Key, EffTimestamp, Flags, State),
+    N_delete = NewState#state.n_delete,
+    do_dolist(T, NewState#state{n_delete = N_delete + 1}, DoFlags, [Res|Acc]);
+do_dolist([{get_many, Key, Flags} | T], State, DoFlags, Acc) ->
     {Res0, NewState} = get_many1(Key, Flags, true, DoFlags, State),
     Res = {ok, Res0},
     N_get_many = NewState#state.n_get_many,
     do_dolist(T, NewState#state{n_get_many = N_get_many + 1}, DoFlags, [Res|Acc]);
-do_dolist([next_op_is_silent, DoOp|T], State, DoFlags, Acc) ->
+do_dolist([next_op_is_silent, DoOp | T], State, DoFlags, Acc) ->
     {_ResList, NewState} = do_dolist([DoOp], State, DoFlags, []),
     do_dolist(T, NewState, DoFlags, Acc);
-do_dolist([Unknown|T], State, DoFlags, Acc) ->
+do_dolist([Unknown | T], State, DoFlags, Acc) ->
     %% Unknown is an error code from a do_txnlist() step, or perhaps
     %% some other return/status code ... pass it on.
     do_dolist(T, State, DoFlags, [Unknown|Acc]).
+
+-spec make_timestamp_if_zero(ts()) -> ts().
+make_timestamp_if_zero(0) ->
+    brick_server:make_timestamp();
+make_timestamp_if_zero(Timestamp) ->
+    Timestamp.
 
 do_txnlist(L, DoFlags, State) ->
     %% It's a bit clumsy to have a separate accumulator for errors
@@ -1010,9 +1094,8 @@ do_txnlist([{rename, Key, TStamp, NewKey, _ExpTime, Flags} = H|T], State,
             Err = key_not_exist,
             do_txnlist(T, State, [Err|Acc], false, N+1, DoFlags, [{N, Err}|ErrAcc])
     end;
-do_txnlist([{Primitive, Key, Flags} = H|T], State,
-           Acc, Good, N, DoFlags, ErrAcc)
-  when Primitive == get ; Primitive == delete ; Primitive == get_many ->
+do_txnlist([{Primitive, Key, Flags} = H|T], State, Acc, Good, N, DoFlags, ErrAcc)
+  when Primitive =:= get ; Primitive =:= delete ; Primitive =:= get_many ->
     case common_testset_must_mustnot(Key, Flags, State) of
         ok ->
             do_txnlist(T, State, [H|Acc], Good, N+1, DoFlags, ErrAcc);
@@ -1635,7 +1718,6 @@ get_many_shadow(Key, '$end_of_table', MaxNum, MaxBytes, ResultFlavor, Acc, S) ->
     [Tuple] = ets:lookup(S#state.ctab, Key),
     Bytes = storetuple_vallen(Tuple),
     Item = make_many_result(Tuple, ResultFlavor, S),
-    %%?DBG_ETSx({'4z', Key, '$end_of_table'}),
     get_many_shadow(ets:next(S#state.ctab, Key),
                     '$end_of_table',
                     MaxNum - 1, MaxBytes - Bytes, ResultFlavor, [Item|Acc], S);
@@ -1644,7 +1726,6 @@ get_many_shadow(Key, SKey, MaxNum, MaxBytes, ResultFlavor, Acc, S)
     [Tuple] = ets:lookup(S#state.ctab, Key),
     Bytes = storetuple_vallen(Tuple),
     Item = make_many_result(Tuple, ResultFlavor, S),
-    %%?DBG_ETSx({'5z', Key, SKey}),
     get_many_shadow(ets:next(S#state.ctab, Key),
                     SKey,
                     MaxNum - 1, MaxBytes - Bytes, ResultFlavor, [Item|Acc], S);
@@ -1652,13 +1733,11 @@ get_many_shadow(Key, SKey, MaxNum, MaxBytes, ResultFlavor, Acc, S)
   when Key == SKey ->
     [Shadow] = ets:lookup(S#state.shadowtab, SKey),
     case Shadow of
-        {_Key, delete, _ExpTime} ->
-            %%?DBG_ETSx({'6a', Key, SKey}),
+        {_Key, delete, _Timestamp, _ExpTime} ->
             get_many_shadow(ets:next(S#state.ctab, Key),
                             ets:next(S#state.shadowtab, SKey),
                             MaxNum, MaxBytes, ResultFlavor, Acc, S);
         {_Key, insert, StoreTuple} ->
-            %%?DBG_ETSx({'6b', Key, SKey}),
             Bytes = storetuple_vallen(StoreTuple),
             Item = make_many_result(StoreTuple, ResultFlavor, S),
             get_many_shadow(ets:next(S#state.ctab, Key),
@@ -1671,15 +1750,13 @@ get_many_shadow(Key, SKey, MaxNum, MaxBytes, ResultFlavor, Acc, S)
     [Shadow] = ets:lookup(S#state.shadowtab, SKey),
     case Shadow of
         {_Key, insert, StoreTuple} ->
-            %%?DBG_ETSx({'7a', Key, SKey}),
             Bytes = storetuple_vallen(StoreTuple),
             Item = make_many_result(StoreTuple, ResultFlavor, S),
             get_many_shadow(Key,
                             ets:next(S#state.shadowtab, SKey),
                             MaxNum - 1, MaxBytes - Bytes,
                             ResultFlavor, [Item|Acc], S);
-        {_Key, delete, _ExpTime} ->
-            %%?DBG_ETSx({'7b', Key, SKey}),
+        {_Key, delete, _Timestamp, _ExpTime} ->
             %% If SKey is a delete, then SKey should also be present
             %% in the frozen table ... but somehow we skipped the
             %% case where Key == SKey, which ought to be impossible.
@@ -1703,10 +1780,10 @@ get_many_shadow(Key, SKey, MaxNum, MaxBytes, ResultFlavor, Acc, S)
                             MaxNum, MaxBytes, ResultFlavor, Acc, S)
     end.
 
-delete_key(Key, Flags, State) ->
+delete_key(Key, Timestamp, Flags, State) ->
     case key_exists_p(Key, Flags, State, false) of
         {Key, _KeyTStamp, _Value, _ValueLen, ExpTime, _} ->
-            NewState = my_delete(State, Key, ExpTime),
+            NewState = my_delete(State, Key, Timestamp, ExpTime),
             {ok, NewState};
         {ts_error, _} = Err ->
             {Err, State};
@@ -1902,10 +1979,10 @@ my_insert2(#state{thisdo_mods=Mods, max_log_size=MaxLogSize}=S, Key, TStamp, Val
             %% Same as ?VALUE_REMAINS_CONSTANT except using NewKey and
             %% then deleting Key
             Mod = {insert_existing_value,
-                   storetuple_make(NewKey, TStamp, CurVal, CurValLen, ExpTime,
-                                   Flags),
+                   storetuple_make(NewKey, TStamp, CurVal, CurValLen, ExpTime, Flags),
                    Key},
-            {{ok, TStamp}, my_delete(S#state{thisdo_mods = [Mod|Mods]}, Key, CurExpTime)};
+            DelTStamp = brick_server:make_timestamp(),
+            {{ok, TStamp}, my_delete(S#state{thisdo_mods = [Mod|Mods]}, Key, DelTStamp, CurExpTime)};
         _ ->
             Val = gmt_util:bin_ify(Value),
             ValSize = byte_size(Val),
@@ -1944,9 +2021,8 @@ my_insert_ignore_logging10(State, Key, StoreTuple) ->
     end.
 
 my_insert_ignore_logging3(State, Key, StoreTuple)
-  when State#state.bypass_shadowtab == true
-       orelse
-       State#state.shadowtab == undefined ->
+  when State#state.bypass_shadowtab =:= true;
+       State#state.shadowtab =:= undefined ->
     ?DBG_ETS("qqq_ins_ignore_logging ~p [regular] ~w", [State#state.name, Key]),
     exptime_insert(State#state.etab, Key, storetuple_exptime(StoreTuple)),
     ets:insert(State#state.ctab, StoreTuple);
@@ -1962,36 +2038,33 @@ delete_prior_expiry(S, Key) ->
         _    -> ok
     end.
 
-my_delete(State, Key, ExpTime) when State#state.do_logging == true ->
+my_delete(#state{thisdo_mods=Mods}=State, Key, Timestamp, ExpTime)
+  when State#state.do_logging =:= true ->
     %% Logging is in effect.  Save key in list of keys for later
     %% addition to dirty_keys list.
-    Mods = State#state.thisdo_mods,
-    State#state{thisdo_mods = [{delete, Key, ExpTime}|Mods]};
-my_delete(State, Key, ExpTime) ->
-    my_delete_ignore_logging(State, Key, ExpTime),
-    Mods = State#state.thisdo_mods,
-    State#state{thisdo_mods = [{delete, Key, ExpTime}|Mods]}.
+    State#state{thisdo_mods=[{delete, Key, Timestamp, ExpTime} | Mods]};
+my_delete(#state{thisdo_mods=Mods}=State, Key, Timestamp, ExpTime) ->
+    my_delete_ignore_logging(State, Key, Timestamp, ExpTime),
+    State#state{thisdo_mods=[{delete, Key, Timestamp, ExpTime} | Mods]}.
 
-my_delete_ignore_logging(State, Key, ExpTime) ->
+my_delete_ignore_logging(State, Key, Timestamp, ExpTime) ->
     delete_prior_expiry(State, Key),
-    if State#state.bigdata_dir == undefined ->
+    if
+        State#state.bigdata_dir =:= undefined ->
             ok;
-       true ->
+        true ->
             bigdata_dir_delete_val(Key, State)
     end,
-    my_delete_ignore_logging2(State, Key, ExpTime).
+    my_delete_ignore_logging2(State, Key, Timestamp, ExpTime).
 
-my_delete_ignore_logging2(State, Key, ExpTime)
-  when State#state.bypass_shadowtab == true
-       orelse
-       State#state.shadowtab == undefined ->
-    ?DBG_ETS("qqq_del_ignore_logging ~w [regular] ~w", [State#state.name, Key]),
+my_delete_ignore_logging2(State, Key, _Timestamp, ExpTime)
+  when State#state.bypass_shadowtab =:= true;
+       State#state.shadowtab =:= undefined ->
     exptime_delete(State#state.etab, Key, ExpTime),
     ets:delete(State#state.ctab, Key);
-my_delete_ignore_logging2(State, Key, ExpTime) ->
-    ?DBG_ETS("qqq_del_ignore_logging ~w [shadow] ~w", [State#state.name, Key]),
+my_delete_ignore_logging2(State, Key, Timestamp, ExpTime) ->
     exptime_delete(State#state.etab, Key, ExpTime),
-    ets:insert(State#state.shadowtab, {Key, delete, ExpTime}).
+    ets:insert(State#state.shadowtab, {Key, delete, Timestamp, ExpTime}).
 
 my_lookup(State, Key, _MustHaveVal_p = false) ->
     my_lookup2(State, Key);
@@ -2016,11 +2089,11 @@ my_lookup(State, Key, true) ->
 %% my_lookup(), which is responsible for doing any disk access for the
 %% "real" value of val.
 
-my_lookup2(State, Key) when State#state.shadowtab == undefined ->
+my_lookup2(State, Key) when State#state.shadowtab =:= undefined ->
     ets:lookup(State#state.ctab, Key);
 my_lookup2(State, Key) ->
     case ets:lookup(State#state.shadowtab, Key) of
-        [{Key, delete, _ExpTime}] ->
+        [{Key, delete, _Timestamp, _ExpTime}] ->
             [];
         [{Key, insert, StoreTuple}] ->
             [StoreTuple];
@@ -2035,10 +2108,10 @@ my_delete_all_objects(Tab) ->
 %%           logging_op_serial counter, not log_mods() or log_mods2().
 
 -spec log_mods(tuple(), boolean() | undefined) -> {goahead, tuple()} | {wait, tuple()}.
-log_mods(S, _SyncOverride) when S#state.do_logging == false ->
+log_mods(S, _SyncOverride) when S#state.do_logging =:= false ->
     {goahead, S#state{thisdo_mods = []}};
 log_mods(S, SyncOverride) ->
-    if S#state.thisdo_mods == [] ->
+    if S#state.thisdo_mods =:= [] ->
             {goahead, S};
        true ->
             log_mods2(S#state.thisdo_mods, SyncOverride, S)
@@ -2048,15 +2121,15 @@ load_rec_from_log({insert, StoreTuple}, S) ->
     load_rec_from_log_common_insert(StoreTuple, S);
 load_rec_from_log({insert_value_into_ram, StoreTuple}, S) ->
     load_rec_from_log_common_insert(StoreTuple, S);
-load_rec_from_log({delete, Key, ExpTime}, S) ->
+load_rec_from_log({delete, Key, Timestamp, ExpTime}, S) ->
     load_rec_clean_up_etab(Key, S),
-    my_delete_ignore_logging(S, Key, ExpTime);
-load_rec_from_log({delete_noexptime, Key}, S) ->
+    my_delete_ignore_logging(S, Key, Timestamp, ExpTime);
+load_rec_from_log({delete_noexptime, Key, Timestamp}, S) ->
     case my_lookup(S, Key, false) of
         [StoreTuple] ->
             load_rec_clean_up_etab(Key, S),
             ExpTime = storetuple_exptime(StoreTuple),
-            my_delete_ignore_logging(S, Key, ExpTime);
+            my_delete_ignore_logging(S, Key, Timestamp, ExpTime);
         [] ->
             ok
     end;
@@ -2113,8 +2186,9 @@ purge_rec_from_log(Iters, Key, SeqNum, Count, S) ->
     [ST] = my_lookup(S, Key, false),
     case storetuple_val(ST) of
         {STSeqNum, _Offset} when abs(STSeqNum) == SeqNum ->
+            Timestamp = brick_server:make_timestamp(),
             ExpTime = storetuple_exptime(ST),
-            my_delete_ignore_logging(S, Key, ExpTime),
+            my_delete_ignore_logging(S, Key, Timestamp, ExpTime),
             ?E_NOTICE("~s: purged a key from log. key ~p", [S#state.name, Key]),
             purge_rec_from_log(Iters + 1, ets:next(S#state.ctab, Key), SeqNum,
                                Count + 1, S);
@@ -2131,8 +2205,9 @@ purge_rec_from_shadowtab(SeqNum, ShadowTab, S) ->
     ets:foldl(fun({Key, insert, ST}, Acc) ->
                       case storetuple_val(ST) of
                           {STSeqNum, _Off} when abs(STSeqNum) == SeqNum ->
+                              Timestamp = brick_server:make_timestamp(),
                               ExpTime = storetuple_exptime(ST),
-                              my_delete_ignore_logging(S, Key, ExpTime),
+                              my_delete_ignore_logging(S, Key, Timestamp, ExpTime),
                               ?E_NOTICE("~s: purged a key from shadowtab. key ~p",
                                         [S#state.name, Key]),
                               Acc + 1;
@@ -2557,8 +2632,8 @@ fold_shadow_into_ctab(Key, S) ->
         {Key, insert, StoreTuple} ->
             my_insert_ignore_logging(S, Key, StoreTuple),
             fold_shadow_into_ctab(ets:next(S#state.shadowtab, Key), S);
-        {Key, delete, ExpTime} ->
-            my_delete_ignore_logging(S, Key, ExpTime),
+        {Key, delete, Timestamp, ExpTime} ->
+            my_delete_ignore_logging(S, Key, Timestamp, ExpTime),
             fold_shadow_into_ctab(ets:next(S#state.shadowtab, Key), S);
         Err ->
             ?E_WARNING("fold_shadow: Bad term for ~p: ~p", [Key, Err]),
@@ -2566,20 +2641,20 @@ fold_shadow_into_ctab(Key, S) ->
             exit({fold, Key, Err})
     end.
 
-map_mods_into_ets([{insert, StoreTuple}|Tail], S) ->
+map_mods_into_ets([{insert, StoreTuple} | Tail], S) ->
     Key = storetuple_key(StoreTuple),
     my_insert_ignore_logging(S, Key, StoreTuple),
     map_mods_into_ets(Tail, S);
-map_mods_into_ets([{insert, _ChainStoreTuple, StoreTuple}|Tail], S) ->
+map_mods_into_ets([{insert, _ChainStoreTuple, StoreTuple} | Tail], S) ->
     %% Lazy, reuse....
-    map_mods_into_ets([{insert, StoreTuple}|Tail], S);
-map_mods_into_ets([{insert_value_into_ram, StoreTuple}|Tail], S) ->
+    map_mods_into_ets([{insert, StoreTuple} | Tail], S);
+map_mods_into_ets([{insert_value_into_ram, StoreTuple} | Tail], S) ->
     %% Lazy, reuse....
-    map_mods_into_ets([{insert, StoreTuple}|Tail], S);
-map_mods_into_ets([{delete, Key, ExpTime}|Tail], S) ->
-    my_delete_ignore_logging(S, Key, ExpTime),
+    map_mods_into_ets([{insert, StoreTuple} | Tail], S);
+map_mods_into_ets([{delete, Key, Timestamp, ExpTime} | Tail], S) ->
+    my_delete_ignore_logging(S, Key, Timestamp, ExpTime),
     map_mods_into_ets(Tail, S);
-map_mods_into_ets([{delete_noexptime, Key}|Tail], S) ->
+map_mods_into_ets([{delete_noexptime, Key, Timestamp} | Tail], S) ->
     %% This item only used during migration.
     ExpTime = case my_lookup(S, Key, false) of
                   [StoreTuple] ->
@@ -2587,7 +2662,7 @@ map_mods_into_ets([{delete_noexptime, Key}|Tail], S) ->
                   [] ->
                       0
               end,
-    map_mods_into_ets([{delete, Key, ExpTime}|Tail], S);
+    map_mods_into_ets([{delete, Key, Timestamp, ExpTime}|Tail], S);
 map_mods_into_ets([{insert_constant_value, StoreTuple}|Tail], S) ->
     %% Lazy, reuse....
     map_mods_into_ets([{insert, StoreTuple}|Tail], S);
@@ -2677,8 +2752,8 @@ check_dirty_key(Key, State) ->
     ets:member(State#state.dirty_tab, Key).
 
 add_mods_to_dirty_tab([{InsertLike, StoreTuple}|Tail], S)
-  when InsertLike == insert; InsertLike == insert_constant_value;
-       InsertLike == insert_value_into_ram ->
+  when InsertLike =:= insert; InsertLike =:= insert_constant_value;
+       InsertLike =:= insert_value_into_ram ->
     Key = storetuple_key(StoreTuple),
     ?DBG_ETS("add_to_dirty ~w: ~w", [S#state.name, Key]),
     ets:insert(S#state.dirty_tab, {Key, insert, StoreTuple}),
@@ -2691,7 +2766,7 @@ add_mods_to_dirty_tab([{insert_existing_value, StoreTuple, _OldKey}|Tail], S) ->
 add_mods_to_dirty_tab([{insert, StoreTuple, _BigDataTuple}|Tail], S) ->
     %% Lazy, reuse...
     add_mods_to_dirty_tab([{insert, StoreTuple}|Tail], S);
-add_mods_to_dirty_tab([{delete, Key, _}|Tail], S) ->
+add_mods_to_dirty_tab([{delete, Key, _Timestamp, _ExpTime} | Tail], S) ->
     ?DBG_ETS("add_to_dirty ~w: ~w", [S#state.name, Key]),
     ets:insert(S#state.dirty_tab, {Key, delete, delete}),
     add_mods_to_dirty_tab(Tail, S);
@@ -2712,11 +2787,11 @@ clear_dirty_tab([{insert, _ChainStoreTuple, StoreTuple}|Tail], S) ->
 clear_dirty_tab([{insert_value_into_ram, StoreTuple}|Tail], S) ->
     %% Lazy, reuse....
     clear_dirty_tab([{insert, StoreTuple}|Tail], S);
-clear_dirty_tab([{delete, Key, _}|Tail], S) ->
+clear_dirty_tab([{delete, Key, _Timestamp, _ExpTime} | Tail], S) ->
     ?DBG_ETS("clear_dirty ~w: ~w", [S#state.name, Key]),
     ets:delete(S#state.dirty_tab, Key),
     clear_dirty_tab(Tail, S);
-clear_dirty_tab([{delete_noexptime, Key}|Tail], S) ->
+clear_dirty_tab([{delete_noexptime, Key, _Timestamp} | Tail], S) ->
     ?DBG_ETS("clear_dirty_noexptime ~w: ~w", [S#state.name, Key]),
     ets:delete(S#state.dirty_tab, Key),
     clear_dirty_tab(Tail, S);
@@ -2964,9 +3039,10 @@ repair_loop_insert(Tuple, S) ->
 
 repair_loop_delete(Key, ExpTime, S) ->
     ?DBG_REPAIR("repair [delete] ~w", [Key]),
-    Thisdo_mods = [{delete, Key, ExpTime}],
+    Timestamp = brick_server:make_timestamp(),
+    Thisdo_mods = [{delete, Key, Timestamp, ExpTime}],
     _ = log_mods2(Thisdo_mods, undefined, S),
-    my_delete_ignore_logging(S, Key, ExpTime),
+    my_delete_ignore_logging(S, Key, Timestamp, ExpTime),
     ok.
 
 delete_remaining_keys(LastKey, S) ->

@@ -2687,9 +2687,9 @@ check_value_type(Val) ->
             end
     end.
 
-%% @spec () -> integer()
 %% @doc Create a timestamp based on the current time (erlang:now()).
-
+%% Unit = micro-second.
+-spec make_timestamp() -> integer().
 make_timestamp() ->
     {MSec, Sec, USec} = now(),
     (MSec * 1000000 * 1000000) + (Sec * 1000000) + USec.
@@ -2766,18 +2766,22 @@ harvest_do_keys(DoList, S) ->
 %% them in <tt>{read|write, term()}</tt> form.
 
 harvest_do_keys([{OpName, Key, _, _, _, _}|T], Acc, S)
-  when OpName == add; OpName == replace; OpName == set ->
-    harvest_do_keys(T, [{write, Key}|Acc], S);
+  when OpName =:= add; OpName =:= replace; OpName =:= set ->
+    harvest_do_keys(T, [{write, Key} | Acc], S);
 harvest_do_keys([{rename, Key, _, NewKey, _, _}|T], Acc, S) ->
     harvest_do_keys(T, [{write, Key}, {write, NewKey}|Acc], S);
-harvest_do_keys([{delete, Key, _}|T], Acc, S) ->
-    harvest_do_keys(T, [{write, Key}|Acc], S);
+harvest_do_keys([{delete, Key, _ExpTime} | T], Acc, S) ->
+    %% This {delete, key(), flags()} is an old form for Hibari 0.1
+    %% but brick_simple is still using it.
+    harvest_do_keys(T, [{write, Key} | Acc], S);
+harvest_do_keys([{delete, Key, _Timestamp, _ExpTime} | T], Acc, S) ->
+    harvest_do_keys(T, [{write, Key} | Acc], S);
 harvest_do_keys([{get, Key, _}|T], Acc, S) ->
-    harvest_do_keys(T, [{read, Key}|Acc], S);
-harvest_do_keys([{get_many, Key, _}|T], Acc, S) ->
-    harvest_do_keys(T, [{read, Key}|Acc], S);
+    harvest_do_keys(T, [{read, Key} | Acc], S);
+harvest_do_keys([{get_many, Key, _} | T], Acc, S) ->
+    harvest_do_keys(T, [{read, Key} | Acc], S);
 harvest_do_keys([{ssf, Key, _}|T], Acc, S) ->
-    harvest_do_keys(T, [{write, Key}|Acc], S);
+    harvest_do_keys(T, [{write, Key} | Acc], S);
 harvest_do_keys([_|T], Acc, S) ->
     harvest_do_keys(T, Acc, S);
 harvest_do_keys([], Acc, _S) ->
@@ -2838,22 +2842,22 @@ handle_call_via_impl(Msg, From, State) ->
 %% #state.impl_state prior to returning.
 
 calc_original_return({reply, Reply, S}, State) ->
-    false = size(S) == record_info(size, state), %sanity
+    false = size(S) =:= record_info(size, state), %sanity
     {reply, Reply, State#state{impl_state = S}};
 calc_original_return({reply, Reply, S, Timeout}, State) ->
-    false = size(S) == record_info(size, state), %sanity
+    false = size(S) =:= record_info(size, state), %sanity
     {reply, Reply, State#state{impl_state = S}, Timeout};
 calc_original_return({noreply, S}, State) ->
-    false = size(S) == record_info(size, state), %sanity
+    false = size(S) =:= record_info(size, state), %sanity
     {noreply, State#state{impl_state = S}};
 calc_original_return({noreply, S, Timeout}, State) ->
-    false = size(S) == record_info(size, state), %sanity
+    false = size(S) =:= record_info(size, state), %sanity
     {noreply, State#state{impl_state = S}, Timeout};
 calc_original_return({stop, Reason, Reply, S}, State) ->
-    false = size(S) == record_info(size, state), %sanity
+    false = size(S) =:= record_info(size, state), %sanity
     {stop, Reason, Reply, State#state{impl_state = S}};
 calc_original_return({stop, Reason, S}, State) ->
-    false = size(S) == record_info(size, state), %sanity
+    false = size(S) =:= record_info(size, state), %sanity
     {stop, Reason, State#state{impl_state = S}}.
 
 %% @spec (state_r(), term()) -> gen_server_handle_call_reply_tuple()
@@ -4828,7 +4832,7 @@ sweep_move_or_keep(ListWithBricks, LastKey, S) ->
             %% deleting after phase 2 of the sweep.  They're the keys
             %% that we need to prime: slurp them off of slow slow disk
             %% and get them into the OS page cache.
-            Keys = lists:map(fun({delete_noexptime, K}) -> K end, Thisdo_Mods),
+            Keys = lists:map(fun({delete_noexptime, K, _Timestamp}) -> K end, Thisdo_Mods),
             %% io:format("QQQ: ~p: priming keys: ~p\n", [S#state.name, Keys]),
             ?DBG_MIGRATE("kick__phase2_prime ~w ~w ~w", [S#state.name, Keys, LastKey]),
             spawn_val_prime_worker_for_sweep(Keys, LastKey, S),
@@ -4860,13 +4864,9 @@ sweep_move_or_keep(ListWithBricks, LastKey, S) ->
                   Sw#sweep_r.bigdata_dir_p,Sw#sweep_r.val_prime_lastkey})
     end.
 
--spec sweep_move_or_keep3(sweep_key(), orddict(), list({delete_noexptime, term()}), #state{}) -> #state{}.
+-spec sweep_move_or_keep3(sweep_key(), orddict(), [{delete_noexptime, term(), term()}], #state{}) -> #state{}.
 sweep_move_or_keep3(LastKey, MoveDict, Thisdo_Mods, S) ->
     Sw = S#state.sweepstate,
-
-    %%?DBG(LastKey),
-    %%?DBG(MoveDict),
-    %%?DBG(Thisdo_Mods),
 
     %% Cannot send changes for this chain downstream: if there's
     %% a failure in this chain, we need to have the keys/vals
@@ -4935,7 +4935,7 @@ sweep_move_or_keep3(LastKey, MoveDict, Thisdo_Mods, S) ->
             TDM = if PropDelay == 0 ->
                           Thisdo_Mods;
                      true ->
-                          [{log_directive, map_sleep, PropDelay}|Thisdo_Mods]
+                          [{log_directive, map_sleep, PropDelay} | Thisdo_Mods]
                   end,
             S#state{sweepstate = Sw#sweep_r{sweep_key = LastKey,
                                             stage = Stage,
@@ -4947,14 +4947,20 @@ sweep_move_or_keep3(LastKey, MoveDict, Thisdo_Mods, S) ->
                     globalhash = NewGH}
     end.
 
--spec sweep_move_or_keep2(list({chain_name(), chain_name(),tuple()}), chain_name(), #state{}) -> {orddict(), list({delete_noexptime, term()})}.
+-spec sweep_move_or_keep2([{chain_name(), chain_name(), tuple()}], chain_name(), #state{}) ->
+                                 {orddict(), [{delete_noexptime, term(), term()}]}.
 sweep_move_or_keep2(ListWithBricks, ChainName, S) ->
     sweep_move_or_keep2(ListWithBricks, orddict:new(), [], ChainName, S).
 
--spec sweep_move_or_keep2(list({chain_name(), chain_name(),tuple()}), orddict(), list({delete_noexptime, term()}), chain_name(), #state{}) -> {orddict(), list({delete_noexptime, term()})}.
-sweep_move_or_keep2([{CHcur, CHnew, Item}|T], Dict, Thisdo_Mods, MyChainName,
+-spec sweep_move_or_keep2([{chain_name(), chain_name(), tuple()}],
+                          orddict(),
+                          [{delete_noexptime, term(), term()}],
+                          chain_name(),
+                          #state{}) ->
+                                 {orddict(), [{delete_noexptime, term(), term()}] }.
+sweep_move_or_keep2([{CHcur, CHnew, Item} | T], Dict, Thisdo_Mods, MyChainName,
                     S) ->
-    if MyChainName /= CHcur, MyChainName /= CHnew ->
+    if MyChainName =/= CHcur, MyChainName =/= CHnew ->
             Sw = S#state.sweepstate,
             ?E_ERROR("BAD: Item ~p stored by brick ~p in "
                      "chain ~p, but should be stored in "
@@ -4979,7 +4985,8 @@ sweep_move_or_keep2([{CHcur, CHnew, Item}|T], Dict, Thisdo_Mods, MyChainName,
             %% need to know its expiration time.  However, we don't
             %% have that info available.  So we introduce a new kind
             %% of thisdo mod tuple: delete-but-we-don't-know-the-exptime.
-            NewThisdo_Mods = [{delete_noexptime, Key}|Thisdo_Mods],
+            Timestamp = make_timestamp(),
+            NewThisdo_Mods = [{delete_noexptime, Key, Timestamp} | Thisdo_Mods],
             sweep_move_or_keep2(T, orddict:store(CHnew, NewL, Dict),
                                NewThisdo_Mods, MyChainName, S)
     end;
