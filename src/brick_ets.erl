@@ -549,9 +549,6 @@ init([ServerName, Options]) ->
 %%          {stop, Reason, State}            (terminate/2 is called)
 %%----------------------------------------------------------------------
 handle_call({do, _SentAt, L, DoFlags} = DoOp, From, State) ->
-    %% This func is getting too-deeply indented ... but I really want all
-    %% this stuff easy-to-see in a single func body.
-    ?DBG_OPx(DoOp),
     case do_do(L, DoFlags, DoOp, From, State#state{thisdo_mods = []}, check_dirty) of
         has_dirty_keys ->
             ?DBG_OP("do ~w [has_dirty_keys] ~w", [State#state.name, DoOp]),
@@ -561,7 +558,7 @@ handle_call({do, _SentAt, L, DoFlags} = DoOp, From, State) ->
         {no_dirty_keys, {Reply, NewState}} ->
             %% #state.thisdo_mods will be in reverse order of DoOpList!
             Thisdo_Mods = lists:reverse(NewState#state.thisdo_mods),
-            if NewState#state.read_only_p, Thisdo_Mods /= [] ->
+            if NewState#state.read_only_p, Thisdo_Mods =/= [] ->
                     ?DBG_OP("do ~w [read_only_mode] ~w", [State#state.name, DoOp]),
                     {up1_read_only_mode, From, DoOp, NewState};
                true ->
@@ -681,7 +678,7 @@ handle_cast(Msg, State) ->
 %%          {stop, Reason, State}            (terminate/2 is called)
 %%----------------------------------------------------------------------
 handle_info({sync_done, Pid, LastLogSerial}, State)
-  when Pid == State#state.sync_pid ->
+  when Pid =:= State#state.sync_pid ->
     ?DBG_TLOG("sync_done ~w, lastlog_serial ~w, logging_op_serial ~w, logging_op_q ~w",
               [State#state.name, LastLogSerial, State#state.logging_op_serial, State#state.logging_op_q]),
     {LQI_List, State2} = pull_items_out_of_logging_queue(LastLogSerial, State),
@@ -709,7 +706,7 @@ handle_info(check_expiry, State) ->
     end;
 handle_info(check_checkpoint, State) ->
     {noreply, do_check_checkpoint(State)};
-handle_info({'EXIT', Pid, Reason}, State) when Pid == State#state.check_pid ->
+handle_info({'EXIT', Pid, Reason}, State) when Pid =:= State#state.check_pid ->
     case Reason of
         done ->
             ok;
@@ -720,20 +717,20 @@ handle_info({'EXIT', Pid, Reason}, State) when Pid == State#state.check_pid ->
     end,
     NewState = fold_shadow_into_ctab(State),
     {noreply, NewState#state{check_pid = undefined}};
-handle_info({'EXIT', Pid, Reason}, State) when Pid == State#state.sync_pid ->
+handle_info({'EXIT', Pid, Reason}, State) when Pid =:= State#state.sync_pid ->
     ?ELOG_ERROR("~s: sync pid ~p died ~p",
                 [State#state.name, Pid, Reason]),
     {stop, normal, State};
 handle_info({'EXIT', Pid, Done}, State)
-  when Pid == State#state.scavenger_pid andalso
-       (Done == done orelse element(3, Done) == done) -> % smart_exceptions
+  when Pid =:= State#state.scavenger_pid andalso
+       (Done =:= done orelse element(3, Done) =:= done) -> % smart_exceptions
     {noreply, State#state{scavenger_pid = undefined}};
 handle_info({'EXIT', Pid, Reason}, State)
-  when Pid == State#state.scavenger_pid ->
-    ?E_WARNING("QQQ: ~p: scavenger ~p exited with ~p",
+  when Pid =:= State#state.scavenger_pid ->
+    ?E_WARNING("~p: scavenger ~p exited with ~p",
                [State#state.name, State#state.scavenger_pid, Reason]),
     {noreply, State#state{scavenger_pid = undefined}};
-handle_info({'EXIT', Pid, Reason}, State) when Pid == State#state.log ->
+handle_info({'EXIT', Pid, Reason}, State) when Pid =:= State#state.log ->
     ?E_WARNING("~p: log process ~p exited with ~p",
                [State#state.name, State#state.log, Reason]),
     {stop, Reason, State};
@@ -750,10 +747,10 @@ handle_info({syncpid_stats, _Name, MSec, ms, Length}, State) ->
                           syncsum_msec = State#state.syncsum_msec + MSec,
                           syncsum_len = State#state.syncsum_len + Length}};
 handle_info(log_sync_stats, State) ->
-    AvgTime = if State#state.syncsum_count == 0 -> 0;
+    AvgTime = if State#state.syncsum_count =:= 0 -> 0;
                  true -> State#state.syncsum_msec / State#state.syncsum_count
               end,
-    AvgLen = if State#state.syncsum_count == 0 -> 0;
+    AvgLen = if State#state.syncsum_count =:= 0 -> 0;
                 true -> State#state.syncsum_len / State#state.syncsum_count
              end,
     ?E_INFO("sync summary: ~p: ~p syncs ~p msec avg ~p len avg",
@@ -907,7 +904,7 @@ do_do1b(DoKeys0, L, DoFlags, DoOp, From, State, check_dirty)
                     %% changing arity on do_do2() and more?  Well, it
                     %% turns out that we don't need to keep DoKeys and
                     %% the read/write info it stores ... we can use
-                    %% instead: if Thisdo_Mods == [], then all ops
+                    %% instead: if Thisdo_Mods =:= [], then all ops
                     %% were read-only.
                     {no_dirty_keys, do_do2(L, DoFlags, State)};
                true ->
@@ -1061,7 +1058,7 @@ do_txnlist([{set, Key, TStamp, Value, _ExpTime, Flags} = H|T], State,
                                             _         -> Sum
                                         end
                       end, 0, [must_exist, must_not_exist]),
-    if Num == 0 ->
+    if Num =:= 0 ->
             case key_exists_p(Key, Flags, State, false, EffTStamp, Value) of
                 {ts_error, _} = Err ->
                     do_txnlist(T, State, [Err|Acc], false, N+1, DoFlags, [{N, Err}|ErrAcc]);
@@ -1137,11 +1134,11 @@ common_testset_must_mustnot(Key, Flags, S) ->
                                      {Key, TSx, _, _, _, _} -> {true, TSx};
                                      _                      -> {false, unused}
                                  end,
-            if WantedExist == dont_care ; WantedExist == ActualExist ->
+            if WantedExist =:= dont_care ; WantedExist =:= ActualExist ->
                     ok;
-               WantedExist == true, ActualExist == false ->
+               WantedExist =:= true, ActualExist =:= false ->
                     {error, key_not_exist};
-               WantedExist == false, ActualExist == true ->
+               WantedExist =:= false, ActualExist =:= true ->
                     {error, {key_exists, TS}};
                true ->
                     {error, invalid_flag_present}
@@ -1280,17 +1277,17 @@ replace_key2(Key, TStamp, Value, ExpTime, Flags, State, TS) ->
                 {{ok, _}, _} = Ok ->
                     Ok
             end;
-        TStamp == TS, element(1, Value) == ?VALUE_SWITCHAROO ->
+        TStamp =:= TS, element(1, Value) =:= ?VALUE_SWITCHAROO ->
             case my_insert(State, Key, TStamp, Value, ExpTime, Flags) of
                 {val_error, _} = Err ->
                     {Err, State};
                 {{ok, _}, _} = Ok ->
                     Ok
             end;
-        TStamp == TS ->
+        TStamp =:= TS ->
             %% We need to get the val blob.  {sigh}
             {Key, TS, Val, _, _, _} = key_exists_p(Key, Flags, State),
-            if Value == Val ->
+            if Value =:= Val ->
                     %% In this case, the new timestamp and value is
                     %% identical to what is already stored here ... so
                     %% we will return OK without changing anything.
@@ -1466,7 +1463,7 @@ get_many1(Key, Flags, IncreasingOrderP, DoFlags, State) ->
         {_, undefined} ->
             Result;
         {_, {SweepA, SweepZ}} ->
-            %% Hint: we know Rs /= [].
+            %% Hint: we know Rs =/= [].
             %%
             %% Now we need to check ... if the first key is =< than SweepA,
             %% and if the last key is greater than SweepZ, then we need to
@@ -1513,10 +1510,10 @@ get_many1b(Key, Flags, IncreasingOrderP, State) ->
                    N2 when is_integer(N2) -> N2;
                    _                      -> 2*1024*1024*1024
                end,
-    Res = if State#state.shadowtab == undefined ->
+    Res = if State#state.shadowtab =:= undefined ->
                   get_many2(ets_next_wrapper(State#state.ctab, Key),
                             MaxNum, MaxBytes, ResultFlavor, BPref, [], State);
-             BPref == 0 ->
+             BPref =:= 0 ->
                   get_many_shadow(ets_next_wrapper(State#state.ctab, Key),
                                   ets_next_wrapper(State#state.shadowtab, Key),
                                   MaxNum, MaxBytes, ResultFlavor, [], State);
@@ -1528,7 +1525,7 @@ get_many1b(Key, Flags, IncreasingOrderP, State) ->
                                       MaxNum, MaxBytes, ResultFlavor, [],State),
                   %% Need to filter after-the-fact.
                   {PfxLen, Pfx} = BPref,
-                  if Xs == [] ->
+                  if Xs =:= [] ->
                           {{Xs, Bool}, NewState};
                      true ->
                           Key_0 = element(1, hd(Xs)),
@@ -1585,14 +1582,14 @@ get_many2(Key, MaxNum, MaxBytes, ResultFlavor, BPref, Acc, State)
                    end
            end,
     if
-        Cont == ok ->
+        Cont =:= ok ->
             [Tuple] = ets:lookup(State#state.ctab, Key),
             Bytes = storetuple_vallen(Tuple),
             Item = make_many_result(Tuple, ResultFlavor, State),
             get_many2(ets:next(State#state.ctab, Key), MaxNum - 1,
                       MaxBytes - Bytes,
                       ResultFlavor, BPref, [Item|Acc], State);
-        Cont == skip ->
+        Cont =:= skip ->
             get_many2('$end_of_table', MaxNum, MaxBytes, ResultFlavor, BPref,
                       Acc, State)
     end;
@@ -1625,7 +1622,7 @@ make_many_result(StoreTuple, {false, true, false}, S) ->
 make_many_result(StoreTuple, {_DoWitness, _DoAllAttr, true}, _S) ->
     StoreTuple.
 
-make_many_result2(StoreTuple, S) when S#state.bigdata_dir == undefined ->
+make_many_result2(StoreTuple, S) when S#state.bigdata_dir =:= undefined ->
     {Key, TStamp, Val0, _ExpTime, _Flags} = storetuple_to_externtuple(
                                               StoreTuple, S),
     {Key, TStamp, Val0};
@@ -1636,7 +1633,7 @@ make_many_result2(StoreTuple, S) ->
     Val = bigdata_dir_get_val(Key, Val0, ValLen, S),
     {Key, TStamp, Val}.
 
-make_many_result3(StoreTuple, S) when S#state.bigdata_dir == undefined ->
+make_many_result3(StoreTuple, S) when S#state.bigdata_dir =:= undefined ->
     storetuple_to_externtuple(StoreTuple, S);
 make_many_result3(StoreTuple, S) ->
     {Key, TStamp, Val0, ExpTime, Flags} = storetuple_to_externtuple(
@@ -1730,7 +1727,7 @@ get_many_shadow(Key, SKey, MaxNum, MaxBytes, ResultFlavor, Acc, S)
                     SKey,
                     MaxNum - 1, MaxBytes - Bytes, ResultFlavor, [Item|Acc], S);
 get_many_shadow(Key, SKey, MaxNum, MaxBytes, ResultFlavor, Acc, S)
-  when Key == SKey ->
+  when Key =:= SKey ->
     [Shadow] = ets:lookup(S#state.shadowtab, SKey),
     case Shadow of
         {_Key, delete, _Timestamp, _ExpTime} ->
@@ -1759,13 +1756,13 @@ get_many_shadow(Key, SKey, MaxNum, MaxBytes, ResultFlavor, Acc, S)
         {_Key, delete, _Timestamp, _ExpTime} ->
             %% If SKey is a delete, then SKey should also be present
             %% in the frozen table ... but somehow we skipped the
-            %% case where Key == SKey, which ought to be impossible.
+            %% case where Key =:= SKey, which ought to be impossible.
             %%
             %% throw({get_many_shadow, impossible, Key, SKey})
 
             %% This is a subtle case.  Naively, we would expect that a
             %% previous iteration of this func would have caught the
-            %% Key == SKey case before we got to this point.  However,
+            %% Key =:= SKey case before we got to this point.  However,
             %% that is the naive view.
             %% It is possible that the following sequence of events
             %% happened:
@@ -1805,7 +1802,7 @@ check_flaglist(Flag, [_H|T]) ->
 storetuple_make(Key, TStamp, Value, ValueLen, 0, []) ->
     {Key, TStamp, Value, ValueLen};
 storetuple_make(Key, TStamp, Value, ValueLen, 0, Flags)
-  when is_list(Flags), Flags /= [] ->
+  when is_list(Flags), Flags =/= [] ->
     {Key, TStamp, Value, ValueLen, Flags};
 storetuple_make(Key, TStamp, Value, ValueLen, ExpTime, [])
   when is_integer(ExpTime), ExpTime =/= 0 ->
@@ -1876,7 +1873,7 @@ storetuple_to_externtuple({Key, TStamp, Value, ValueLen, ExpTime, Flags}, S) ->
     {Key, TStamp, Value, ExpTime, make_extern_flags(Value, ValueLen, Flags, S)}.
 
 make_extern_flags(Value, ValueLen, Flags, S) ->
-    if is_binary(Value), S#state.bigdata_dir /= undefined ->
+    if is_binary(Value), S#state.bigdata_dir =/= undefined ->
             [{val_len, ValueLen}, value_in_ram|Flags];
        true ->
             [{val_len, ValueLen}|Flags]
@@ -1958,7 +1955,7 @@ my_insert2(#state{thisdo_mods=Mods, max_log_size=MaxLogSize}=S, Key, TStamp, Val
             {OldSeq, _} = OldVal,
             {CurSeq, _} = CurVal,
             Mod =
-                if abs(OldSeq) == abs(CurSeq) ->
+                if abs(OldSeq) =:= abs(CurSeq) ->
                         {insert_constant_value,
                          storetuple_make(Key, TStamp, NewVal, CurValLen,
                                          ExpTime, Flags)};
@@ -1993,7 +1990,7 @@ my_insert2(#state{thisdo_mods=Mods, max_log_size=MaxLogSize}=S, Key, TStamp, Val
                     ST = storetuple_make(Key, TStamp, Val, size(Val),
                                          ExpTime, Flags -- [value_in_ram]),
                     Mod =
-                        if UseRamP ; S#state.bigdata_dir == undefined ->
+                        if UseRamP ; S#state.bigdata_dir =:= undefined ->
                                 {insert_value_into_ram, ST};
                            true ->
                                 Loc = bigdata_dir_store_val(Key, Value, S),
@@ -2071,7 +2068,7 @@ my_lookup(State, Key, _MustHaveVal_p = false) ->
 my_lookup(State, Key, true) ->
     case my_lookup2(State, Key) of
         [StoreTuple] = Res ->
-            if State#state.bigdata_dir == undefined ->
+            if State#state.bigdata_dir =:= undefined ->
                     Res;
                true ->
                     Val0 = storetuple_val(StoreTuple),
@@ -2185,7 +2182,7 @@ purge_rec_from_log(_Iters, '$end_of_table', _SeqNum, Count, _S) ->
 purge_rec_from_log(Iters, Key, SeqNum, Count, S) ->
     [ST] = my_lookup(S, Key, false),
     case storetuple_val(ST) of
-        {STSeqNum, _Offset} when abs(STSeqNum) == SeqNum ->
+        {STSeqNum, _Offset} when abs(STSeqNum) =:= SeqNum ->
             Timestamp = brick_server:make_timestamp(),
             ExpTime = storetuple_exptime(ST),
             my_delete_ignore_logging(S, Key, Timestamp, ExpTime),
@@ -2204,7 +2201,7 @@ purge_rec_from_shadowtab(_SeqNum, undefined, _S) ->
 purge_rec_from_shadowtab(SeqNum, ShadowTab, S) ->
     ets:foldl(fun({Key, insert, ST}, Acc) ->
                       case storetuple_val(ST) of
-                          {STSeqNum, _Off} when abs(STSeqNum) == SeqNum ->
+                          {STSeqNum, _Off} when abs(STSeqNum) =:= SeqNum ->
                               Timestamp = brick_server:make_timestamp(),
                               ExpTime = storetuple_exptime(ST),
                               my_delete_ignore_logging(S, Key, Timestamp, ExpTime),
@@ -2230,7 +2227,7 @@ filter_mods_for_downstream(Thisdo_Mods) ->
               end, Thisdo_Mods).
 
 filter_mods_from_upstream(Thisdo_Mods, S)
-  when S#state.bigdata_dir == undefined ->
+  when S#state.bigdata_dir =:= undefined ->
     Thisdo_Mods;
 filter_mods_from_upstream(Thisdo_Mods, S) ->
     Ms = lists:map(fun({insert, ST}) ->
@@ -2344,7 +2341,7 @@ checkpoint_start(#state{name=Name, wal_mod=WalMod}=S_ro, DoneLogSeq, ParentPid, 
                     X < DoneLogSeq],
     DeleteP = case proplists:get_value(bigdata_dir, ServerProps) of
                   undefined -> true;
-                  _         -> S_ro#state.wal_mod /= gmt_hlog_common
+                  _         -> S_ro#state.wal_mod =/= gmt_hlog_common
               end,
     if DeleteP andalso OldSeqs =/= [] ->
             %%
@@ -2679,7 +2676,7 @@ map_mods_into_ets([{log_directive, sync_override, _}|Tail], S) ->
 map_mods_into_ets([{log_noop}|Tail], S) ->
     map_mods_into_ets(Tail, S);
 map_mods_into_ets([H|Tail], S)
-  when is_tuple(H), element(1, H) == chain_send_downstream ->
+  when is_tuple(H), element(1, H) =:= chain_send_downstream ->
     exit(should_not_be_happening_bad_scott_1),
     map_mods_into_ets(Tail, S);
 map_mods_into_ets(NotList, _S) when not is_list(NotList) ->
@@ -2808,7 +2805,7 @@ clear_dirty_tab([{log_directive, _, _}|Tail], S) ->
 clear_dirty_tab([{log_noop}|Tail], S) ->
     clear_dirty_tab(Tail, S);
 clear_dirty_tab([H|Tail], S)
-  when is_tuple(H), element(1, H) == chain_send_downstream ->
+  when is_tuple(H), element(1, H) =:= chain_send_downstream ->
     exit(should_not_be_happening_bad_scott_2),
     clear_dirty_tab(Tail, S);
 clear_dirty_tab(NotList, _S) when not is_list(NotList) ->
@@ -2973,7 +2970,7 @@ repair_loop([StoreTuple|Tail] = UpList, MyKey, Is, Ds, S) ->
             if UpTS =:= MyTS ->
                     %% We're repairing, so it's impossible to have active
                     %% shadowtab right now.
-                    MyVal = if S#state.bigdata_dir == undefined ->
+                    MyVal = if S#state.bigdata_dir =:= undefined ->
                                     storetuple_val(MyStoreTuple);
                                true ->
                                     Val0 = storetuple_val(StoreTuple),
@@ -3422,7 +3419,7 @@ squidflash_primer({do, _SentAt, Dos, DoFlags} = DoOp, From, S) ->
                   (_, Acc) ->
                        Acc
                end, [], Dos),
-    if KsRaws == [] ->
+    if KsRaws =:= [] ->
             goahead;
        true ->
             %% OK, this state hack pretty ugly, but because we're
@@ -3489,7 +3486,7 @@ do_check_expiry(S) ->
                            [ST] ->
                                TS = storetuple_ts(ST),
                                ExpTime2 = storetuple_exptime(ST),
-                               if ExpTime == ExpTime2 ->
+                               if ExpTime =:= ExpTime2 ->
                                        [{Key, TS}|Acc];
                                   true ->
                                        Acc
@@ -3513,7 +3510,7 @@ delete_keys_immediately(ServerName, KeysTs) ->
     Parent = self(),
     Ops =  [brick_server:make_delete(Key, [{testset, TS}]) ||
                {Key, TS} <- KeysTs],
-    if Ops /= [] ->
+    if Ops =/= [] ->
             %% We could try to pass the do list directly to ourself,
             %% but there's too much complication with chain
             %% replication and 'up1' processing.  {sigh} So be lazy
@@ -3535,7 +3532,7 @@ delete_keys_immediately(ServerName, KeysTs) ->
     end.
 
 verbose_expiration(ServerName, KeysTs) ->
-    if KeysTs /= [] -> ?E_INFO("Verbose expiry: ~p ~p", [ServerName, KeysTs]);
+    if KeysTs =/= [] -> ?E_INFO("Verbose expiry: ~p ~p", [ServerName, KeysTs]);
        true         -> ok
     end,
     delete_keys_immediately(ServerName, KeysTs).
@@ -3599,7 +3596,7 @@ scavenger_get_keys(Name, Fs, FirstKey, F_k2d, F_lump) ->
                        [], F_k2d, F_lump, 1).
 
 scavenger_get_keys(Name, Fs, GMC, Res, Acc, F_k2d, F_lump, Iters)
-  when Iters rem 4 == 0 ->
+  when Iters rem 4 =:= 0 ->
     foldl_lump(F_k2d, dict:new(), Acc, F_lump, 100*1000),
     scavenger_get_keys(Name, Fs, GMC,
                        Res, [], F_k2d, F_lump, Iters + 1);
@@ -3686,7 +3683,7 @@ really_cheap_exclusion(ExclAtom, Fwait, Fgo) ->
                       Fgo(),
                       {false, Count};
                   _ ->
-                      if Count == 0 -> Fwait();
+                      if Count =:= 0 -> Fwait();
                          true       -> ok
                       end,
                       timer:sleep(1000),
@@ -3787,7 +3784,7 @@ bcb_map_mods_to_storage(Thisdo_Mods, S) when is_record(S, state) ->
 
 bcb_get_list(Keys, S) when is_record(S, state) ->
     F_ram = fun(Key, Flags) ->
-                    if S#state.bigdata_dir == undefined ->
+                    if S#state.bigdata_dir =:= undefined ->
                             Flags;
                        true ->
                             [ST] = my_lookup(S, Key, false),
@@ -3914,7 +3911,7 @@ bcb_dirty_keys_in_range(StartKey, EndKey, S)
     DirtyList = ets:tab2list(S#state.dirty_tab),
     ?DBG_GEN("bcb_dirty_keys_in_range ~w: startkey ~w, endkey ~w, dirty ~w",
              [S#state.name, StartKey, EndKey, DirtyList]),
-    L = if EndKey == ?BRICK__GET_MANY_LAST ->
+    L = if EndKey =:= ?BRICK__GET_MANY_LAST ->
                 [Dirty || {Key,_,_} = Dirty <- DirtyList,
                           Key >= StartKey];
            true ->
@@ -3961,7 +3958,7 @@ bcb_lookup_key_storetuple(Key, true = _MustHaveVal_p, S)
         [ST] ->
             [ST2] = my_lookup(S, Key, true),
             RawVal = storetuple_val(ST),
-            if S#state.bigdata_dir /= undefined, is_binary(RawVal) ->
+            if S#state.bigdata_dir =/= undefined, is_binary(RawVal) ->
                     [{true, ST2}];
                true ->
                     [{false, ST2}]
@@ -4087,10 +4084,10 @@ debug_scan(Dir, WalMod) ->
       shortterm, Dir,
       fun(H, FH, Acc) ->
               io:format("Hunk: ~p ~p", [H#hunk_summ.seq, H#hunk_summ.off]),
-              if H#hunk_summ.type == ?LOGTYPE_METADATA ->
+              if H#hunk_summ.type =:= ?LOGTYPE_METADATA ->
                       CB = WalMod:read_hunk_member_ll(FH, H, md5, 1),
                       io:format("~P", [binary_to_term(CB), 40]);
-                 H#hunk_summ.type == ?LOGTYPE_BLOB ->
+                 H#hunk_summ.type =:= ?LOGTYPE_BLOB ->
                       io:format("blob len: ~p", [hd(H#hunk_summ.c_len)]);
                  true ->
                       io:format("Unknown hunk type: ~p, ~p", [H#hunk_summ.type, H])
@@ -4105,22 +4102,23 @@ debug_scan2(Dir, WalMod) ->
     WalMod:fold(
       shortterm, Dir,
       fun(H, FH, {{Is,Ds,DAs}=Foo, MDs, Bls, Os}) ->
-              if H#hunk_summ.type == ?LOGTYPE_METADATA ->
+              if H#hunk_summ.type =:= ?LOGTYPE_METADATA ->
                       CB = WalMod:read_hunk_member_ll(FH, H, md5, 1),
                       Mods = binary_to_term(CB),
                       {I, D, DA} =
                           lists:foldl(
-                            fun(T, {Ix, Dx, DAx}) when element(1, T) == insert ->
+                            fun(T, {Ix, Dx, DAx}) when element(1, T) =:= insert ->
                                     {Ix+1, Dx, DAx};
-                               (T, {Ix, Dx, DAx}) when element(1, T) == delete orelse element(1, T) == delete_noexptime ->
+                               (T, {Ix, Dx, DAx}) when element(1, T) =:= delete
+                                                       orelse element(1, T) =:= delete_noexptime ->
                                     {Ix, Dx+1, DAx};
-                               (T, {Ix, Dx, DAx}) when element(1, T) == delete_all_table_items ->
+                               (T, {Ix, Dx, DAx}) when element(1, T) =:= delete_all_table_items ->
                                     {Ix, Dx, DAx+1};
                                (_, Acc) ->
                                     Acc
                             end, {0, 0, 0}, Mods),
                       {{Is+I, Ds+D, DAs+DA}, MDs+1, Bls, Os};
-                 H#hunk_summ.type == ?LOGTYPE_BLOB ->
+                 H#hunk_summ.type =:= ?LOGTYPE_BLOB ->
                       CB1 = WalMod:read_hunk_member_ll(FH, H, md5, 1),
                       H2 = H#hunk_summ{c_blobs = [CB1]},
                       true = gmt_hlog:md5_checksum_ok_p(H2),
@@ -4140,23 +4138,23 @@ debug_scan3(Dir, EtsTab, WalMod) ->
     WalMod:fold(
       shortterm, Dir,
       fun(H, FH, _Acc) ->
-              if H#hunk_summ.type == ?LOGTYPE_METADATA ->
+              if H#hunk_summ.type =:= ?LOGTYPE_METADATA ->
                       CB = WalMod:read_hunk_member_ll(FH, H, md5, 1),
                       Mods = binary_to_term(CB),
                       lists:foreach(
-                        fun(T) when element(1, T) == insert ->
+                        fun(T) when element(1, T) =:= insert ->
                                 Key = element(1, element(2, T)),
                                 ets:insert(EtsTab, {Key, x});
-                           (T) when element(1, T) == delete orelse element(1, T) == delete_noexptime ->
+                           (T) when element(1, T) =:= delete orelse element(1, T) =:= delete_noexptime ->
                                 Key = element(1, element(2, T)),
                                 ets:delete(EtsTab, Key);
-                           (T) when element(1, T) == delete_all_table_items ->
+                           (T) when element(1, T) =:= delete_all_table_items ->
                                 ets:delete_all_objects(EtsTab);
                            (_) ->
                                 blah
                         end, Mods),
                       blah;
-                 H#hunk_summ.type == ?LOGTYPE_BLOB ->
+                 H#hunk_summ.type =:= ?LOGTYPE_BLOB ->
                       blah;
                  true ->
                       blah
@@ -4171,23 +4169,23 @@ debug_scan4(Dir, OutFile, WalMod) ->
     X = WalMod:fold(
           shortterm, Dir,
           fun(H, FH, _Acc) ->
-                  if H#hunk_summ.type == ?LOGTYPE_METADATA ->
+                  if H#hunk_summ.type =:= ?LOGTYPE_METADATA ->
                           CB = WalMod:read_hunk_member_ll(FH, H, md5, 1),
                           Mods = binary_to_term(CB),
                           lists:foreach(
-                            fun(T) when element(1, T) == insert orelse element(1, T) == insert_value_into_ram ->
+                            fun(T) when element(1, T) =:= insert orelse element(1, T) =:= insert_value_into_ram ->
                                     Key = element(1, element(2, T)),
                                     io:format(OutFH, "i ~p", [Key]);
-                               (T) when element(1, T) == delete orelse element(1, T) == delete_noexptime ->
+                               (T) when element(1, T) =:= delete orelse element(1, T) =:= delete_noexptime ->
                                     Key = element(2, T),
                                     io:format(OutFH, "d ~p", [Key]);
-                               (T) when element(1, T) == delete_all_table_items ->
+                               (T) when element(1, T) =:= delete_all_table_items ->
                                     io:format(OutFH, "delete_all_table_items ", []);
                                (T) ->
                                     io:format(OutFH, "? ~p", [T])
                             end, Mods),
                           blah;
-                     H#hunk_summ.type == ?LOGTYPE_BLOB ->
+                     H#hunk_summ.type =:= ?LOGTYPE_BLOB ->
                           blah;
                      true ->
                           blah

@@ -438,7 +438,7 @@ handle_info({'DOWN', _Ref, _, Pid, Reason},
     _ = [ gen_server:reply(From, {error, Reason}) || From <- Reqs ],
     {noreply, State#state{async_writeback_pid=undefined, async_writeback_reqs=[]}};
 %% handle_info({'DOWN', Ref, _, _, _}, #state{brick_registory=Dict}=State) ->
-%%     NewDict = orddict:filter(fun(_K, V) when V /= Ref -> true;
+%%     NewDict = orddict:filter(fun(_K, V) when V =/= Ref -> true;
 %%                                 (_, _)                -> false
 %%                              end, Dict),
 %%     {noreply, State#state{brick_registory=NewDict}};
@@ -937,8 +937,8 @@ add_metadata_db_op({log_directive, sync_override, false}=Op, _Batch) ->
     error({writeback_not_implemented, Op});
 add_metadata_db_op({log_directive, map_sleep, _Delay}=Op, _Batch) ->
     error({writeback_not_implemented, Op});
-add_metadata_db_op({log_noop}=Op, _Batch) ->
-    error({writeback_not_implemented, Op}).
+add_metadata_db_op({log_noop}, Batch) ->
+    Batch. %% noop
 
 -spec metadata_db_key(store_tuple()) -> binary().
 metadata_db_key(StoreTuple) ->
@@ -1113,8 +1113,8 @@ short_long_same_dev_p(HLogDir) ->
     LongDir = filename:dirname(gmt_hlog:log_file_path(HLogDir, -1)),
     {ok, ShortFI} = file:read_file_info(ShortDir),
     {ok, LongFI} = file:read_file_info(LongDir),
-    ShortFI#file_info.major_device == LongFI#file_info.major_device andalso
-        ShortFI#file_info.minor_device == LongFI#file_info.minor_device.
+    ShortFI#file_info.major_device =:= LongFI#file_info.major_device andalso
+        ShortFI#file_info.minor_device =:= LongFI#file_info.minor_device.
 
 do_bigblob_hunk_writeback(_LastSeqNum, _LastOffset,
                           #state{short_long_same_dev_p = true}) ->
@@ -1132,7 +1132,7 @@ do_bigblob_hunk_writeback(LastSeqNum, LastOffset,
                                  {ok, FI} = file:read_file_info(Path),
                                  {SeqNum, FI#file_info.size}
                          end, CurSeqs),
-    ToDos = lists:map(fun({Seq, Size}) when Seq == LastSeqNum ->
+    ToDos = lists:map(fun({Seq, Size}) when Seq =:= LastSeqNum ->
                               {Seq, LastOffset, Size - LastOffset};
                          ({Seq, Size}) ->
                               {Seq, 0, Size}
@@ -1278,12 +1278,12 @@ link_catch_shutdowns(Fun) ->
         Fun(),
         exit(normal)
     catch
-        exit:Fine when Fine == normal; Fine == stopping_on_shutdown_request;
-                       Fine == exclusive_wait_exit ->
+        exit:Fine when Fine =:= normal; Fine =:= stopping_on_shutdown_request;
+                       Fine =:= exclusive_wait_exit ->
             ok;
         exit:{_, _, Fine}
-          when Fine == normal; Fine == stopping_on_shutdown_request;
-               Fine == exclusive_wait_exit ->
+          when Fine =:= normal; Fine =:= stopping_on_shutdown_request;
+               Fine =:= exclusive_wait_exit ->
             ok; % smart_exceptions
         X:Y ->
             ?E_ERROR("Scavenger ~p error: ~p ~p @ ~p",
@@ -1607,7 +1607,7 @@ scavenger_find_live_sequences(#scav{name=Name, wal_mod=WalMod, log_dir=LogDir,
     {_, LiveHunkSizesGroupBySeq} =
         lists:unzip(lists:filter(
                       fun({{SeqNum1, FileSize}, {SeqNum2, Bytes}})
-                            when abs(SeqNum1) == abs(SeqNum2) ->
+                            when abs(SeqNum1) =:= abs(SeqNum2) ->
                               LivePercentage = Bytes / FileSize,
                               ShouldScavenge =
                                   LivePercentage =< (SkipLivePercentage / 100),
@@ -1919,7 +1919,7 @@ do_sequence_file_is_bad(SeqNum, Offset, S) ->
       S#state.hlog_dir, gmt_hlog, S#state.hlog_pid, S#state.name,
       SeqNum, Offset),
     LocalBricks = do_get_all_registrations(S),
-    if SeqNum == CurSeqNum ->
+    if SeqNum =:= CurSeqNum ->
             ?E_CRITICAL("Fatal error: common log: current sequence file is bad: ~p",
                         [SeqNum]),
             spawn(fun() -> application:stop(gdss_brick) end),
