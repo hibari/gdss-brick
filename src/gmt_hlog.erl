@@ -193,6 +193,9 @@
          sync/2,
          get_proplist/1,
          get_metadata_db/2,
+         create_rename_op_db/1,
+         get_rename_op_db/1,
+         delete_rename_op_db/1,
          log_name2data_dir/1,
          log_name2metadata_dir/1,
          log_name2reg_name/1,
@@ -276,9 +279,11 @@
           cur_seqL                    :: integer(),                % current sequence #
           cur_offL                    :: integer(),                % current offset
           cur_fhL                     :: file:fd(),                % current file
-          leveldb_registory=orddict:new() :: term()                % Registered LevelDB ports
+          %% LevelDB for metadata DB and rename op DB
+          metadata_db_registory=orddict:new() :: term(),           % LevelDB ports for metadata DBs
+          rename_op_db=undefined      :: leveldb:db() | undefined
          }).
--type state_r() :: #state{}.
+-type state() :: #state{}.
 
 
 %%%----------------------------------------------------------------------
@@ -468,9 +473,22 @@ read_bigblob_hunk_blob(Dir, SeqNum, Offset, CheckMD5_p, ValLen) ->
           end,
     read_hunk_summary(Dir, SeqNum, Offset, ValLen, Fun).
 
--spec get_metadata_db(atom() | pid(), brickname()) -> term().
+-spec get_metadata_db(atom() | pid(), brickname()) -> leveldb:db().
 get_metadata_db(Server, BrickName) ->
     gen_server:call(Server, {get_metadata_db, BrickName}).
+
+-spec create_rename_op_db(atom() | pid()) -> leveldb:db().
+create_rename_op_db(Server) ->
+    gen_server:call(Server, create_rename_op_db).
+
+-spec get_rename_op_db(atom() | pid()) -> leveldb:db().
+get_rename_op_db(Server) ->
+    gen_server:call(Server, get_rename_op_db).
+
+-spec delete_rename_op_db(atom() | pid()) -> leveldb:db().
+delete_rename_op_db(Server) ->
+    gen_server:call(Server, delete_rename_op_db).
+
 
 %%%----------------------------------------------------------------------
 %%% Callback functions from gen_server
@@ -605,6 +623,15 @@ handle_call({advance_seqnum, Incr}, From, State) ->
 handle_call({get_metadata_db, BrickName}, _From, State) ->
     {Reply, NewState} = do_get_or_open_metadata_db(BrickName, State),
     {reply, Reply, NewState};
+handle_call(create_rename_op_db, _From, State) ->
+    {Reply, NewState} = do_create_rename_op_db(State),
+    {reply, Reply, NewState};
+handle_call(get_rename_op_db, _From, State) ->
+    Reply = do_get_rename_op_db(State),
+    {reply, Reply, State};
+handle_call(delete_rename_op_db, _From, State) ->
+    {Reply, NewState} = do_delete_rename_op_db(State),
+    {reply, Reply, NewState};
 handle_call({stop}, _From, State) ->
     {stop, normal, ok, State};
 handle_call(_Request, _From, State) ->
@@ -642,6 +669,7 @@ terminate(_Reason, S) ->
     write_shortterm_backlog(S, false),
     catch safe_log_close(S),
     catch do_close_all_metadata_db(S),
+    catch do_delete_rename_op_db(S),
     ok.
 
 %%----------------------------------------------------------------------
@@ -890,13 +918,13 @@ do_advance_seqnum(Incr, From, #state{syncer_pid = SyncPid,
 do_advance_seqnum(Incr, From, #state{syncer_advance_reqs = Rs} = S) ->
     S#state{syncer_advance_reqs = [{Incr, From}|Rs]}.
 
--spec do_get_or_open_metadata_db(brickname(), state_r()) -> {leveldb:db(), state_r()}.
-do_get_or_open_metadata_db(LocalBrick, #state{leveldb_registory=Reg}=State) ->
+-spec do_get_or_open_metadata_db(brickname(), state()) -> {leveldb:db(), state()}.
+do_get_or_open_metadata_db(LocalBrick, #state{metadata_db_registory=Reg}=State) ->
     case orddict:find(LocalBrick, Reg) of
         {ok, MetadataDB} ->
             {MetadataDB, State};
         error ->
-            MDBDir = gmt_hlog:log_name2metadata_dir(LocalBrick),
+            MDBDir = log_name2metadata_dir(LocalBrick),
             catch file:make_dir(MDBDir),
 
             %% @TODO Create a function to return the metadata DB path.
@@ -904,16 +932,16 @@ do_get_or_open_metadata_db(LocalBrick, #state{leveldb_registory=Reg}=State) ->
             MetadataDB = leveldb:open_db(MDBPath, [create_if_missing]),
             ?ELOG_INFO("Opened the metadata DB: ~s", [MDBPath]),
             NewReg = orddict:store(LocalBrick, MetadataDB, Reg),
-            NewState = State#state{leveldb_registory=NewReg},
+            NewState = State#state{metadata_db_registory=NewReg},
             {MetadataDB, NewState}
     end.
 
--spec do_close_all_metadata_db(state_r()) -> ok.
-do_close_all_metadata_db(#state{leveldb_registory=Reg}) ->
+-spec do_close_all_metadata_db(state()) -> ok.
+do_close_all_metadata_db(#state{metadata_db_registory=Reg}) ->
     CloseMDB =
         fun({LocalBrick, MetadataDB}) ->
                 %% @TODO Create a function to return the metadata DB path.
-                MDBPath = filename:join(gmt_hlog:log_name2metadata_dir(LocalBrick),
+                MDBPath = filename:join(log_name2metadata_dir(LocalBrick),
                                         "leveldb"),
                 try leveldb:close_db(MetadataDB) of
                     true ->
@@ -924,6 +952,56 @@ do_close_all_metadata_db(#state{leveldb_registory=Reg}) ->
                 end
         end,
     lists:foreach(CloseMDB, orddict:to_list(Reg)).
+
+-spec do_create_rename_op_db(state()) -> {leveldb:db(), state()}
+                                             | {{error, already_exist}, state()}.
+do_create_rename_op_db(#state{rename_op_db=undefined}=State) ->
+    DBDir = rename_op_db_dir(),
+    catch file:make_dir(DBDir),
+
+    DBPath = filename:join(DBDir, "leveldb"),
+    %% try leveldb:create_db(DBPath, [error_if_exists]) of
+    try leveldb:open_db(DBPath, [create_if_missing]) of
+        DB ->
+            ?ELOG_INFO("Created the rename op DB: ~s", [DBPath]),
+            {DB, State#state{rename_op_db=DB}}
+    catch
+        error:badarg ->
+            {{error, already_exist}, State}
+    end;
+do_create_rename_op_db(State) ->
+    {{error, already_exist}, State}.
+
+-spec do_get_rename_op_db(state()) -> leveldb:db() | {error, does_not_exist}.
+do_get_rename_op_db(#state{rename_op_db=DB}) ->
+    DB;
+do_get_rename_op_db(_State) ->
+    {error, does_not_exist}.
+
+-spec do_delete_rename_op_db(state()) -> {ok, state()} | {{error, does_not_exist | atom()}, state()}.
+do_delete_rename_op_db(#state{rename_op_db=undefined}=State) ->
+    {{error, does_not_exist}, State};
+do_delete_rename_op_db(#state{rename_op_db=DB}=State) ->
+    DBPath = filename:join(rename_op_db_dir(), "leveldb"),
+    try leveldb:close_db(DB) of
+        true ->
+            ?ELOG_INFO("Closed the rename op DB: ~s", [DBPath])
+    catch
+        _:_=Error1 ->
+            ?ELOG_WARNING("Failed to close the rename op DB: ~s (Error: ~p)",
+                          [DBPath, Error1])
+    end,
+    try leveldb:destroy_db(DB) of
+        true ->
+            ?ELOG_INFO("Deleted the rename op DB: ~s", [DBPath]),
+            {ok, State#state{rename_op_db=undefined}}
+    catch
+        _:_=Error2 ->
+            ?ELOG_WARNING("Failed to delete the rename op DB: ~s (Error: ~p)",
+                          [DBPath, Error2]),
+            {Error2, State#state{rename_op_db=undefined}}
+    end.
+
 
 %% @spec (file:fd(), integer()) ->
 %%       {ok, hunk_summ_r()} | eof | {bof, integer} | {error, term()}
@@ -1394,16 +1472,16 @@ my_pread_miss(FH, Offset, Len) ->
     put(pread_hack, {FH, Offset, X}),
     X.
 
--spec safe_log_close(state_r()) -> ok | {error, term()}.
+-spec safe_log_close(state()) -> ok | {error, term()}.
 safe_log_close(S) ->
     safe_log_close_short(S),
     safe_log_close_long(S).
 
--spec safe_log_close_short(state_r()) -> ok | {error, term()}.
+-spec safe_log_close_short(state()) -> ok | {error, term()}.
 safe_log_close_short(#state{dir=Dir, cur_seqS=SeqNum, cur_fhS=FH}) ->
     safe_log_close0("short-term", Dir, SeqNum, FH).
 
--spec safe_log_close_long(state_r()) -> ok | {error, term()}.
+-spec safe_log_close_long(state()) -> ok | {error, term()}.
 safe_log_close_long(#state{dir=Dir, cur_seqL=SeqNum, cur_fhL=FH}) ->
     safe_log_close0("long-term", Dir, SeqNum, FH).
 
@@ -1613,6 +1691,11 @@ log_name2metadata_dir(ServerName) ->
 -spec log_name2reg_name(atom()) -> atom().
 log_name2reg_name(Name) ->
     list_to_atom(atom_to_list(Name) ++ "_hlog").
+
+-spec rename_op_db_dir() -> dirname().
+rename_op_db_dir() ->
+    {ok, FileDir} = application:get_env(gdss_brick, brick_default_data_dir),
+    filename:join([FileDir, "rename_op"]).
 
 debug_sleep(0) ->
     ok;

@@ -114,7 +114,8 @@
           async_writebacks_next_round=[]  :: [from()],                 %% requesters of next async writeback
           dirty_buffer_wait               :: non_neg_integer(),        %% seconds
           short_long_same_dev_p           :: boolean(),
-          first_writeback                 :: boolean()
+          first_writeback                 :: boolean(),
+          should_record_rename_ops        :: boolean()
          }).
 %% -type state()   :: #state{}.
 -type state_readonly() :: #state{}.  %% Read-only
@@ -245,6 +246,9 @@ init(PropList) ->
                 %% the gmt_hlog_common gen_server!
                 {ok, Log} = gmt_hlog:start_link([{name, CName}|PropList]),
 
+                %% @TODO: Just for now
+                _ = gmt_hlog:create_rename_op_db(Log),
+
                 LogDir = gmt_hlog:log_name2data_dir(CName),
                 {SeqNum, Off} = read_flush_file(LogDir),
                 self() ! do_sync_writeback,
@@ -268,14 +272,16 @@ init(PropList) ->
                 {ok, DirtySec} = application:get_env(gdss_brick, brick_dirty_buffer_wait),
                 SameDevP = short_long_same_dev_p(LogDir),
 
-                {ok, #state{name = CName, hlog_pid = Log, hlog_name = CName,
-                            hlog_dir = LogDir,
-                            last_seqnum = SeqNum, last_offset = Off,
-                            tref = TRef,
-                            scavenger_tref = ScavengerTRef,
-                            dirty_buffer_wait = DirtySec,
-                            short_long_same_dev_p = SameDevP,
-                            first_writeback = true
+                {ok, #state{name=CName, hlog_pid=Log, hlog_name=CName,
+                            hlog_dir=LogDir,
+                            last_seqnum=SeqNum, last_offset=Off,
+                            tref=TRef,
+                            scavenger_tref=ScavengerTRef,
+                            dirty_buffer_wait=DirtySec,
+                            short_long_same_dev_p=SameDevP,
+                            first_writeback=true,
+                            %% @TODO: Just for now
+                            should_record_rename_ops=true
                            }};
             _Pid ->
                 ignore
@@ -807,16 +813,17 @@ group_store_tuples_by_brick(MetaDataTuples) ->
 %%
 %%  1. Add timestamp to the do_mods for 'delete' and 'delete_noexptime',
 %%     so that it can store delete-markers. - *DONE*
-%%  2. Finish implementing the write-back process (including LevelDB
-%%     disk sync). Test with a 3-node config.
-%%  3. Implement the new scavenger logic.
-%%  4. Implement the new housekeeping logic.
-%%  5. Run lengthy tests (and develop some tools) to ensure that the
+%%  2. Add oldTimestamp to the do_mods for 'insert_existing_value'.
+%%  3. Finish implementing the metabata write-back process (including
+%%     LevelDB disk sync). Test with chain length = 3.
+%%  4. Implement the new scavenger logic.
+%%  5. Implement the new housekeeping logic.
+%%  6. Run lengthy tests (and develop some tools) to ensure that the
 %%     metadata DB is working correctly.
-%%  6. Rewrite brick_ets:wal_scan_all/2 to utilize the metadata DB.
-%%  7. Remove the brick local log and checkpoint process.
-%%  8. Make write back process more intelligent; every N hunks have
-%%     written to the common log or N secs interval.
+%%  7. Rewrite brick_ets:wal_scan_all/2 to utilize the metadata DB.
+%%  8. Remove the brick local log and checkpoint process.
+%%  9. Make write-back process more intelligent; every N hunks have
+%%     been written to the common log or N secs interval.
 %%
 
 %% New Scavenger Logic
@@ -830,6 +837,8 @@ group_store_tuples_by_brick(MetaDataTuples) ->
 %%  5. SCV: Move live hunks (up-to the batch size and bandwidth limit)
 %%          to new log-seqs and update their locations in brick servers.
 %%          Repeat this step until all live hunks are moved.
+%%          NOTE: Change Scavenger so that each brick server has its
+%%          own blob sequence.
 %%  6. WBP: Record the current timestamp. - (B)
 %%  7. WBP: When it sees a do_mod having a newer timestamp than (B),
 %%         stop recording on (A).
@@ -866,6 +875,11 @@ group_store_tuples_by_brick(MetaDataTuples) ->
 %%                                          oldkey: <<49,50,47,0,0,2,68>>
 %%
 
+%% @TODO: To limit the amount of RAM required for a write-back process,
+%%        try not to read all hunks for the entire write-back. Maybe the
+%%        wrapper hunk needs to be changed.
+%%        e.g. first UBlob has blick name, location and size;
+%%             second UBlob has actual metadata hunk.
 %% @TODO: Write as many as metadata records in one batch. (track size and numbers for MDs)
 %% @TODO: Change to foldl rather than tail recursion.
 %% @TODO: Try not to expose the #state record to this fun.
@@ -876,28 +890,27 @@ write_back_to_stable_storege1(_BrickName, [], _State, Errors) ->
 write_back_to_stable_storege1(BrickName,
                               [{eee, _BrickName, _SeqNum, _Offset, _Key, _TypeNum,
                                 _H_Len, [Summary, CBlobs, _UBlobs]} | RemainingMetaDataTuples],
-                              #state{hlog_pid=HLog}=State,
+                              #state{hlog_pid=HLog,
+                                     should_record_rename_ops=ShouldRecordRenameOps}=State,
                               Errors) ->
     case gmt_hlog:parse_hunk_summary(Summary) of
         #hunk_summ{c_len=CLen, u_len=ULen}=ParsedSummary ->
             [_] = CLen,        % sanity
             []  = ULen,        % sanity
             MetadataBin = gmt_hlog:get_hunk_cblob_member(ParsedSummary, CBlobs, 1),
-            case gmt_hlog:md5_checksum_ok_p(ParsedSummary#hunk_summ{c_blobs = [MetadataBin]}) of
+            case gmt_hlog:md5_checksum_ok_p(ParsedSummary#hunk_summ{c_blobs=[MetadataBin]}) of
                 true ->
-                    Batch = lists:foldl(fun add_metadata_db_op/2,
-                                        leveldb:new_write_batch(),
-                                        binary_to_term(MetadataBin)),
-                    DB = gmt_hlog:get_metadata_db(HLog, BrickName),
-                    WriteOptions = case RemainingMetaDataTuples of
-                                       [] ->
-                                           [sync];
-                                       _ ->
-                                           []
-                                   end,
-                    true = leveldb:write(DB, Batch, WriteOptions),
-                    ?E_DBG("Wrote one hunk for ~s with write options ~w",
-                           [BrickName, WriteOptions]);
+                    MetadataDB = gmt_hlog:get_metadata_db(HLog, BrickName),
+                    DoMods = binary_to_term(MetadataBin),
+                    IsLastBatch = RemainingMetaDataTuples =:= [],
+                    ok = write_back_to_metadata_db(MetadataDB, BrickName, DoMods, IsLastBatch),
+                    case ShouldRecordRenameOps of
+                        true ->
+                            RenameOpDB = gmt_hlog:get_rename_op_db(HLog),
+                            ok = record_rename_ops(RenameOpDB, BrickName, DoMods, IsLastBatch);
+                        false ->
+                            ok
+                        end;
                 false ->
                     %% @TODO: Do not crash, and do sync
                     error({invalid_checksum, {_BrickName, _SeqNum, _Offset, _Key}})
@@ -907,6 +920,35 @@ write_back_to_stable_storege1(BrickName,
             error({hunk_is_too_big_to_parse, {_BrickName, _SeqNum, _Offset, _Key}})
     end,
     write_back_to_stable_storege1(BrickName, RemainingMetaDataTuples, State, Errors).
+
+-spec write_back_to_metadata_db(leveldb:db(), brickname(), [do_mod()], boolean()) -> ok.
+write_back_to_metadata_db(MetadataDB, BrickName, DoMods, IsLastBatch) ->
+    Batch = lists:foldl(fun add_metadata_db_op/2, leveldb:new_write_batch(), DoMods),
+    IsEmptyBatch = leveldb:is_empty_batch(Batch),
+    case {IsLastBatch, IsEmptyBatch} of
+        {true, true} ->
+            %% Write something to sync.
+            Batch1 = [leveldb:mk_put(<<"control sync">>, <<"sync">>)],
+            WriteOptions = [sync];
+        {true, false} ->
+            Batch1 = Batch,
+            WriteOptions = [sync];
+        {false, true} ->
+            Batch1 = [],   %% This will not write anything to LevelDB and that is OK.
+            WriteOptions = [];
+        {false, false} ->
+            Batch1 = Batch,
+            WriteOptions = []
+    end,
+    true = leveldb:write(MetadataDB, Batch1, WriteOptions),
+    if
+        IsLastBatch orelse not IsEmptyBatch ->
+            ?E_DBG("Wrote one hunk for ~s with write options ~w",
+                   [BrickName, WriteOptions]);
+        true ->
+            ok
+    end,
+    ok.
 
 -spec add_metadata_db_op(do_mod(), write_batch()) -> write_batch().
 add_metadata_db_op({insert, StoreTuple}, Batch) ->
@@ -963,16 +1005,64 @@ metadata_db_key(StoreTuple) ->
     Timestamp = brick_ets:storetuple_ts(StoreTuple),
     metadata_db_key(Key, Timestamp).
 
--spec metadata_db_key(key(), integer()) -> binary().
+-spec metadata_db_key(key(), ts()) -> binary().
 metadata_db_key(Key, Timestamp) ->
     %% NOTE: Using reversed timestamp, so that Key-values will be sorted
     %%       in LevelDB from newer to older.
     ReversedTimestamp = -(Timestamp),
     sext:encode({Key, ReversedTimestamp}).
 
--spec make_delete_marker(key(), integer()) -> tuple().
+-spec make_delete_marker(key(), ts()) -> tuple().
 make_delete_marker(Key, Timestamp) ->
     {Key, Timestamp, delete_marker}.
+
+-spec record_rename_ops(leveldb:db(), brickname(), [do_mod()], boolean()) -> ok.
+record_rename_ops(RenameOpDB, BrickName, DoMods, IsLastBatch) ->
+    BrickName_DoMods = [ {BrickName, M} || M <- DoMods ],
+    Batch = lists:foldl(fun add_rename_op/2, leveldb:new_write_batch(),
+                        BrickName_DoMods),
+    IsEmptyBatch = leveldb:is_empty_batch(Batch),
+    case {IsLastBatch, IsEmptyBatch} of
+        {true, true} ->
+            %% Write something to sync.
+            Batch1 = [leveldb:mk_put(<<"control sync">>, <<"sync">>)],
+            WriteOptions = [sync];
+        {true, false} ->
+            Batch1 = Batch,
+            WriteOptions = [sync];
+        {false, true} ->
+            Batch1 = [],   %% This will not write anything to LevelDB and that is OK.
+            WriteOptions = [];
+        {false, false} ->
+            Batch1 = Batch,
+            WriteOptions = []
+    end,
+    true = leveldb:write(RenameOpDB, Batch1, WriteOptions),
+    if
+        IsLastBatch ->
+            ?E_DBG("fsynced the rename op DB", []);
+        true ->
+            ok
+    end,
+    ok.
+
+-spec add_rename_op({brickname(), do_mod()}, write_batch()) -> write_batch().
+add_rename_op({BrickName, {insert_existing_value, StoreTuple, OldKey}}, Batch) ->
+    Key = brick_ets:storetuple_key(StoreTuple),
+    Timestamp = brick_ets:storetuple_ts(StoreTuple),
+    ?E_DBG("rename_op_db: insert_existing_value - key: ~p, ts: ~w, oldkey: ~p",
+           [Key, Timestamp, OldKey]),
+    leveldb:add_put(rename_op_db_key(BrickName, StoreTuple),
+                    term_to_binary({StoreTuple, OldKey}), Batch);
+add_rename_op(_, Batch) ->
+    Batch. %% noop
+
+-spec rename_op_db_key(brickname(), store_tuple()) -> binary().
+rename_op_db_key(BrickName, StoreTuple) ->
+    Key = brick_ets:storetuple_key(StoreTuple),
+    Timestamp = brick_ets:storetuple_ts(StoreTuple),
+    sext:encode({BrickName, Key, Timestamp}).
+
 
 
 %% 17: --------------------
