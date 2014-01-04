@@ -116,7 +116,8 @@
           short_long_same_dev_p           :: boolean(),
           first_writeback                 :: boolean()
          }).
--type state_r() :: #state{}.
+%% -type state()   :: #state{}.
+-type state_readonly() :: #state{}.  %% Read-only
 
 %% write-back info
 -record(wb, {
@@ -250,7 +251,8 @@ init(PropList) ->
                 %% Use timer instead of brick_itimer: it allows QC testing
                 %% without GDSS app running, and there's only one of
                 %% these things per app.
-                {ok, TRef} = timer:send_interval(1000, do_async_writeback),
+                WriteBackInterval = 30000,  %% 30 secs.  @TODO: Configurable
+                {ok, TRef} = timer:send_interval(WriteBackInterval, do_async_writeback),
                 SupressScavenger = prop_or_application_env_bool(
                                      brick_scavenger_suppress,
                                      suppress_scavenger, PropList,
@@ -674,7 +676,7 @@ write_back_exactly_to_logs(Ts, S) ->
     write_back_to_local_log(SortedTs, undefined, 0, undefined,
                             FirstBrickName, [], ?WB_BATCH_SIZE, S).
 
-%% -spec write_back_to_local_log([metadata_tuple()], state_r()) -> ????.
+%% -spec write_back_to_local_log([metadata_tuple()], state_readonly()) -> ????.
 write_back_to_local_log([{eee, LocalBrickName, SeqNum, Offset, _Key, _TypeNum,
                           H_Len, H_Bytes}|Ts] = AllTs,
                         LogSeqNum,
@@ -766,7 +768,7 @@ write_back_to_local_log([] = AllTs, SeqNum, FH_pos, LogFH,
                                     LastBrickName, TsAcc, 0, S)
     end.
 
--spec write_back_to_stable_storege(wb_r(), state_r()) -> ok | {error, [term()]}.
+-spec write_back_to_stable_storege(wb_r(), state_readonly()) -> ok | {error, [term()]}.
 write_back_to_stable_storege(#wb{exactly_ts=MetadataTuples}, State) ->
     %% Sort metadata tuples by brickname, seqnum, and offset.
     GroupedByBrick = group_store_tuples_by_brick(MetadataTuples),
@@ -813,6 +815,8 @@ group_store_tuples_by_brick(MetaDataTuples) ->
 %%     metadata DB is working correctly.
 %%  6. Rewrite brick_ets:wal_scan_all/2 to utilize the metadata DB.
 %%  7. Remove the brick local log and checkpoint process.
+%%  8. Make write back process more intelligent; every N hunks have
+%%     written to the common log or N secs interval.
 %%
 
 %% New Scavenger Logic
@@ -862,12 +866,16 @@ group_store_tuples_by_brick(MetaDataTuples) ->
 %%                                          oldkey: <<49,50,47,0,0,2,68>>
 %%
 
--spec write_back_to_stable_storege1(brickname(), [metadata_tuple()], state_r(), [term()]) -> [term()].
+%% @TODO: Write as many as metadata records in one batch. (track size and numbers for MDs)
+%% @TODO: Change to foldl rather than tail recursion.
+%% @TODO: Try not to expose the #state record to this fun.
+-spec write_back_to_stable_storege1(brickname(), [metadata_tuple()],
+                                    state_readonly(), [term()]) -> [term()].
 write_back_to_stable_storege1(_BrickName, [], _State, Errors) ->
     lists:reverse(Errors);
 write_back_to_stable_storege1(BrickName,
                               [{eee, _BrickName, _SeqNum, _Offset, _Key, _TypeNum,
-                                _H_Len, [Summary, CBlobs, _UBlobs]} | MetaDataTuples],
+                                _H_Len, [Summary, CBlobs, _UBlobs]} | RemainingMetaDataTuples],
                               #state{hlog_pid=HLog}=State,
                               Errors) ->
     case gmt_hlog:parse_hunk_summary(Summary) of
@@ -881,15 +889,24 @@ write_back_to_stable_storege1(BrickName,
                                         leveldb:new_write_batch(),
                                         binary_to_term(MetadataBin)),
                     DB = gmt_hlog:get_metadata_db(HLog, BrickName),
-                    true = leveldb:write(DB, Batch, []);  %% @TODO: sync periodically
+                    WriteOptions = case RemainingMetaDataTuples of
+                                       [] ->
+                                           [sync];
+                                       _ ->
+                                           []
+                                   end,
+                    true = leveldb:write(DB, Batch, WriteOptions),
+                    ?E_DBG("Wrote one hunk for ~s with write options ~w",
+                           [BrickName, WriteOptions]);
                 false ->
-                    %% @TODO: Do not crash
+                    %% @TODO: Do not crash, and do sync
                     error({invalid_checksum, {_BrickName, _SeqNum, _Offset, _Key}})
             end;
         too_big ->
+            %% @TODO: Do not crash, and do sync
             error({hunk_is_too_big_to_parse, {_BrickName, _SeqNum, _Offset, _Key}})
     end,
-    write_back_to_stable_storege1(BrickName, MetaDataTuples, State, Errors).
+    write_back_to_stable_storege1(BrickName, RemainingMetaDataTuples, State, Errors).
 
 -spec add_metadata_db_op(do_mod(), write_batch()) -> write_batch().
 add_metadata_db_op({insert, StoreTuple}, Batch) ->
@@ -956,6 +973,7 @@ metadata_db_key(Key, Timestamp) ->
 -spec make_delete_marker(key(), integer()) -> tuple().
 make_delete_marker(Key, Timestamp) ->
     {Key, Timestamp, delete_marker}.
+
 
 %% 17: --------------------
 %% MDKey: <<16,0,0,0,2,18,152,203,224,16,8,15,88,8,8,255,255,255,254,128,127,255,
