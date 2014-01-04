@@ -302,7 +302,7 @@
                   %% or ?VALUE_SWITCHAROO (e.g. bcb_val_switcharoo used by the scavenger)
                   {insert_constant_value, store_tuple()} |
                   %% ?KEY_SWITCHAROO (e.g. rename)
-                  {insert_existing_value, store_tuple(), key()} | %% key is for OldKey
+                  {insert_existing_value, store_tuple(), key(), ts()} | %% key and timestamp of OldKey
 
                   {delete, key(), ts(), exp_time()} |  %% Hibari 0.3 or newer
                   {delete, key(), exp_time()} |        %% Hibari 0.1.x (gdss_client still uses this)
@@ -1970,6 +1970,7 @@ my_insert2(#state{thisdo_mods=Mods, max_log_size=MaxLogSize}=S, Key, TStamp, Val
         {?KEY_SWITCHAROO, NewKey} ->
             %% @TODO - value_in_ram support?
             [ST] = my_lookup(S, Key, false),
+            CurTStamp = storetuple_ts(ST),
             CurVal = storetuple_val(ST),
             CurValLen = storetuple_vallen(ST),
             CurExpTime = storetuple_exptime(ST),
@@ -1977,7 +1978,7 @@ my_insert2(#state{thisdo_mods=Mods, max_log_size=MaxLogSize}=S, Key, TStamp, Val
             %% then deleting Key
             Mod = {insert_existing_value,
                    storetuple_make(NewKey, TStamp, CurVal, CurValLen, ExpTime, Flags),
-                   Key},
+                   Key, CurTStamp},
             DelTStamp = brick_server:make_timestamp(),
             {{ok, TStamp}, my_delete(S#state{thisdo_mods = [Mod|Mods]}, Key, DelTStamp, CurExpTime)};
         _ ->
@@ -2133,7 +2134,7 @@ load_rec_from_log({delete_noexptime, Key, Timestamp}, S) ->
 load_rec_from_log({insert_constant_value, StoreTuple}, S) ->
     Key = storetuple_key(StoreTuple),
     my_insert_ignore_logging(S, Key, StoreTuple);
-load_rec_from_log({insert_existing_value, StoreTuple, _OldKey}, S) ->
+load_rec_from_log({insert_existing_value, StoreTuple, _OldKey, _OldTimestamp}, S) ->
     Key = storetuple_key(StoreTuple),
     my_insert_ignore_logging(S, Key, StoreTuple);
 load_rec_from_log({delete_all_table_items}, S) ->
@@ -2252,7 +2253,7 @@ filter_mods_from_upstream(Thisdo_Mods, S) ->
                            NewST = storetuple_make(
                                      Key, TS, CurVal, CurValLen, Exp, Flags),
                            {insert_constant_value, NewST};
-                      ({insert_existing_value, ST, OldKey}) ->
+                      ({insert_existing_value, ST, OldKey, OldTimestamp}) ->
                            Key = storetuple_key(ST),
                            TS = storetuple_ts(ST),
                            [CurST] = my_lookup(S, OldKey, false),
@@ -2262,7 +2263,7 @@ filter_mods_from_upstream(Thisdo_Mods, S) ->
                            Flags = storetuple_flags(ST),
                            NewST = storetuple_make(
                                      Key, TS, CurVal, CurValLen, Exp, Flags),
-                           {insert_existing_value, NewST, OldKey};
+                           {insert_existing_value, NewST, OldKey, OldTimestamp};
                       (X) ->
                            X
                    end, Thisdo_Mods),
@@ -2661,10 +2662,8 @@ map_mods_into_ets([{delete_noexptime, Key, Timestamp} | Tail], S) ->
               end,
     map_mods_into_ets([{delete, Key, Timestamp, ExpTime}|Tail], S);
 map_mods_into_ets([{insert_constant_value, StoreTuple}|Tail], S) ->
-    %% Lazy, reuse....
     map_mods_into_ets([{insert, StoreTuple}|Tail], S);
-map_mods_into_ets([{insert_existing_value, StoreTuple, _OldKey}|Tail], S) ->
-    %% Lazy, reuse....
+map_mods_into_ets([{insert_existing_value, StoreTuple, _OldKey, _OldTimestamp}|Tail], S) ->
     map_mods_into_ets([{insert, StoreTuple}|Tail], S);
 map_mods_into_ets([], _S) ->
     ok;
@@ -2755,7 +2754,7 @@ add_mods_to_dirty_tab([{InsertLike, StoreTuple}|Tail], S)
     ?DBG_ETS("add_to_dirty ~w: ~w", [S#state.name, Key]),
     ets:insert(S#state.dirty_tab, {Key, insert, StoreTuple}),
     add_mods_to_dirty_tab(Tail, S);
-add_mods_to_dirty_tab([{insert_existing_value, StoreTuple, _OldKey}|Tail], S) ->
+add_mods_to_dirty_tab([{insert_existing_value, StoreTuple, _OldKey, _OldTimestamp}|Tail], S) ->
     Key = storetuple_key(StoreTuple),
     ?DBG_ETS("add_to_dirty ~w: ~w", [S#state.name, Key]),
     ets:insert(S#state.dirty_tab, {Key, insert, StoreTuple}),
@@ -2793,10 +2792,8 @@ clear_dirty_tab([{delete_noexptime, Key, _Timestamp} | Tail], S) ->
     ets:delete(S#state.dirty_tab, Key),
     clear_dirty_tab(Tail, S);
 clear_dirty_tab([{insert_constant_value, StoreTuple}|Tail], S) ->
-    %% Lazy, reuse....
     clear_dirty_tab([{insert, StoreTuple}|Tail], S);
-clear_dirty_tab([{insert_existing_value, StoreTuple, _OldKey}|Tail], S) ->
-    %% Lazy, reuse....
+clear_dirty_tab([{insert_existing_value, StoreTuple, _OldKey, _OldTimestamp}|Tail], S) ->
     clear_dirty_tab([{insert, StoreTuple}|Tail], S);
 clear_dirty_tab([], _S) ->
     ok;

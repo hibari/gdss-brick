@@ -966,11 +966,11 @@ add_metadata_db_op({insert_constant_value, StoreTuple}, Batch) ->
     Timestamp = brick_ets:storetuple_ts(StoreTuple),
     ?E_DBG("store_tuple: insert_constant_value - key: ~p, ts: ~w", [Key, Timestamp]),
     leveldb:add_put(metadata_db_key(StoreTuple), term_to_binary(StoreTuple), Batch);
-add_metadata_db_op({insert_existing_value, StoreTuple, OldKey}, Batch) ->
+add_metadata_db_op({insert_existing_value, StoreTuple, OldKey, OldTimestamp}, Batch) ->
     Key = brick_ets:storetuple_key(StoreTuple),
     Timestamp = brick_ets:storetuple_ts(StoreTuple),
-    ?E_DBG("store_tuple: insert_existing_value - key: ~p, ts: ~w, oldkey: ~p",
-           [Key, Timestamp, OldKey]),
+    ?E_DBG("store_tuple: insert_existing_value - key: ~p, ts: ~w, oldkey: ~p, oldts: ~w",
+           [Key, Timestamp, OldKey, OldTimestamp]),
     leveldb:add_put(metadata_db_key(StoreTuple), term_to_binary(StoreTuple), Batch);
 add_metadata_db_op({delete, _Key, 0, _ExpTime}=Op, _Batch) ->
     error({timestamp_is_zero, Op});
@@ -1047,13 +1047,13 @@ record_rename_ops(RenameOpDB, BrickName, DoMods, IsLastBatch) ->
     ok.
 
 -spec add_rename_op({brickname(), do_mod()}, write_batch()) -> write_batch().
-add_rename_op({BrickName, {insert_existing_value, StoreTuple, OldKey}}, Batch) ->
+add_rename_op({BrickName, {insert_existing_value, StoreTuple, OldKey, OldTimestamp}}, Batch) ->
     Key = brick_ets:storetuple_key(StoreTuple),
     Timestamp = brick_ets:storetuple_ts(StoreTuple),
-    ?E_DBG("rename_op_db: insert_existing_value - key: ~p, ts: ~w, oldkey: ~p",
-           [Key, Timestamp, OldKey]),
+    ?E_DBG("rename_op_db: insert_existing_value - key: ~p, ts: ~w, oldkey: ~p, oldts: ~w",
+           [Key, Timestamp, OldKey, OldTimestamp]),
     leveldb:add_put(rename_op_db_key(BrickName, StoreTuple),
-                    term_to_binary({StoreTuple, OldKey}), Batch);
+                    term_to_binary({StoreTuple, OldKey, OldTimestamp}), Batch);
 add_rename_op(_, Batch) ->
     Batch. %% noop
 
