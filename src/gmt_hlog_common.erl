@@ -114,8 +114,7 @@
           async_writebacks_next_round=[]  :: [from()],                 %% requesters of next async writeback
           dirty_buffer_wait               :: non_neg_integer(),        %% seconds
           short_long_same_dev_p           :: boolean(),
-          first_writeback                 :: boolean(),
-          should_record_rename_ops        :: boolean()
+          first_writeback                 :: boolean()
          }).
 %% -type state()   :: #state{}.
 -type state_readonly() :: #state{}.  %% Read-only
@@ -246,9 +245,6 @@ init(PropList) ->
                 %% the gmt_hlog_common gen_server!
                 {ok, Log} = gmt_hlog:start_link([{name, CName}|PropList]),
 
-                %% @TODO: Just for now
-                _ = gmt_hlog:create_rename_op_db(Log),
-
                 LogDir = gmt_hlog:log_name2data_dir(CName),
                 {SeqNum, Off} = read_flush_file(LogDir),
                 self() ! do_sync_writeback,
@@ -279,9 +275,7 @@ init(PropList) ->
                             scavenger_tref=ScavengerTRef,
                             dirty_buffer_wait=DirtySec,
                             short_long_same_dev_p=SameDevP,
-                            first_writeback=true,
-                            %% @TODO: Just for now
-                            should_record_rename_ops=true
+                            first_writeback=true
                            }};
             _Pid ->
                 ignore
@@ -890,8 +884,7 @@ write_back_to_stable_storege1(_BrickName, [], _State, Errors) ->
 write_back_to_stable_storege1(BrickName,
                               [{eee, _BrickName, _SeqNum, _Offset, _Key, _TypeNum,
                                 _H_Len, [Summary, CBlobs, _UBlobs]} | RemainingMetaDataTuples],
-                              #state{hlog_pid=HLog,
-                                     should_record_rename_ops=ShouldRecordRenameOps}=State,
+                              #state{hlog_pid=HLog}=State,
                               Errors) ->
     case gmt_hlog:parse_hunk_summary(Summary) of
         #hunk_summ{c_len=CLen, u_len=ULen}=ParsedSummary ->
@@ -903,14 +896,7 @@ write_back_to_stable_storege1(BrickName,
                     MetadataDB = gmt_hlog:get_metadata_db(HLog, BrickName),
                     DoMods = binary_to_term(MetadataBin),
                     IsLastBatch = RemainingMetaDataTuples =:= [],
-                    ok = write_back_to_metadata_db(MetadataDB, BrickName, DoMods, IsLastBatch),
-                    case ShouldRecordRenameOps of
-                        true ->
-                            RenameOpDB = gmt_hlog:get_rename_op_db(HLog),
-                            ok = record_rename_ops(RenameOpDB, BrickName, DoMods, IsLastBatch);
-                        false ->
-                            ok
-                        end;
+                    ok = write_back_to_metadata_db(MetadataDB, BrickName, DoMods, IsLastBatch);
                 false ->
                     %% @TODO: Do not crash, and do sync
                     error({invalid_checksum, {_BrickName, _SeqNum, _Offset, _Key}})
@@ -922,7 +908,7 @@ write_back_to_stable_storege1(BrickName,
     write_back_to_stable_storege1(BrickName, RemainingMetaDataTuples, State, Errors).
 
 -spec write_back_to_metadata_db(leveldb:db(), brickname(), [do_mod()], boolean()) -> ok.
-write_back_to_metadata_db(MetadataDB, BrickName, DoMods, IsLastBatch) ->
+write_back_to_metadata_db(MetadataDB, _BrickName, DoMods, IsLastBatch) ->
     Batch = lists:foldl(fun add_metadata_db_op/2, leveldb:new_write_batch(), DoMods),
     IsEmptyBatch = leveldb:is_empty_batch(Batch),
     case {IsLastBatch, IsEmptyBatch} of
@@ -941,48 +927,48 @@ write_back_to_metadata_db(MetadataDB, BrickName, DoMods, IsLastBatch) ->
             WriteOptions = []
     end,
     true = leveldb:write(MetadataDB, Batch1, WriteOptions),
-    if
-        IsLastBatch orelse not IsEmptyBatch ->
-            ?E_DBG("Wrote one hunk for ~s with write options ~w",
-                   [BrickName, WriteOptions]);
-        true ->
-            ok
-    end,
+    %% if
+    %%     IsLastBatch orelse not IsEmptyBatch ->
+    %%         ?E_DBG("Wrote one hunk for ~s with write options ~w",
+    %%                [BrickName, WriteOptions]);
+    %%     true ->
+    %%         ok
+    %% end,
     ok.
 
 -spec add_metadata_db_op(do_mod(), write_batch()) -> write_batch().
 add_metadata_db_op({insert, StoreTuple}, Batch) ->
-    Key = brick_ets:storetuple_key(StoreTuple),
-    Timestamp = brick_ets:storetuple_ts(StoreTuple),
-    ?E_DBG("store_tuple: insert - key: ~p, ts: ~w", [Key, Timestamp]),
+    %% Key = brick_ets:storetuple_key(StoreTuple),
+    %% Timestamp = brick_ets:storetuple_ts(StoreTuple),
+    %% ?E_DBG("store_tuple: insert - key: ~p, ts: ~w", [Key, Timestamp]),
     leveldb:add_put(metadata_db_key(StoreTuple), term_to_binary(StoreTuple), Batch);
 add_metadata_db_op({insert_value_into_ram, StoreTuple}, Batch) ->
-    Key = brick_ets:storetuple_key(StoreTuple),
-    Timestamp = brick_ets:storetuple_ts(StoreTuple),
-    ?E_DBG("store_tuple: insert_value_into_ram - key: ~p, ts: ~w", [Key, Timestamp]),
+    %% Key = brick_ets:storetuple_key(StoreTuple),
+    %% Timestamp = brick_ets:storetuple_ts(StoreTuple),
+    %% ?E_DBG("store_tuple: insert_value_into_ram - key: ~p, ts: ~w", [Key, Timestamp]),
     leveldb:add_put(metadata_db_key(StoreTuple), term_to_binary(StoreTuple), Batch);
 add_metadata_db_op({insert_constant_value, StoreTuple}, Batch) ->
-    Key = brick_ets:storetuple_key(StoreTuple),
-    Timestamp = brick_ets:storetuple_ts(StoreTuple),
-    ?E_DBG("store_tuple: insert_constant_value - key: ~p, ts: ~w", [Key, Timestamp]),
+    %% Key = brick_ets:storetuple_key(StoreTuple),
+    %% Timestamp = brick_ets:storetuple_ts(StoreTuple),
+    %% ?E_DBG("store_tuple: insert_constant_value - key: ~p, ts: ~w", [Key, Timestamp]),
     leveldb:add_put(metadata_db_key(StoreTuple), term_to_binary(StoreTuple), Batch);
-add_metadata_db_op({insert_existing_value, StoreTuple, OldKey, OldTimestamp}, Batch) ->
-    Key = brick_ets:storetuple_key(StoreTuple),
-    Timestamp = brick_ets:storetuple_ts(StoreTuple),
-    ?E_DBG("store_tuple: insert_existing_value - key: ~p, ts: ~w, oldkey: ~p, oldts: ~w",
-           [Key, Timestamp, OldKey, OldTimestamp]),
+add_metadata_db_op({insert_existing_value, StoreTuple, _OldKey, _OldTimestamp}, Batch) ->
+    %% Key = brick_ets:storetuple_key(StoreTuple),
+    %% Timestamp = brick_ets:storetuple_ts(StoreTuple),
+    %% ?E_DBG("store_tuple: insert_existing_value - key: ~p, ts: ~w, oldkey: ~p, oldts: ~w",
+    %%        [Key, Timestamp, OldKey, OldTimestamp]),
     leveldb:add_put(metadata_db_key(StoreTuple), term_to_binary(StoreTuple), Batch);
 add_metadata_db_op({delete, _Key, 0, _ExpTime}=Op, _Batch) ->
     error({timestamp_is_zero, Op});
 add_metadata_db_op({delete, Key, Timestamp, _ExpTime}, Batch) ->
-    ?E_DBG("store_tuple: delete - key: ~p, ts: ~w", [Key, Timestamp]),
+    %% ?E_DBG("store_tuple: delete - key: ~p, ts: ~w", [Key, Timestamp]),
     DeleteMarker = make_delete_marker(Key, Timestamp),
     leveldb:add_put(metadata_db_key(Key, Timestamp),
                     term_to_binary(DeleteMarker), Batch);
 add_metadata_db_op({delete_noexptime, _Key, 0}=Op, _Batch) ->
     error({timestamp_is_zero, Op});
 add_metadata_db_op({delete_noexptime, Key, Timestamp}, Batch) ->
-    ?E_DBG("store_tuple: delete_noexptime - key: ~p", [Key]),
+    %% ?E_DBG("store_tuple: delete_noexptime - key: ~p", [Key]),
     DeleteMarker = make_delete_marker(Key, Timestamp),
     leveldb:add_put(metadata_db_key(Key, Timestamp),
                     term_to_binary(DeleteMarker), Batch);
@@ -1015,54 +1001,6 @@ metadata_db_key(Key, Timestamp) ->
 -spec make_delete_marker(key(), ts()) -> tuple().
 make_delete_marker(Key, Timestamp) ->
     {Key, Timestamp, delete_marker}.
-
--spec record_rename_ops(leveldb:db(), brickname(), [do_mod()], boolean()) -> ok.
-record_rename_ops(RenameOpDB, BrickName, DoMods, IsLastBatch) ->
-    BrickName_DoMods = [ {BrickName, M} || M <- DoMods ],
-    Batch = lists:foldl(fun add_rename_op/2, leveldb:new_write_batch(),
-                        BrickName_DoMods),
-    IsEmptyBatch = leveldb:is_empty_batch(Batch),
-    case {IsLastBatch, IsEmptyBatch} of
-        {true, true} ->
-            %% Write something to sync.
-            Batch1 = [leveldb:mk_put(<<"control sync">>, <<"sync">>)],
-            WriteOptions = [sync];
-        {true, false} ->
-            Batch1 = Batch,
-            WriteOptions = [sync];
-        {false, true} ->
-            Batch1 = [],   %% This will not write anything to LevelDB and that is OK.
-            WriteOptions = [];
-        {false, false} ->
-            Batch1 = Batch,
-            WriteOptions = []
-    end,
-    true = leveldb:write(RenameOpDB, Batch1, WriteOptions),
-    if
-        IsLastBatch ->
-            ?E_DBG("fsynced the rename op DB", []);
-        true ->
-            ok
-    end,
-    ok.
-
--spec add_rename_op({brickname(), do_mod()}, write_batch()) -> write_batch().
-add_rename_op({BrickName, {insert_existing_value, StoreTuple, OldKey, OldTimestamp}}, Batch) ->
-    Key = brick_ets:storetuple_key(StoreTuple),
-    Timestamp = brick_ets:storetuple_ts(StoreTuple),
-    ?E_DBG("rename_op_db: insert_existing_value - key: ~p, ts: ~w, oldkey: ~p, oldts: ~w",
-           [Key, Timestamp, OldKey, OldTimestamp]),
-    leveldb:add_put(rename_op_db_key(BrickName, StoreTuple),
-                    term_to_binary({StoreTuple, OldKey, OldTimestamp}), Batch);
-add_rename_op(_, Batch) ->
-    Batch. %% noop
-
--spec rename_op_db_key(brickname(), store_tuple()) -> binary().
-rename_op_db_key(BrickName, StoreTuple) ->
-    Key = brick_ets:storetuple_key(StoreTuple),
-    Timestamp = brick_ets:storetuple_ts(StoreTuple),
-    sext:encode({BrickName, Key, Timestamp}).
-
 
 
 %% 17: --------------------

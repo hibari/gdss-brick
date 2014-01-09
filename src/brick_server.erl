@@ -1265,7 +1265,7 @@ chain_get_global_hash(ServerName, Node) ->
 
 -spec chain_set_read_only_mode(brick_name(), node_name(), true | false) -> ok.
 chain_set_read_only_mode(ServerName, Node, On_p)
-  when On_p == true; On_p == false ->
+  when On_p =:= true; On_p =:= false ->
     gen_server:call({ServerName, Node}, {chain_set_read_only_mode, On_p},
                     foo_timeout() * 1).
 
@@ -1479,17 +1479,17 @@ init([ServerName, Options]) ->
 handle_call({do, _SentAt, _, _} = Msg, From, State) ->
     handle_call_do_prescreen(Msg, From, State);
 handle_call(Msg, From, State)
-  when element(1, Msg) == state;
-       element(1, Msg) == flush_all;
-       element(1, Msg) == dump_state;
-       element(1, Msg) == sync_stats;           % debugging? useful?
-       element(1, Msg) == set_do_sync;
-       element(1, Msg) == set_do_logging;
-       element(1, Msg) == start_scavenger ->
+  when element(1, Msg) =:= state;
+       element(1, Msg) =:= flush_all;
+       element(1, Msg) =:= dump_state;
+       element(1, Msg) =:= sync_stats;           % debugging? useful?
+       element(1, Msg) =:= set_do_sync;
+       element(1, Msg) =:= set_do_logging;
+       element(1, Msg) =:= start_scavenger ->
     ?DBG_GEN("handle_call ~w ~w", [State#state.name, Msg]),
     handle_call_via_impl(Msg, From, State);
 handle_call({checkpoint, _} = Msg, From, State) ->
-    if (State#state.chainstate)#chain_r.my_repair_state == ok ->
+    if (State#state.chainstate)#chain_r.my_repair_state =:= ok ->
             handle_call_via_impl(Msg, From, State);
        true ->
             {reply, sorry, State}
@@ -1512,11 +1512,11 @@ handle_call({chain_role, PropList}, _From, State) ->
     {reply, Reply, NewState};
 handle_call({chain_get_role}, _From, State) ->
     CS = State#state.chainstate,
-    Reply = if CS#chain_r.role == undefined; CS#chain_r.role == standalone ->
+    Reply = if CS#chain_r.role =:= undefined; CS#chain_r.role =:= standalone ->
                     CS#chain_r.role;
-               CS#chain_r.upstream == undefined ->
+               CS#chain_r.upstream =:= undefined ->
                     {head, CS#chain_r.downstream};
-               CS#chain_r.downstream == undefined ->
+               CS#chain_r.downstream =:= undefined ->
                     {tail, CS#chain_r.upstream};
                true ->
                     {middle, CS#chain_r.upstream, CS#chain_r.downstream}
@@ -1571,15 +1571,14 @@ handle_call({chain_set_read_only_mode, On_p}, _From, State) ->
 handle_call({chain_get_downstream_serials}, _From, State) ->
     CS = State#state.chainstate,
     {reply, {CS#chain_r.down_serial, CS#chain_r.down_acked}, State};
-handle_call({chain_flush_log_downstream}, _From, State) ->
-    CS = State#state.chainstate,
-    if CS#chain_r.role == standalone orelse
-       (CS#chain_r.role == chain_member andalso
-        CS#chain_r.downstream /= undefined) ->
+handle_call({chain_flush_log_downstream}, _From,
+            #state{chainstate=#chain_r{role=Role, downstream=DS}}=State) ->
+    if Role =:= standalone
+       orelse (Role =:= chain_member andalso DS =/= undefined) ->
             NewState = do_chain_flush_log_downstream(State),
             {reply, ok, NewState};
        true ->
-            {reply, {bad_role, CS#chain_r.role}, State}
+            {reply, {bad_role, Role}, State}
     end;
 handle_call({chain_add_to_proplist, PropList}, _From, State) ->
     CS = State#state.chainstate,
@@ -1691,7 +1690,7 @@ handle_call_do_prescreen2({do, _, _, _} = Msg, From, State) ->
     case chain_check_my_status(State) of
         ok ->
             CS = State#state.chainstate,
-            if CS#chain_r.my_repair_state /= ok ->
+            if CS#chain_r.my_repair_state =/= ok ->
                     %% CHAIN TODO: What error should be returned instead?
                     exit({should_never_happen_paranoia_1,
                           CS#chain_r.my_repair_state});
@@ -1793,19 +1792,21 @@ handle_call_do({do, SentAt, DoList, DoFlags0} = _Msg, From, State) ->
 %% @doc gen_server handle_cast/2 callback.
 %%----------------------------------------------------------------------
 handle_cast({ch_log_replay_v2, UpstreamBrick, Serial, _Thisdo_Mods, _From,
-                                     _Reply, _LastUpstreamSerial} = _Msg, State)
-  when (State#state.chainstate)#chain_r.my_repair_state == ok,
-       (State#state.chainstate)#chain_r.upstream /= UpstreamBrick ->
-    CS = State#state.chainstate,
+             _Reply, _LastUpstreamSerial},
+            #state{name=Name,
+                   chainstate=#chain_r{my_repair_state=RepairState,
+                                       upstream=Upstream}}=State)
+  when RepairState =:= ok, Upstream =/= UpstreamBrick ->
     ?E_ERROR("log replay: ~p: Got bad replay from ~p serial ~p, "
              "my upstream is ~p ... ignoring!",
-             [State#state.name, UpstreamBrick, Serial, CS#chain_r.upstream]),
+             [Name, UpstreamBrick, Serial, Upstream]),
     ?DBG_CHAIN_TLOG("ch_log_replay_v2 ~w ~w ~w my_upstream_is ~p",
-                    [State#state.name, UpstreamBrick, Serial, CS#chain_r.upstream]),
+                    [Name, UpstreamBrick, Serial, Upstream]),
     {noreply, State};
+%% Apply modifications from upstream.
 handle_cast({ch_log_replay_v2, UpstreamBrick, Serial, Thisdo_Mods, From,
-             Reply, LastUpstreamSerial} = Msg, State) ->
-    ?DBG_CHAIN_TLOG("ch_log_replay_v2 ~w ~w ~w", [State#state.name, UpstreamBrick, Serial]),
+             Reply, LastUpstreamSerial}=Msg, #state{name=Name}=State) ->
+    ?DBG_CHAIN_TLOG("ch_log_replay_v2 ~w ~w ~w", [Name, UpstreamBrick, Serial]),
     State2 = exit_if_bad_serial_from_upstream(Serial, LastUpstreamSerial,
                                               Msg, State),
     {NewState, _} =
@@ -1814,16 +1815,16 @@ handle_cast({ch_log_replay_v2, UpstreamBrick, Serial, Thisdo_Mods, From,
 %% % % % % %
 handle_cast({ch_serial_ack, Serial, BrickName, Node, Props} = Msg, State) ->
     CS = State#state.chainstate,
-    if CS#chain_r.downstream == {BrickName, Node} ->
+    if CS#chain_r.downstream =:= {BrickName, Node} ->
             %% Intentionally no 'true' catch-all.
             NewProps = [process_info(self(), message_queue_len)|Props],
             D_serial =
-                if Serial == 0, CS#chain_r.down_acked > 0 ->
+                if Serial =:= 0, CS#chain_r.down_acked > 0 ->
                         ?E_INFO("Ack from downstream ~p is serial 0, "
                                 "role change?", [CS#chain_r.downstream]),
                         Serial;
                    Serial < 0
-                   andalso CS#chain_r.down_acked == ?NEG_LIMBO_SEQNUM ->
+                   andalso CS#chain_r.down_acked =:= ?NEG_LIMBO_SEQNUM ->
                         %% Race condition here: we've very recently
                         %% finished with repair.  The downstream is
                         %% acking with a negative number, which
@@ -1848,7 +1849,7 @@ handle_cast({ch_serial_ack, Serial, BrickName, Node, Props} = Msg, State) ->
                                     end),
                         CS#chain_r.down_acked;
                    Serial >= CS#chain_r.down_acked ->
-                        if CS#chain_r.upstream /= undefined ->
+                        if CS#chain_r.upstream =/= undefined ->
                                 ?DBG_REPAIR("before_send_serial_ack ~w loc_a_serial", [State#state.name, Serial]),
                                 send_serial_ack(CS, Serial,
                                                 State#state.name, node(),
@@ -1873,7 +1874,7 @@ handle_cast({ch_serial_ack, Serial, BrickName, Node, Props} = Msg, State) ->
                     [State#state.name, Msg, 20,
                      CS#chain_r.role, CS#chain_r.downstream]),
             {noreply, State};
-       0 =< Serial, Serial =< 1, CS#chain_r.role == standalone ->
+       0 =< Serial, Serial =< 1, CS#chain_r.role =:= standalone ->
             %% We're probably in a role change: the new downstream has
             %% sent us an ack, but our role hasn't changed yet.
             {noreply, State};
@@ -1881,7 +1882,7 @@ handle_cast({ch_serial_ack, Serial, BrickName, Node, Props} = Msg, State) ->
             UA1 = CS#chain_r.unknown_acks,
             MAX = 60,
             case orddict:find(BrickName, UA1) of
-                {ok, Num} when Num rem MAX == (MAX-1) ->
+                {ok, Num} when Num rem MAX =:= (MAX-1) ->
                     ?E_ERROR("{~p,~p}: Unknown ack: ~W, my role = ~p, my ds = ~p",
                              [State#state.name, self(), Msg, 20,
                               CS#chain_r.role, CS#chain_r.downstream]);
@@ -1904,11 +1905,11 @@ handle_cast({ch_repair, Serial, RepairList} = RepairMsg, State) ->
                 _ ->
                     {noreply, State}
             end;
-       (State#state.chainstate)#chain_r.my_repair_state == repair_overload ->
+       (State#state.chainstate)#chain_r.my_repair_state =:= repair_overload ->
             CS = State#state.chainstate,
             send_repair_ack(CS, repair_overload, State#state.name, 0, 0),
             {noreply, State};
-       (State#state.chainstate)#chain_r.my_repair_state /= ok ->
+       (State#state.chainstate)#chain_r.my_repair_state =/= ok ->
             NewState = chain_do_repair(Serial, RepairList, State),
             {noreply, NewState};
        true ->
@@ -1930,11 +1931,11 @@ handle_cast({ch_repair_diff_round1, Serial, RepairList} = RepairMsg, State) ->
                 _ ->
                     {noreply, State}
             end;
-       (State#state.chainstate)#chain_r.my_repair_state == repair_overload ->
+       (State#state.chainstate)#chain_r.my_repair_state =:= repair_overload ->
             CS = State#state.chainstate,
             send_repair_ack(CS, repair_overload, State#state.name, 0, 0),
             {noreply, State};
-       (State#state.chainstate)#chain_r.my_repair_state /= ok ->
+       (State#state.chainstate)#chain_r.my_repair_state =/= ok ->
             NewState = chain_do_repair_diff_round1(Serial, RepairList, State),
             {noreply, NewState};
        true ->
@@ -1950,15 +1951,15 @@ handle_cast({ch_repair_diff_round1_ack, Serial, _BrickName, _Node, Unknown, Ds} 
     R = CS#chain_r.ds_repair_state,
     if not is_record(R, repair_r) ->
             {noreply, State};
-       Serial == repair_overload ->
+       Serial =:= repair_overload ->
             ?E_INFO("~s: downstream/repairing brick is overloaded, "
                     "interrupting repair process", [State#state.name]),
             {noreply, State};
-       Serial /= 0, Serial /= R#repair_r.last_repair_serial ->
+       Serial =/= 0, Serial =/= R#repair_r.last_repair_serial ->
             {stop, {bad_repair_ack_from_downstream,
                     {got, Serial}, {last, R#repair_r.last_repair_serial}},
              State};
-       Unknown == [] ->
+       Unknown =:= [] ->
             NewState = send_diff_round2(Serial, Unknown, Ds, State),
             NewCS = NewState#state.chainstate,
             NewR = (NewCS#chain_r.ds_repair_state)#repair_r{last_ack = now()},
@@ -1981,16 +1982,16 @@ handle_cast({ch_repair_ack, Serial, BrickName, Node,
     R = CS#chain_r.ds_repair_state,
     if not is_record(R, repair_r) ->
             {noreply, State};
-        Serial /= 0, Serial /= R#repair_r.last_repair_serial ->
+        Serial =/= 0, Serial =/= R#repair_r.last_repair_serial ->
             {stop, {bad_repair_ack_from_downstream,
                     {got, Serial}, {last, R#repair_r.last_repair_serial}},
              State};
-       {BrickName, Node} /= CS#chain_r.downstream ->
+       {BrickName, Node} =/= CS#chain_r.downstream ->
             ?E_ERROR("~s: ch_repair_ack from ~p ~p, my downstream is ~p",
                     [State#state.name, BrickName, Node, CS#chain_r.downstream]),
             {noreply, State};
        true ->
-            if R#repair_r.key == ?BRICK__GET_MANY_LAST ->
+            if R#repair_r.key =:= ?BRICK__GET_MANY_LAST ->
                     RepairTime = timer:now_diff(now(), R#repair_r.started),
                     Is = R#repair_r.repair_inserts + Inserted,
                     Ds = R#repair_r.repair_deletes + Deleted,
@@ -2035,13 +2036,15 @@ handle_cast({ch_repair_finished, Brick, Node, Checkpoint_p, NumKeys}=RepairMsg,
     ?DBG_REPAIR("~w ~w", [State#state.name, RepairMsg]),
     brick_mboxmon:mark_self_done_repairing(),
     %% Sanity
-    true = ({repair_finished, CS#chain_r.upstream} ==
+    true = ({repair_finished, CS#chain_r.upstream} =:=
             {repair_finished, {Brick, Node}}),
 
-    if (State#state.chainstate)#chain_r.my_repair_state /= ok ->
+    if (State#state.chainstate)#chain_r.my_repair_state =/= ok ->
             LastKey = case CS#chain_r.my_repair_state of
-                          {last_key, Key} -> Key;
-                          pre_init        -> ?BRICK__GET_MANY_FIRST
+                          {last_key, Key} ->
+                              Key;
+                          pre_init ->
+                              ?BRICK__GET_MANY_FIRST
                       end,
             ?E_INFO("~s: got ch_repair_finished, calling "
                     "bcb_delete_remaining_keys with key ~p / ~p",
@@ -2050,12 +2053,12 @@ handle_cast({ch_repair_finished, Brick, Node, Checkpoint_p, NumKeys}=RepairMsg,
             {Deletes, ImplState2} =
                 ImplMod:bcb_delete_remaining_keys(LastKey, ImplState),
             {MyNumKeys, _} = get_implementation_ets_info(State),
-            if Checkpoint_p == true ->
+            if Checkpoint_p =:= true ->
                     ?E_ERROR("INFO: ~p: Chain repair finished, upstream brick "
                              "is checkpointing, upstream keys = ~p, "
                              "my keys = ~p",
                              [State#state.name, NumKeys, MyNumKeys]);
-               MyNumKeys /= NumKeys ->
+               MyNumKeys =/= NumKeys ->
                     ?E_ERROR("INFO ~p: Repair keys difference, "
                              "probably due to uncommitted updates: "
                              "upstream keys = ~p, my keys = ~p",
@@ -2080,7 +2083,7 @@ handle_cast({ch_repair_finished, Brick, Node, Checkpoint_p, NumKeys}=RepairMsg,
             catch ImplMod:bcb_force_flush(ImplState2),
             send_repair_ack(CS, 0, State#state.name, 0, Deletes),
             %% delme?? catch brick_itimer:cancel(CS#chain_r.clock_tref),
-            false = size(ImplState2) == record_info(size, state), %sanity
+            false = size(ImplState2) =:= record_info(size, state), %sanity
             OkTime = now(),
             delete_repair_overload_key(State#state.name),
             brick_pingee:set_chain_ok_time(State#state.name, node(), OkTime),
@@ -2126,14 +2129,16 @@ handle_cast({sync_down_the_chain, Options, From, ReplyTag, Acc}, State) ->
     {ImplMod, ImplState} = impl_details(State),
     catch ImplMod:bcb_force_flush(ImplState),
     NewAcc = [{State#state.name,node()}|Acc],
-    if CS#chain_r.official_tail == true -> self() ! chain_admin_periodic;
-       true                             -> ok
+    if CS#chain_r.official_tail =:= true ->
+            self() ! chain_admin_periodic;
+       true ->
+            ok
     end,
-    if CS#chain_r.downstream == undefined ->
+    if CS#chain_r.downstream =:= undefined ->
             From ! {ReplyTag, lists:reverse(NewAcc)},
             ok;
-       CS#chain_r.downstream /= undefined,
-       StopOffTail_p, CS#chain_r.official_tail == true ->
+       CS#chain_r.downstream =/= undefined,
+       StopOffTail_p, CS#chain_r.official_tail =:= true ->
             From ! {ReplyTag, lists:reverse(NewAcc)},
             ok;
        true ->
@@ -2141,18 +2146,17 @@ handle_cast({sync_down_the_chain, Options, From, ReplyTag, Acc}, State) ->
                                  {sync_down_the_chain, Options, From, ReplyTag, NewAcc})
     end,
     {noreply, State};
-handle_cast({ch_sweep_from_other, ChainHeadPid, ChainName, Thisdo_Mods,
-             LastKey}= _Msg, State) ->
-    ?DBG_MIGRATE("ch_sweep_from_other ~w ~w ~w ~w", [ChainName, State#state.name, Thisdo_Mods, LastKey]),
-    CS = State#state.chainstate,
-    if CS#chain_r.role == standalone
-       orelse
-       (CS#chain_r.role == chain_member andalso
-        CS#chain_r.upstream   == undefined andalso
-        CS#chain_r.downstream /= undefined) ->
-            if CS#chain_r.read_only_p ->
-                    ?E_INFO("~s: in read-only mode, got sweep from ~p",
-                            [State#state.name, ChainName]),
+handle_cast({ch_sweep_from_other, ChainHeadPid, ChainName, Thisdo_Mods, LastKey},
+            #state{name=Name,
+                   chainstate=#chain_r{role=Role, downstream=Down, upstream=Up,
+                                       official_tail=OT,
+                                       read_only_p=IsReadOnly}}=State) ->
+    ?DBG_MIGRATE("ch_sweep_from_other ~w ~w ~w ~w", [ChainName, Name, Thisdo_Mods, LastKey]),
+    if Role =:= standalone
+       orelse (Role =:= chain_member
+               andalso Up =:= undefined andalso Down =/= undefined) ->
+            if IsReadOnly ->
+                    ?E_NOTICE("~s: in read-only mode, got sweep from ~p", [Name, ChainName]),
                     {noreply, State};
                true ->
                     do_ch_sweep_from_other(ChainHeadPid, ChainName, Thisdo_Mods,
@@ -2166,9 +2170,7 @@ handle_cast({ch_sweep_from_other, ChainHeadPid, ChainName, Thisdo_Mods,
             %%       used to be head but no longer is?
             ?E_INFO("ch_sweep_from_other: ~p got sweep while "
                      "role is: ~p: ~p ~p ~p, dropping it",
-                     [State#state.name, CS#chain_r.role,
-                      CS#chain_r.upstream, CS#chain_r.downstream,
-                      CS#chain_r.official_tail]),
+                     [Name, Role, Up, Down, OT]),
             {noreply, State}
     end;
 handle_cast({sweep_phase1_done, Key} = _Msg, State) ->
@@ -2179,7 +2181,7 @@ handle_cast({sweep_phase1_done, Key} = _Msg, State) ->
                      [State#state.name, Key, Sw]),
             {noreply, State};
        true ->
-           if Key /= Sw#sweep_r.sweep_key ->
+           if Key =/= Sw#sweep_r.sweep_key ->
                    ?E_INFO("sweep_phase1_done: ~s expected ~W got ~W",
                            [State#state.name, Sw#sweep_r.sweep_key, 60, Key, 60]),
                    {noreply, State};
@@ -2196,12 +2198,12 @@ handle_cast({sweep_phase2_done, Key, PropList} = _Msg, State) ->
             ?E_INFO("~w got sweep_phase2_done for ~p my Sw is ~p",
                     [State#state.name, Key, Sw]),
             {noreply, State};
-       Sw#sweep_r.stage == top ->
+       Sw#sweep_r.stage =:= top ->
             ?E_WARNING("TODO: 1: got sweep_phase2_done for ~p, mine are ~p ~p",
                        [Key, Sw#sweep_r.done_sweep_key, Sw#sweep_r.sweep_key]),
             {noreply, State};
        is_tuple(Sw#sweep_r.stage),
-       element(1, Sw#sweep_r.stage) == done ->
+       element(1, Sw#sweep_r.stage) =:= done ->
             %% The message we've received is a repeat, probably
             %% because of a role change which forced some un-acked
             %% serials downstream a second time ... so we get the
@@ -2228,13 +2230,13 @@ handle_cast(Msg, State) ->
     {ImplMod, ImplState} = impl_details(State),
     case ImplMod:handle_cast(Msg, ImplState) of
         {noreply, S} ->
-            false = size(S) == record_info(size, state), %sanity
+            false = size(S) =:= record_info(size, state), %sanity
             {noreply, State#state{impl_state = S}};
         {noreply, S, Timeout} ->
-            false = size(S) == record_info(size, state), %sanity
+            false = size(S) =:= record_info(size, state), %sanity
             {noreply, State#state{impl_state = S}, Timeout};
         {stop, Reason, S} ->
-            false = size(S) == record_info(size, state), %sanity
+            false = size(S) =:= record_info(size, state), %sanity
             {stop, Reason, State#state{impl_state = S}}
     end.
 
@@ -2258,7 +2260,7 @@ handle_info(chain_admin_periodic, State) ->
                        (N > 45*1000*1000) andalso (N < 46*1100*1100)
                   orelse
                        (N > 60*1000*1000) andalso
-                       ((N div 1000000) rem 60 == 0) ->
+                       ((N div 1000000) rem 60 =:= 0) ->
                     ?E_INFO("~p: repair_last_time diff is ~w seconds",
                            [State#state.name, N div 1000000]);
                 N when N > 10*60*1000*1000 ->      % TODO make configurable
@@ -2276,7 +2278,7 @@ handle_info(kick_next_sweep, State) ->
     {noreply, NewState};
 handle_info({priming_value_blobs_done_for_sweep, LastKey}, State) ->
     Sw = State#state.sweepstate,
-    if Sw#sweep_r.val_prime_lastkey == LastKey ->
+    if Sw#sweep_r.val_prime_lastkey =:= LastKey ->
             %% Do *not* undefine val_prime_lastkey here.  We go to
             %% kick_next_sweep_do_phase2() because we may have had a
             %% role change while the squidflash-style val blob priming
@@ -2298,7 +2300,7 @@ handle_info({priming_value_blobs_done_for_repair, Serial, Unknown, Ds}, State) -
     NewState = send_diff_round2(Serial, Unknown, Ds, State),
     {noreply, NewState};
 handle_info({retry_all_dirty_send_next_repair, RetryRef}, State) ->
-    if RetryRef == State#state.retry_send_repair ->
+    if RetryRef =:= State#state.retry_send_repair ->
             {noreply,
              send_next_repair(State#state{retry_send_repair = undefined})};
        true ->
@@ -2309,7 +2311,7 @@ handle_info({retry_all_dirty_send_next_repair, RetryRef}, State) ->
 handle_info({after_delay_send_next_repair, RepairStartTime}, State) ->
     CS = State#state.chainstate,
     R = CS#chain_r.ds_repair_state,
-    if R#repair_r.started == RepairStartTime ->
+    if R#repair_r.started =:= RepairStartTime ->
             ?E_INFO("~s: after_delay_send_next_repair", [State#state.name]),
             {noreply, send_next_repair(State)};
        true ->
@@ -2319,10 +2321,12 @@ handle_info({after_delay_send_next_repair, RepairStartTime}, State) ->
             {noreply, State}
     end;
 handle_info({storage_layer_init_finished, Name, ZeroDiskErrorsP}, State)
-  when Name == State#state.name ->
+  when Name =:= State#state.name ->
     CS = State#state.chainstate,
-    MyRepairState = if ZeroDiskErrorsP == true  -> pre_init;
-                       ZeroDiskErrorsP == false -> disk_error
+    MyRepairState = if ZeroDiskErrorsP =:= true->
+                            pre_init;
+                       ZeroDiskErrorsP =:= false ->
+                            disk_error
                     end,
     {ImplMod, ImplState} = impl_details(State),
     {WaitingP, _Waiters} =
@@ -2350,7 +2354,7 @@ handle_info(check_expiry = Msg, State) ->
     end;
 handle_info({'DOWN', MRef, _Type, _Pid, _Info} = Msg, State) ->
     CS = State#state.chainstate,
-    if CS#chain_r.upstream_monitor == MRef ->
+    if CS#chain_r.upstream_monitor =:= MRef ->
             ?E_ERROR("Brick ~p got monitor 'DOWN' notice for upstream brick",
                      [State#state.name]),
             CS2 = CS#chain_r{upstream_monitor_down_p = true},
@@ -2362,7 +2366,7 @@ handle_info({'DOWN', MRef, _Type, _Pid, _Info} = Msg, State) ->
     end;
 handle_info(Msg, State) ->
     {ImplMod, ImplState} = impl_details(State),
-    false = size(ImplState) == record_info(size, state), %sanity
+    false = size(ImplState) =:= record_info(size, state), %sanity
     case ImplMod:handle_info(Msg, ImplState) of
         {up1, ToDos, OrigReturn} ->
             State2 = do_chain_todos_iff_empty_log_q(ToDos, State),
@@ -2396,7 +2400,7 @@ handle_info(Msg, State) ->
                       || LQI <- LQI_List],
             ?DBG_TLOG("up1_sync_done ~w todos1 ~w", [State#state.name, ToDos1]),
             ?DBG_TLOG("up1_sync_done ~w todos2 ~w", [State#state.name, ToDos2]),
-            false = size(ImplState2) == record_info(size, state), %sanity
+            false = size(ImplState2) =:= record_info(size, state), %sanity
             ImplState3 =
                 lists:foldl(
                   fun(D_Op_L, St) ->
@@ -2604,8 +2608,10 @@ make_ssf(Key, Fun) when is_function(Fun, 4) ->
 -spec make_op2(atom(), key(), flags_or_fun_list()) ->
                       {atom(), binary(), flags_or_fun_list()}.
 make_op2(OpName, Key, Flags) ->
-    OpKey = if Key == ?BRICK__GET_MANY_FIRST -> Key;
-               true                          -> gmt_util:bin_ify(Key)
+    OpKey = if Key =:= ?BRICK__GET_MANY_FIRST ->
+                    Key;
+               true ->
+                    gmt_util:bin_ify(Key)
             end,
     {OpName, OpKey, encode_op_flags(Flags)}.
 
@@ -2814,7 +2820,7 @@ throttle_tab_name(Brick) ->
 
 handle_call_via_impl(Msg, From, State) ->
     {ImplMod, ImplState} = impl_details(State),
-    false = size(ImplState) == record_info(size, state), %sanity
+    false = size(ImplState) =:= record_info(size, state), %sanity
     case ImplMod:handle_call(Msg, From, ImplState) of
         {up1, ToDos, OrigReturn} ->
             State2 = do_chain_todos_iff_empty_log_q(ToDos, State),
@@ -2934,7 +2940,7 @@ do_status(S, ImplStatus) ->
 %% @doc Set the brick's chain role to "standalone".
 
 chain_set_role_standalone(S)
-  when (S#state.chainstate)#chain_r.role == standalone ->
+  when (S#state.chainstate)#chain_r.role =:= standalone ->
     {{error, already_standalone, {}}, S};
 chain_set_role_standalone(S) ->
     CS = S#state.chainstate,
@@ -3096,7 +3102,7 @@ chain_set_role(tail, S, PropList) ->
                                                          PropList, true),
                     LastUpSerial = 0,
                     {UpStrMon, UpStrMonDown} =
-                        if TwoTuple == CS#chain_r.upstream ->
+                        if TwoTuple =:= CS#chain_r.upstream ->
                                 {CS#chain_r.upstream_monitor,
                                  CS#chain_r.upstream_monitor_down_p};
                            true ->
@@ -3150,7 +3156,7 @@ chain_set_role(middle, S, PropList) ->
                     AmOfficialTail = proplists:get_value(official_tail,
                                                          PropList, false),
                     {_ImplMod, _ImplState} = impl_details(S),
-                    UnQ = if CS#chain_r.down_unacked == undefined ->
+                    UnQ = if CS#chain_r.down_unacked =:= undefined ->
                                   queue:new();
                              true ->
                                   CS#chain_r.down_unacked
@@ -3158,7 +3164,7 @@ chain_set_role(middle, S, PropList) ->
                     LastUpSerial = 0,
                     NewSerial = CS#chain_r.down_serial,
                     {UpStrMon, UpStrMonDown} =
-                        if UpTuple == CS#chain_r.upstream ->
+                        if UpTuple =:= CS#chain_r.upstream ->
                                 {CS#chain_r.upstream_monitor,
                                  CS#chain_r.upstream_monitor_down_p};
                            true ->
@@ -3207,10 +3213,10 @@ chain_set_role(middle, S, PropList) ->
 
 chain_check_my_status(S) ->
     CS = S#state.chainstate,
-    if CS#chain_r.role == undefined ->
+    if CS#chain_r.role =:= undefined ->
             {error, current_role, {S#state.name, CS#chain_r.role, S#state.globalhash}}; %QQQ debugging only! TODO return commented value.
             %%{error, current_role, CS#chain_r.role};
-       CS#chain_r.my_repair_state /= ok ->
+       CS#chain_r.my_repair_state =/= ok ->
             {error, current_repair_state, CS#chain_r.my_repair_state};
        true ->
             ok
@@ -3280,7 +3286,7 @@ chain_set_my_repair_state(S, NewVal) ->
             %% second and remove the brick from the chain.
             brick_pingee:set_chain_ok_time(S#state.name, node(), undefined),
             {ok, S#state{chainstate = set_my_repair_member(S, CS, disk_error)}};
-        {OldRState, ok} when OldRState /= disk_error ->
+        {OldRState, ok} when OldRState =/= disk_error ->
             OkTime = now(),
             {ok, S#state{chainstate = set_my_repair_member_and_chain_ok_time(
                                         S, CS, NewVal, OkTime)}};
@@ -3308,9 +3314,9 @@ chain_set_ds_repair_state(S, Val) ->
 chain_reply_directly_p(DoFlags, S) ->
     CS = S#state.chainstate,
     IgnoreRoleP = proplists:get_value(ignore_role, DoFlags, false),
-    if IgnoreRoleP                      -> true;
-       CS#chain_r.official_tail == true -> true;
-       true                             -> false
+    if IgnoreRoleP                       -> true;
+       CS#chain_r.official_tail =:= true -> true;
+       true                              -> false
     end.
 
 %% @spec (integer(), prop_list(), From, term(), thisdo_mods(), state_r()) ->
@@ -3320,7 +3326,7 @@ chain_reply_directly_p(DoFlags, S) ->
 %%
 %% TODO: This is a case where the ChainRep paper suggests that we
 %% have some flexibility at the expense of strong consistency
-%% guarantees.  If we are not the tail, and if Thisdo_Mods == [],
+%% guarantees.  If we are not the tail, and if Thisdo_Mods =:= [],
 %% then this query was read-only and if we reply directly, it's
 %% possible that our reply could result in inconsistency if the
 %% proper number of failures occur.  For strong consistency, all
@@ -3336,15 +3342,15 @@ chain_send_downstream(Serial, DoFlags, From, Reply, Thisdo_Mods, S) ->
     ok = bz_debug_check_todos(Thisdo_Mods, S),
     CS = S#state.chainstate,
     ReplyDirectly = chain_reply_directly_p(DoFlags, S)
-        orelse Thisdo_Mods == [],
+        orelse Thisdo_Mods =:= [],
     %% From may be an invalid sender, such as a binary, so don't send
     %% anything to such an invalid sender.
-    if ReplyDirectly == true, is_tuple(From), element(1, From) == sweep_cast ->
+    if ReplyDirectly =:= true, is_tuple(From), element(1, From) =:= sweep_cast ->
             ?DBG_CHAIN("chain_send_downstream ~w sweep_cast ~w ~w ~w",
                        [S#state.name, From, Reply, Thisdo_Mods]),
             {sweep_cast, Pid} = From,
             gen_server:cast(Pid, Reply);
-       ReplyDirectly == true, not is_binary(From) ->
+       ReplyDirectly =:= true, not is_binary(From) ->
             ?DBG_CHAIN("chain_send_downstream ~w reply ~w ~w ~w",
                        [S#state.name, From, Reply, Thisdo_Mods]),
             gen_server:reply(From, Reply);
@@ -3355,9 +3361,10 @@ chain_send_downstream(Serial, DoFlags, From, Reply, Thisdo_Mods, S) ->
     end,
 
     ReplyDirectlyAndReadOnlyP =                 % !@#$! guard limitations
-        ReplyDirectly == true andalso Thisdo_Mods == [],
-    if CS#chain_r.downstream /= undefined,
+        ReplyDirectly =:= true andalso Thisdo_Mods =:= [],
+    if CS#chain_r.downstream =/= undefined,
        not ReplyDirectlyAndReadOnlyP ->
+            %% Send filtered modifications to downstream.
             {ImplMod, ImplState} = impl_details(S),
             Thisdo_Mods_filt = filter_mods_for_downstream(Thisdo_Mods,
                                                           ImplMod, ImplState),
@@ -3373,14 +3380,14 @@ chain_send_downstream(Serial, DoFlags, From, Reply, Thisdo_Mods, S) ->
             %% of unacknowledged mods that we send downstream: if the
             %% brick downstream of the O.T. crashes, we have another
             %% method to fix it: the normal repair mechanism.
-            NewQ = if CS#chain_r.official_tail == false ->
+            NewQ = if CS#chain_r.official_tail =:= false ->
                            Q = CS#chain_r.down_unacked,
                            queue:in(Msg_mine, Q);
                       true ->
                            CS#chain_r.down_unacked
                    end,
-            S#state{chainstate = CS#chain_r{down_serial = Serial,
-                                            down_unacked = NewQ}};
+            S#state{chainstate = CS#chain_r{down_serial=Serial,
+                                            down_unacked=NewQ}};
        true ->
             S
     end.
@@ -3392,9 +3399,9 @@ chain_send_downstream_iff_empty_log_q(Serial, DoFlags, From, Reply,
     %% operation (probably a get or get_many) hostage to stuff that's
     %% really been logged to disk and is waiting for a sync.
     case (queue:is_empty(S#state.logging_op_q) andalso
-          ImplMod:bcb_peek_logging_op_q_len(ImplState) == 0)
+          ImplMod:bcb_peek_logging_op_q_len(ImplState) =:= 0)
          orelse
-         Thisdo_Mods == [] of
+         Thisdo_Mods =:= [] of
         true ->
             chain_send_downstream(Serial, %qqq_xxx_yyy2,
                                   [], From, Reply, Thisdo_Mods, S);
@@ -3452,19 +3459,19 @@ chain_do_log_replay(Serial, Thisdo_Mods, From, Reply, S) ->
 chain_do_log_replay(ChainSerial, DoFlags, Thisdo_Mods, From, Reply, S)
   when is_list(Thisdo_Mods) ->
     {ImplMod, ImplState} = impl_details(S),
-    false = size(ImplState) == record_info(size, state), %sanity
+    false = size(ImplState) =:= record_info(size, state), %sanity
     case ImplMod:bcb_log_mods(Thisdo_Mods, ChainSerial, ImplState) of
         {goahead, ImplState2, LocalMods} ->
             ?DBG_CHAIN_TLOG("chain_do_log_replay ~w calling bcb_map_mods_to_storage", [S#state.name]),
             ImplState3 = ImplMod:bcb_map_mods_to_storage(LocalMods,
                                                          ImplState2),
-            false = size(ImplState3) == record_info(size, state), %sanity
+            false = size(ImplState3) =:= record_info(size, state), %sanity
             %% TODO: Should this be chain_send_downstream_iff_empty_log_q()??
             S2 = chain_send_downstream(ChainSerial,
                                        DoFlags, From, Reply, Thisdo_Mods,
                                        S#state{impl_state = ImplState3}),
             CS = S2#state.chainstate,
-            if ChainSerial == no_serial ->
+            if ChainSerial =:= no_serial ->
                     {S2, goahead};
                is_integer(ChainSerial) ->
                     {S2#state{chainstate = CS#chain_r{up_serial = ChainSerial}},
@@ -3499,7 +3506,7 @@ chain_do_log_replay(ChainSerial, DoFlags, Thisdo_Mods, From, Reply, S)
     end;
 chain_do_log_replay(ChainSerial, DoFlags, Tuple_mod_thing, From, Reply, S)
   when is_tuple(Tuple_mod_thing),
-       element(1, Tuple_mod_thing) == plog_sweep ->
+       element(1, Tuple_mod_thing) =:= plog_sweep ->
     case Tuple_mod_thing of
         {plog_sweep, PLogType, SwC}
         when is_record(SwC, sweepcheckp_r),
@@ -3507,10 +3514,10 @@ chain_do_log_replay(ChainSerial, DoFlags, Tuple_mod_thing, From, Reply, S)
             S2 = chain_send_downstream_iff_empty_log_q(
                    ChainSerial, DoFlags, From, Reply, Tuple_mod_thing, S),
             %% Only write checkpoint for our own chain's sweep state.
-            %% S2b = if Sw#sweep_r.chain_name == SwC#sweepcheckp_r.chain_name ->
-            S2b = if PLogType == phase1_sweep_info ->
+            %% S2b = if Sw#sweep_r.chain_name =:= SwC#sweepcheckp_r.chain_name ->
+            S2b = if PLogType =:= phase1_sweep_info ->
                           write_sweep_cp(SwC, S2);
-                     PLogType == from_other ->
+                     PLogType =:= from_other ->
                           S2
                   end,
             S3 = if not (S#state.chainstate)#chain_r.waiting_for_mig_start_p ->
@@ -3531,7 +3538,7 @@ chain_do_log_replay(ChainSerial, DoFlags, Tuple_mod_thing, From, Reply, S)
                       SwC#sweepcheckp_r.chain_name,
                       SwC#sweepcheckp_r.sweep_key,
                       GH#g_hash_r{migrating_p = true, phase = migrating}),
-            if ChainSerial == no_serial ->
+            if ChainSerial =:= no_serial ->
                     {S3#state{globalhash = NewGH}, goahead};
                is_integer(ChainSerial) ->
                     CS = S3#state.chainstate,
@@ -3557,38 +3564,34 @@ chain_do_log_replay(ChainSerial, DoFlags, Tuple_mod_thing, From, Reply, S)
 %% finished.  It should be small enough so that it's impossible to have
 %% the serial number reach 0 before repair is complete.
 -spec chain_start_repair(#state{}) -> {ok | {error, not_chain_member | no_downstream | ds_repair_state, term()},#state{}}.
-chain_start_repair(S) ->
-    CS = S#state.chainstate,
-    if CS#chain_r.role /= chain_member ->
-            {{error, not_chain_member, {role, CS#chain_r.role}}, S};
-       CS#chain_r.downstream == undefined ->
+chain_start_repair(#state{chainstate=#chain_r{role=Role, downstream=Down, ds_repair_state=Repair0,
+                                              proplist=Props}=CS}=S) ->
+    if Role =/= chain_member ->
+            {{error, not_chain_member, {role, Role}}, S};
+       Down =:= undefined ->
             {{error, no_downstream, []}, S};
-       CS#chain_r.ds_repair_state /= pre_init ->
-            {{error, ds_repair_state, CS#chain_r.ds_repair_state}, S};
+       Repair0 =/= pre_init ->
+            {{error, ds_repair_state, Repair0}, S};
        true ->
-            RepairM = proplists:get_value(repair_method, CS#chain_r.proplist,
-                                          repair_diff),
-            MaxKeys = proplists:get_value(repair_max_keys, CS#chain_r.proplist,
-                                          ?REPAIR_MAX_KEYS),
-            MaxBytes = prop_or_application_env_i(
-                         brick_repair_max_bytes,
-                         repair_max_bytes, CS#chain_r.proplist,
-                         ?REPAIR_MAX_BYTES),
-            MaxPrimers = prop_or_application_env_i(
-                           brick_repair_max_primers,
-                           repair_max_primers, CS#chain_r.proplist,
-                           ?REPAIR_MAX_PRIMERS),
+            RepairM = proplists:get_value(repair_method, Props, repair_diff),
+            MaxKeys = proplists:get_value(repair_max_keys, Props, ?REPAIR_MAX_KEYS),
+            MaxBytes = prop_or_application_env_i(brick_repair_max_bytes, repair_max_bytes,
+                                                 Props,
+                                                 ?REPAIR_MAX_BYTES),
+            MaxPrimers = prop_or_application_env_i(brick_repair_max_primers, repair_max_primers,
+                                                   Props,
+                                                   ?REPAIR_MAX_PRIMERS),
             StartingSerial = -888777666555444,
-            Repair = #repair_r{started = now(),
-                               started_serial = StartingSerial,
-                               last_repair_serial = StartingSerial,
-                               repair_method = RepairM,
-                               max_keys = MaxKeys,
-                               max_bytes = MaxBytes,
-                               key = ?BRICK__GET_MANY_FIRST,
-                               last_ack = now()},
-            NewS = S#state{chainstate = CS#chain_r{ds_repair_state = Repair,
-                                                   max_primers = MaxPrimers}},
+            Repair = #repair_r{started=now(),
+                               started_serial=StartingSerial,
+                               last_repair_serial=StartingSerial,
+                               repair_method=RepairM,
+                               max_keys=MaxKeys,
+                               max_bytes=MaxBytes,
+                               key= ?BRICK__GET_MANY_FIRST,
+                               last_ack=now()},
+            NewS = S#state{chainstate=CS#chain_r{ds_repair_state=Repair,
+                                                 max_primers=MaxPrimers}},
             NewS2 = send_next_repair(NewS),
             {ok, NewS2}
     end.
@@ -3599,8 +3602,8 @@ chain_start_repair(S) ->
 %%
 %% Almost all actual execution is done by {@link cheap_monad/2}.
 
-do_chain_admin_periodic(S)
-  when (S#state.chainstate)#chain_r.role /= chain_member ->
+do_chain_admin_periodic(#state{chainstate=#chain_r{role=Role}}=S)
+  when Role =/= chain_member ->
     S;
 do_chain_admin_periodic(S) ->
     InitialCS = S#state.chainstate,
@@ -3632,10 +3635,9 @@ do_chain_admin_periodic(S) ->
                 %% *while* we are being repaired (i.e. normal log
                 %% replay activity) ... or else our upstream/official
                 %% tail can wait forever during role changes.
-                if (CS#chain_r.upstream /= undefined andalso
-                    CS#chain_r.downstream == undefined)
-                   andalso
-                   not DoNotInitiate_p ->
+                if CS#chain_r.upstream =/= undefined
+                   andalso CS#chain_r.downstream =:= undefined
+                   andalso not DoNotInitiate_p ->
                         Fsend_serial_ack(CS),
                         CS;
                    true ->
@@ -3644,11 +3646,11 @@ do_chain_admin_periodic(S) ->
         end,
     CheckRepairAck =
         fun(CS) ->
-                if CS#chain_r.downstream /= undefined andalso
-                   (CS#chain_r.ds_repair_state == pre_init orelse
-                    (CS#chain_r.ds_repair_state == ok)) ->
+                if CS#chain_r.downstream =/= undefined
+                   andalso (CS#chain_r.ds_repair_state =:= pre_init
+                            orelse CS#chain_r.ds_repair_state =:= ok) ->
                         CS;
-                   CS#chain_r.downstream /= undefined,
+                   CS#chain_r.downstream =/= undefined,
                    is_record(CS#chain_r.ds_repair_state, repair_r) ->
                         R = CS#chain_r.ds_repair_state,
                         Diff = timer:now_diff(Now, R#repair_r.last_ack),
@@ -3665,8 +3667,8 @@ do_chain_admin_periodic(S) ->
         end,
     CheckDownstreamAck =
         fun(CS) ->
-                if CS#chain_r.downstream /= undefined,
-                   CS#chain_r.ds_repair_state == ok ->
+                if CS#chain_r.downstream =/= undefined,
+                   CS#chain_r.ds_repair_state =:= ok ->
                         Diff = timer:now_diff(Now, CS#chain_r.last_ack),
                         if Diff > 20*1000*1000 -> % TODO make configurable
                                 ?E_ERROR("~s: No downstream ack from ~p in ~p usec",
@@ -3703,7 +3705,7 @@ get_repair_tuples(Key, Max, WitnessP, MaxBytes, S) ->
     %% Must make certain that no dirty keys slip in at the end of the table!
     {ImplMod, ImplState} = impl_details(S),
     DirtyList = ImplMod:bcb_dirty_keys_in_range(Key, LastKey, ImplState),
-    FwdList2 = if DirtyList == [] ->
+    FwdList2 = if DirtyList =:= [] ->
                        FwdList;
                   true ->
                        merge_dirtylist_mods(FwdList, DirtyList)
@@ -3735,11 +3737,11 @@ get_sweep_tuples(Key, Max, WitnessP, MaxBytes, S) ->
     {{ReverseList, _}, _IS} =
         ImplMod:bcb_get_many(Key, Fs ++ [{max_num, Max}, {witness, WitnessP}],
                              ImplState),
-    LastKey = if ReverseList /= [] ->
+    LastKey = if ReverseList =/= [] ->
                       [LastTuple|_] = ReverseList,
                       %% TODO: major contamination??
                       element(1, LastTuple);
-                 ReverseList == [] ->
+                 ReverseList =:= [] ->
                       ?BRICK__GET_MANY_LAST
               end,
     {lists:reverse(ReverseList), LastKey}.
@@ -3753,14 +3755,15 @@ exit_if_bad_serial_from_upstream(Serial, Msg, S) ->
 %% @spec (serial_number(), serial_number(), term(), state_r()) -> state_r() | exit
 %% @doc Sanity check: is the serial number received from upstream OK?
 
-exit_if_bad_serial_from_upstream(_Serial, _LastUpstreamSerial, _Msg, S)
-  when (S#state.chainstate)#chain_r.my_repair_state /= ok ->
+exit_if_bad_serial_from_upstream(_Serial, _LastUpstreamSerial, _Msg,
+                                 #state{chainstate=#chain_r{my_repair_state=RepairState}}=S)
+  when RepairState =/= ok ->
     S;
 exit_if_bad_serial_from_upstream(Serial, LastUpstreamSerial, Msg, S)
   when is_integer(Serial) ->
     CS = S#state.chainstate,
     LastSerial = CS#chain_r.up_serial,
-    if LastSerial == 0, Serial > 0 ->
+    if LastSerial =:= 0, Serial > 0 ->
             %% Should be no_serial_yet ... this is the first serial we've seen.
             ok;
        Serial =< LastSerial ->
@@ -3771,7 +3774,7 @@ exit_if_bad_serial_from_upstream(Serial, LastUpstreamSerial, Msg, S)
             ok
     end,
     CS2 = if is_integer(LastUpstreamSerial) ->
-                  if LastUpstreamSerial == LastSerial ->
+                  if LastUpstreamSerial =:= LastSerial ->
                           if CS#chain_r.upstream_monitor_down_p ->
                                   %% Reset the upstream_monitor_down_p flag.
                                   %% We are past the risk window where a
@@ -3843,9 +3846,9 @@ send_next_repair2(S) ->
     R = CS#chain_r.ds_repair_state,
 
     WitnessP = if
-                   R#repair_r.repair_method == replace ->
+                   R#repair_r.repair_method =:= replace ->
                        false;
-                   R#repair_r.repair_method == repair_diff ->
+                   R#repair_r.repair_method =:= repair_diff ->
                        true
                end,
     %%
@@ -3862,7 +3865,7 @@ send_next_repair2(S) ->
     Len = length(KeyValTS_list),
     NewR =
         if
-            KeyValTS_list == [], LastKey /= ?BRICK__GET_MANY_LAST ->
+            KeyValTS_list =:= [], LastKey =/= ?BRICK__GET_MANY_LAST ->
                 {ImplMod, ImplState} = impl_details(S),
                 ?E_INFO("Repair: ~p: dirty_key_inteference: ~p ~p ~p",
                         [S#state.name, R#repair_r.key, LastKey,
@@ -3875,7 +3878,7 @@ send_next_repair2(S) ->
                                             RetryRef}
                       end),
                 S#state{retry_send_repair = RetryRef};
-            KeyValTS_list == [], LastKey == ?BRICK__GET_MANY_LAST ->
+            KeyValTS_list =:= [], LastKey =:= ?BRICK__GET_MANY_LAST ->
                 ?DBG_REPAIR("sending_ch_repair_finished ~w ~w ~w",
                             [S#state.name, node(), CS#chain_r.downstream]),
                 Serial = CS#chain_r.up_serial,
@@ -3902,14 +3905,14 @@ send_next_repair2(S) ->
                            last_repair_serial = Serial,
                            final_repair_serial = FinalSerial,
                            values_sent = VSent + Len};
-            R#repair_r.repair_method == repair_diff ->
+            R#repair_r.repair_method =:= repair_diff ->
                 Serial = R#repair_r.last_repair_serial + 1,
                 gen_server:cast(CS#chain_r.downstream,
                                 {ch_repair_diff_round1, Serial, KeyValTS_list}),
                 R#repair_r{key = LastKey,
                            last_repair_serial = Serial,
                            values_sent = VSent + Len};
-            R#repair_r.repair_method == replace ->
+            R#repair_r.repair_method =:= replace ->
                 ?E_WARNING("SSS: ~p: SHOULD NOT BE HAPPENING HERE: send_next_repair: repair_r key was ~p -> LastKey = ~p",
                            [S#state.name, R#repair_r.key, LastKey]),
                 Serial = R#repair_r.last_repair_serial + 1,
@@ -3992,7 +3995,7 @@ chain_do_repair(Serial, RepairList, S) ->
                end,
     {LastKey, Inserts, Deletes, ImplState2} =
         ImplMod:bcb_repair_loop(RepairList, FirstKey, ImplState),
-    false = size(ImplState2) == record_info(size, state), %sanity
+    false = size(ImplState2) =:= record_info(size, state), %sanity
     NewS = S#state{impl_state = ImplState2},
     send_repair_ack(CS, Serial, NewS#state.name, Inserts, Deletes),
     RS = {last_key, LastKey},
@@ -4009,7 +4012,7 @@ chain_do_repair_diff_round1(Serial, RepairList, S) ->
     {ImplMod, ImplState} = impl_details(S),
     FirstKey =
         case CS#chain_r.my_repair_state of
-            ST when ST == pre_init; ST == repair_overload ->
+            ST when ST =:= pre_init; ST =:= repair_overload ->
                 {{ReverseList, _}, _IS} =
                     ImplMod:bcb_get_many(?BRICK__GET_MANY_FIRST,
                                          [witness, {max_num, 1}],
@@ -4027,7 +4030,7 @@ chain_do_repair_diff_round1(Serial, RepairList, S) ->
         end,
     {MyLastKey, Unknown, Ds, ImplState2} =
         ImplMod:bcb_repair_diff_round1(RepairList, FirstKey, ImplState),
-    false = size(ImplState2) == record_info(size, state), %sanity
+    false = size(ImplState2) =:= record_info(size, state), %sanity
     NewS = S#state{impl_state = ImplState2},
     send_repair_diff_round1_ack(CS, Serial, NewS#state.name, Unknown, Ds),
     RS = {last_key, MyLastKey},
@@ -4051,7 +4054,7 @@ chain_do_repair_diff_round2(Serial, RepairList, Ds, S) ->
     CS = S#state.chainstate,
     {ImplMod, ImplState} = impl_details(S),
     {_____ignoring_this_is_ok_yes_no__LastKey, Is, Ds, ImplState2} = ImplMod:bcb_repair_diff_round2(RepairList, Ds, ImplState),
-    false = size(ImplState2) == record_info(size, state), %sanity
+    false = size(ImplState2) =:= record_info(size, state), %sanity
     NewS = S#state{impl_state = ImplState2},
     send_repair_ack(CS, Serial, NewS#state.name, Is, Ds),
     CS2 = set_my_repair_member(NewS, NewS#state.chainstate, CS#chain_r.my_repair_state),
@@ -4096,7 +4099,7 @@ chain_do_repair_diff_round2(Serial, RepairList, Ds, S) ->
 %% If we determine that an op's key is in the sweep zone, we need to wait.
 
 chain_all_do_list_keys_local_p(DoList, _DoFlags, S)
-  when S#state.globalhash == undefined ->
+  when S#state.globalhash =:= undefined ->
     {true, harvest_do_keys(DoList, S)};
 chain_all_do_list_keys_local_p(DoList, DoFlags, S) ->
     GH = S#state.globalhash,
@@ -4121,7 +4124,7 @@ chain_all_do_list_keys_local_p(DoList, DoFlags, S) ->
                     %% sweep key advances during a squidflash priming.
                     Me = {S#state.name, node()},
                     case ExtractRes of
-                        {[X], _RdWr_Keys, ReadOrWrite} when X == Me ->
+                        {[X], _RdWr_Keys, ReadOrWrite} when X =:= Me ->
                             case op_type_permitted_by_role_p(ReadOrWrite, S) of
                                 true ->
                                     OutsideSweepRes;
@@ -4132,7 +4135,7 @@ chain_all_do_list_keys_local_p(DoList, DoFlags, S) ->
                             end;
                         _ ->
                             Filtered = [X || X <- lists:usort(BrickList),
-                                             X /= Me],
+                                             X =/= Me],
                             {false, Filtered}
                     end
             end
@@ -4177,14 +4180,12 @@ get_sweep_start_and_end(S) ->
             {SweepA, SweepZ}
     end.
 
+sweep_zone_convert(?BRICK__GET_MANY_FIRST) ->
+    ?BRICK__SMALLEST_KEY;
+sweep_zone_convert(?BRICK__GET_MANY_LAST) ->
+    ?BRICK__BIGGEST_KEY;
 sweep_zone_convert(Key) ->
-    if Key == ?BRICK__GET_MANY_FIRST ->
-            ?BRICK__SMALLEST_KEY;
-       Key == ?BRICK__GET_MANY_LAST ->
-            ?BRICK__BIGGEST_KEY;
-       true ->
-            Key
-    end.
+    Key.
 
 %% @spec (state_r()) -> state_r()
 %% @doc Process a request to flush unack'ed items in the log downstream.
@@ -4298,7 +4299,7 @@ pull_items_out_of_unacked(
   {{value, {ch_log_replay_v2, _, Ser, _, _, _, _fixme}}, NewQ},
   Serial, _, _BeforeQ)
   when Ser =< Serial ->
-    pull_items_out_of_unacked(queue:out(NewQ), Serial, Ser == Serial, NewQ);
+    pull_items_out_of_unacked(queue:out(NewQ), Serial, Ser =:= Serial, NewQ);
 pull_items_out_of_unacked({empty, NewQ}, _Serial, true, _BeforeQ) ->
     NewQ;
 pull_items_out_of_unacked(_, _Serial, _Bool, BeforeQ) ->
@@ -4368,17 +4369,16 @@ pull_items_out_of_logging_queue(_, Acc, Q, _LastLogSerial,
 do_migration_start_sweep(Cookie, MyChainName, Options, S) ->
     CS = S#state.chainstate,
     GH = S#state.globalhash,
-    if S#state.sweepstate /= undefined ->
+    if S#state.sweepstate =/= undefined ->
             Sw = S#state.sweepstate,
             {{error, migration_in_progress, Sw#sweep_r.cookie}, S};
        not is_record(S#state.globalhash, g_hash_r) ->
             {{error, bad_globalhash, S#state.globalhash}, S};
        not GH#g_hash_r.migrating_p ->
             {{error, gh_not_migrating, GH#g_hash_r.migrating_p}, S};
-       CS#chain_r.role == standalone
-         orelse
-       (CS#chain_r.role == chain_member andalso
-        CS#chain_r.upstream == undefined) ->
+       CS#chain_r.role =:= standalone
+         orelse (CS#chain_r.role =:= chain_member
+                 andalso CS#chain_r.upstream =:= undefined) ->
             {ImplMod, ImplState} = impl_details(S),
             Flog = fun() -> ?E_INFO("start_sweep: ~w starting to sweep ~p",
                                     [S#state.name, MyChainName])
@@ -4409,8 +4409,8 @@ do_migration_start_sweep(Cookie, MyChainName, Options, S) ->
                                  globalhash = GH2#g_hash_r{migrating_p = true,
                                                            phase = migrating}}};
                 [{_, SwC}] when is_record(SwC, sweepcheckp_r),
-                          SwC#sweepcheckp_r.cookie == Cookie,
-                          SwC#sweepcheckp_r.chain_name == MyChainName ->
+                          SwC#sweepcheckp_r.cookie =:= Cookie,
+                          SwC#sweepcheckp_r.chain_name =:= MyChainName ->
                     Sw = make_init_sweep(Cookie, MyChainName, Options, S),
                     %% We don't know the state of sweeping after
                     %% SwC#sweepcheckp_r.done_sweep_key, so we'll force
@@ -4418,8 +4418,7 @@ do_migration_start_sweep(Cookie, MyChainName, Options, S) ->
                     %% to SwC#sweepcheckp_r.done_sweep_key has been swept
                     %% already.
                     DoneKey =
-                       if SwC#sweepcheckp_r.done_sweep_key
-                           == '$end_of_table' ->
+                       if SwC#sweepcheckp_r.done_sweep_key =:= '$end_of_table' ->
                                ?BRICK__BIGGEST_KEY;
                           true ->
                                SwC#sweepcheckp_r.done_sweep_key
@@ -4480,8 +4479,10 @@ do_migration_clear_sweep(S) ->
 make_init_sweep(Cookie, MyChainName, Options, S) ->
     BigDataDirP = impl_mod_uses_bigdata_dir(S),
     MaxKeysDefault =
-        if BigDataDirP == false -> 500;  % Vals in RAM, no latency problem.
-           true                 ->  25   % Vals on disk, be conservative.
+        if BigDataDirP =:= false ->
+                500;  % Vals in RAM, no latency problem.
+           true ->
+                25    % Vals on disk, be conservative.
         end,
     Interval = proplists:get_value(interval, Options, 50),
     MaxKeysPI = proplists:get_value(max_keys_per_iter, Options, MaxKeysDefault),
@@ -4519,7 +4520,7 @@ do_kick_next_sweep(top, S)
     S;
 do_kick_next_sweep(top, S) ->
     Sw = S#state.sweepstate,
-    if Sw#sweep_r.sweep_key == ?BRICK__GET_MANY_LAST ->
+    if Sw#sweep_r.sweep_key =:= ?BRICK__GET_MANY_LAST ->
             ?DBG_MIGRATE("finished_sweeping ~w", [S#state.name]),
 
             %% We may be done sweeping ourselves, but other bricks may
@@ -4563,10 +4564,9 @@ do_kick_next_sweep(top, S) ->
             NewS3;
        true ->
             CS = S#state.chainstate,
-            if CS#chain_r.role == standalone
-               orelse
-               (CS#chain_r.role == chain_member andalso
-                CS#chain_r.official_tail == true) ->
+            if CS#chain_r.role =:= standalone
+               orelse (CS#chain_r.role =:= chain_member
+                       andalso CS#chain_r.official_tail =:= true) ->
                     %% We have nobody downstream of us, so no need for
                     %% a pre-sweep announcement down our chain.
                     kick_next_sweep_only_one_phase(Sw, S);
@@ -4580,7 +4580,7 @@ do_kick_next_sweep(top, S) ->
                                               true, S),
                     ?DBG_MIGRATE("kick__phase1 ~w ~w ~w ~w ~w",
                                  [S#state.name, Sw#sweep_r.done_sweep_key, Sw#sweep_r.sweep_key, KeyTS_list, LastKey]),
-                    if KeyTS_list == [] ->
+                    if KeyTS_list =:= [] ->
                             ?E_INFO("do_kick_next_sweep: ~p: END!", [S#state.name]),
                             do_kick_next_sweep_keyts_list_empty(S);
                        true ->
@@ -4719,8 +4719,7 @@ kick_next_sweep_do_phase2(Sw, Phase1LastKey, S) ->
                  [S#state.name, Sw#sweep_r.done_sweep_key, Sw#sweep_r.sweep_key,
                   KeyTS_list0, LastKey, Phase1LastKey]),
     if LastKey =:= Phase1LastKey
-       orelse
-       Phase1LastKey == ?BRICK__GET_MANY_LAST ->
+       orelse Phase1LastKey =:= ?BRICK__GET_MANY_LAST ->
             ?DBG_MIGRATE("kick__phase2__t ~w", [S#state.name]),
             kick_next_sweep_phase2b(S, KeyTS_list0, FirstKey, Phase1LastKey);
        LastKey > Phase1LastKey ->
@@ -4739,7 +4738,7 @@ kick_next_sweep_do_phase2(Sw, Phase1LastKey, S) ->
             F = fun({Acc, LK}) ->
                         ?DBG_MIGRATE("kick__phase2__ww ~w ~w ~w", [S#state.name, LK, Acc]),
                         {KTSL, NewLK} = get_sweep_tuples(LK, 1, true, S),
-                        if NewLK == ?BRICK__GET_MANY_LAST; KTSL == [] ->
+                        if NewLK =:= ?BRICK__GET_MANY_LAST; KTSL =:= [] ->
                                 ?DBG_MIGRATE("kick__phase2__xx ~w ~w ~w", [S#state.name, KTSL, NewLK]),
                                 {false, Acc ++ KTSL};
                            NewLK =< Phase1LastKey ->
@@ -4775,7 +4774,7 @@ kick_next_sweep_phase2c(S, KeyTS_list, LastKey) ->
     Sw = S#state.sweepstate,
     ?DBG_MIGRATE("kick__phase2c ~w ~w ~w ~w ~w",
                  [S#state.name, Sw#sweep_r.done_sweep_key, Sw#sweep_r.sweep_key, KeyTS_list, LastKey]),
-    if LastKey == ?BRICK__GET_MANY_LAST, KeyTS_list == [] ->
+    if LastKey =:= ?BRICK__GET_MANY_LAST, KeyTS_list =:= [] ->
             ?E_INFO("kick_next_sweep_phase2c: ~p: END!", [S#state.name]),
             do_kick_next_sweep_keyts_list_empty(S);
        true ->
@@ -4826,8 +4825,8 @@ sweep_move_or_keep(ListWithBricks, LastKey, S) ->
                                                    Sw#sweep_r.chain_name, S),
     %% io:format("QQQ: ~p MoveDict0 ~p\n", [S#state.name, MoveDict0]),
 
-    if Sw#sweep_r.bigdata_dir_p == true
-       andalso Sw#sweep_r.val_prime_lastkey == undefined ->
+    if Sw#sweep_r.bigdata_dir_p =:= true
+       andalso Sw#sweep_r.val_prime_lastkey =:= undefined ->
             %% Thisdo_Mods is the list of keys that we would be
             %% deleting after phase 2 of the sweep.  They're the keys
             %% that we need to prime: slurp them off of slow slow disk
@@ -4839,9 +4838,8 @@ sweep_move_or_keep(ListWithBricks, LastKey, S) ->
             S#state{sweepstate =
                     Sw#sweep_r{stage = priming_value_blobs,
                                val_prime_lastkey = LastKey}};
-       Sw#sweep_r.bigdata_dir_p == false
-       orelse
-       (Sw#sweep_r.val_prime_lastkey /= undefined)  ->
+       Sw#sweep_r.bigdata_dir_p =:= false
+       orelse Sw#sweep_r.val_prime_lastkey =/= undefined ->
             %% io:format("QQQ: ~p: post priming: ~p\n", [S#state.name, MoveDict0]),
             %% io:format("QQQ: ~p: post priming: keys = ~p\n", [S#state.name, ListWithBricks]),
             %% We've got witness-style tuples, but we need value
@@ -4891,7 +4889,7 @@ sweep_move_or_keep3(LastKey, MoveDict, Thisdo_Mods, S) ->
         lists:foldl(fun({ChainName, Mods_0}, Acc) ->
                             Brick = brick_hash:chain2brick(
                                  ChainName, write, S#state.globalhash, new),
-                            if Brick == MeBrick ->
+                            if Brick =:= MeBrick ->
                                     Acc;
                                true ->
                                     [{Mods_0, Brick}|Acc]
@@ -4899,9 +4897,10 @@ sweep_move_or_keep3(LastKey, MoveDict, Thisdo_Mods, S) ->
                     end, [], MoveDictList_1),
     lists:foreach(
       fun({Mods_0, Brick}) ->
-              Mods = if PropDelay == 0 -> Mods_0;
-                        true           -> [{log_directive, map_sleep,
-                                            PropDelay}|Mods_0]
+              Mods = if PropDelay =:= 0 ->
+                             Mods_0;
+                        true ->
+                             [{log_directive, map_sleep, PropDelay}|Mods_0]
                      end,
               Msg = {ch_sweep_from_other, self(),
                      Sw#sweep_r.chain_name, Mods, LastKey},
@@ -4913,12 +4912,12 @@ sweep_move_or_keep3(LastKey, MoveDict, Thisdo_Mods, S) ->
     NewGH = brick_hash:set_chain_sweep_key(
               Sw#sweep_r.chain_name, LastKey, S#state.globalhash),
     NeedReplies = length(MoveDictList),
-    if NeedReplies == 0 ->
+    if NeedReplies =:= 0 ->
             %% Well, there's nothing to do for this scan.  We will
             %% wait for the next scheduled kick to trigger a new scan.
 
             %%{todo_bummer2399, []} = {todo_bummer2399, Thisdo_Mods}, % sanity!
-            true = (Thisdo_Mods == []),         % sanity!
+            true = (Thisdo_Mods =:= []),         % sanity!
             SwC = #sweepcheckp_r{cookie = Sw#sweep_r.cookie,
                                  chain_name = Sw#sweep_r.chain_name,
                                  done_sweep_key = LastKey,
@@ -4932,7 +4931,7 @@ sweep_move_or_keep3(LastKey, MoveDict, Thisdo_Mods, S) ->
                        globalhash = NewGH};
        true ->
             Stage = {collecting_phase2_replies, now(), MoveDictList},
-            TDM = if PropDelay == 0 ->
+            TDM = if PropDelay =:= 0 ->
                           Thisdo_Mods;
                      true ->
                           [{log_directive, map_sleep, PropDelay} | Thisdo_Mods]
@@ -4958,8 +4957,7 @@ sweep_move_or_keep2(ListWithBricks, ChainName, S) ->
                           chain_name(),
                           #state{}) ->
                                  {orddict(), [{delete_noexptime, term(), term()}] }.
-sweep_move_or_keep2([{CHcur, CHnew, Item} | T], Dict, Thisdo_Mods, MyChainName,
-                    S) ->
+sweep_move_or_keep2([{CHcur, CHnew, Item} | T], Dict, Thisdo_Mods, MyChainName, S) ->
     if MyChainName =/= CHcur, MyChainName =/= CHnew ->
             Sw = S#state.sweepstate,
             ?E_ERROR("BAD: Item ~p stored by brick ~p in "
@@ -4971,7 +4969,7 @@ sweep_move_or_keep2([{CHcur, CHnew, Item} | T], Dict, Thisdo_Mods, MyChainName,
                       CHcur, CHnew, Sw#sweep_r.val_prime_lastkey,
                       S#state.globalhash]),
             sweep_move_or_keep2(T, Dict, Thisdo_Mods, MyChainName, S);
-       MyChainName == CHnew ->
+       MyChainName =:= CHnew ->
             sweep_move_or_keep2(T, Dict, Thisdo_Mods, MyChainName, S);
        true ->
             X = {insert, Item},
@@ -4996,8 +4994,11 @@ sweep_move_or_keep2([], Dict, Thisdo_Mods, _MyChainName, _S) ->
 witness_tuple_to_insert_tuple({Key, _TS}, S) ->
     {ImplMod, ImplState} = impl_details(S),
     [{ValRamP, ST}] = ImplMod:bcb_lookup_key_storetuple(Key, true, ImplState),
-    if ValRamP == false -> {insert, ST};
-       ValRamP == true  -> {insert_value_into_ram, ST}
+    case ValRamP of
+        false ->
+            {insert, ST};
+        true ->
+            {insert_value_into_ram, ST}
     end.
 
 spawn_val_prime_worker_for_sweep(Keys, LastKey, S) ->
@@ -5087,7 +5088,7 @@ do_ch_sweep_from_other(ChainHeadPid, ChainName, Thisdo_Mods, LastKey, S) ->
               "not sweeping here, dropping it", [S#state.name, ChainName]),
             {noreply, S};
        true ->
-            NewS = if GH#g_hash_r.phase == pre ->
+            NewS = if GH#g_hash_r.phase =:= pre ->
                            ?E_INFO(
                              "Brick ~p got a ch_sweep_from_other message "
                              "before being told to start its own "
@@ -5112,7 +5113,7 @@ do_ch_sweep_from_other(ChainHeadPid, ChainName, Thisdo_Mods, LastKey, S) ->
             {NewS2, LogWriteIsWaitingForSync} =
                 chain_do_log_replay(LoggingSerial, [], Thisdo_Mods,
                                     From, Reply, NewS1),
-            NewS3 = if LogWriteIsWaitingForSync == wait ->
+            NewS3 = if LogWriteIsWaitingForSync =:= wait ->
                             {ImplMod, ImplState} = impl_details(NewS2),
                             ImplState2 = ImplMod:bcb_add_mods_to_dirty_tab(
                                            Thisdo_Mods, ImplState),
@@ -5135,7 +5136,7 @@ do_ch_sweep_from_other(ChainHeadPid, ChainName, Thisdo_Mods, LastKey, S) ->
                                  chain_name = ChainName,
                                  done_sweep_key = LastKey,
                                  sweep_key = LastKey},
-            From2 = <<"">>, % binary From == noreply! by chain_send_downstream()
+            From2 = <<"">>, % binary From =:= noreply! by chain_send_downstream()
             Mod2 = {plog_sweep, from_other, SwC},
             Reply2 = no_reply_sent,
             NewS5 = chain_send_downstream_iff_empty_log_q(
@@ -5170,7 +5171,7 @@ do_sweep_phase2_done2(Sw, Key, PropList, S) ->
                                          num_phase2_replies = NumReplies}}};
        true ->
             ActualReplies = gmt_util:list_unique(lists:sort(ReplyList)),
-            if length(ActualReplies) == Sw#sweep_r.phase2_needed_replies ->
+            if length(ActualReplies) =:= Sw#sweep_r.phase2_needed_replies ->
                     LoggingSerial = peek_impl_logging_serial(S),
                     {NewS1, _} =
                         chain_do_log_replay(LoggingSerial, [], %qqq_xxx_yyy_fixed_I_hope
@@ -5190,28 +5191,14 @@ do_sweep_phase2_done2(Sw, Key, PropList, S) ->
             end
     end.
 
-op_type_permitted_by_role_p(ReadOrWrite, S) ->
-    CS = S#state.chainstate,
-    if ReadOrWrite == read ->
-            if CS#chain_r.role == standalone
-               orelse
-               (CS#chain_r.role == chain_member andalso
-                CS#chain_r.official_tail == true) ->
-                    true;
-               true ->
-                    false
-            end;
-       ReadOrWrite == write ->
-            if CS#chain_r.role == standalone
-               orelse
-               (CS#chain_r.role == chain_member andalso
-                CS#chain_r.downstream /= undefined andalso
-                CS#chain_r.upstream == undefined) ->
-                    true;
-               true ->
-                    false
-            end
-    end.
+op_type_permitted_by_role_p(read, #state{chainstate=#chain_r{role=Role, official_tail=OT}}) ->
+    Role =:= standalone
+        orelse (Role =:= chain_member andalso OT =:= true);
+op_type_permitted_by_role_p(write, #state{chainstate=#chain_r{role=Role,
+                                                              downstream=Down, upstream=Up}}) ->
+    Role =:= standalone
+        orelse (Role =:= chain_member
+                andalso Down =/= undefined andalso Up =:= undefined).
 
 role_is_headlike_p(S) ->
     op_type_permitted_by_role_p(write, S).
@@ -5254,9 +5241,9 @@ delete_sweep_cp(S) ->
 make_new_global_hash(OldGH, NewGH, _S) when not is_record(OldGH, g_hash_r) ->
     NewGH;
 make_new_global_hash(OldGH, NewGH, S) ->
-    if OldGH#g_hash_r.migrating_p == true,
-       NewGH#g_hash_r.migrating_p == true,
-       OldGH#g_hash_r.current_rev == NewGH#g_hash_r.current_rev ->
+    if OldGH#g_hash_r.migrating_p =:= true,
+       NewGH#g_hash_r.migrating_p =:= true,
+       OldGH#g_hash_r.current_rev =:= NewGH#g_hash_r.current_rev ->
             ?DBG_MIGRATE("make_new_global_hash ~w migrating ~w",
                          [S#state.name, OldGH#g_hash_r.phase]),
             NewGH#g_hash_r{phase = OldGH#g_hash_r.phase,
@@ -5307,6 +5294,8 @@ ssf_preprocess2([], _DoFlags, _S) ->
 
 %% @spec (term(), boolean(), state_r()) -> [] | [tuple()]
 %% @doc See return value for ImplMod's bcb_lookup_key/3.
+%% It isn't advised to use MustHaveVal_p = true, because it's quite
+%% possible that a deadlock or other nasty business might happen.
 
 ssf_peek(Key, MustHaveVal_p, S) when is_record(S, state) ->
     {ImplMod, ImplState} = impl_details(S),
@@ -5346,12 +5335,12 @@ peek_impl_logging_serial(S) ->
     ImplMod:bcb_peek_logging_serial(ImplState).
 
 sort_by_serial(L) ->
-    L1 = lists:map(fun(X) when size(X) == 2 -> {element(2, X), X};
-                      (X)                   -> {element(3, X), X}
+    L1 = lists:map(fun(X) when size(X) =:= 2 ->
+                           {element(2, X), X};
+                      (X) ->
+                           {element(3, X), X}
                    end, L),
-    L2 = lists:map(fun({_, X}) -> X end,
-                   lists:sort(L1)),
-    L2.
+    lists:map(fun({_, X}) -> X end, lists:sort(L1)).
 
 filter_mods_for_downstream(Tuple, _ImplMod, _ImplState) when is_tuple(Tuple) ->
     Tuple;
@@ -5561,7 +5550,7 @@ do_common_log_sequence_file_is_bad(SeqNum, S) ->
     set_sequence_file_is_bad_key(S#state.name, SeqNum),
     ?ELOG_NOTICE("common_log_sequence_file_is_bad: ~p: purged ~w keys for log ~p",
                [S#state.name, NumPurged, SeqNum]),
-    if NumPurged == 0 ->
+    if NumPurged =:= 0 ->
             S#state{impl_state = ImplState2};
        true ->
             %% If we're repairing someone, we should stop now.  Otherwise
@@ -5581,11 +5570,11 @@ bz_debug_check_todos(ToDos, #state{bz_debug_check_hunk_summ = true,
                                    bz_debug_check_hunk_blob = CheckBlob} = S)
   when is_list(ToDos) ->
     Is = [element(3, X) || X <- ToDos,
-                           element(1, X) == insert andalso size(X) == 3],
+                           element(1, X) =:= insert andalso size(X) =:= 3],
     _ = [try
              put(bz_debug_justincase, I),
              FH = bz_debug_get_fh(SeqNum),
-             if CheckBlob == false ->
+             if CheckBlob =:= false ->
                      HS = gmt_hlog:read_hunk_summary(FH, SeqNum, Offset, 100,
                                                      fun(X, _) -> X end),
                      SeqNum = HS#hunk_summ.seq,
@@ -5606,8 +5595,7 @@ bz_debug_check_todos(ToDos, #state{bz_debug_check_hunk_summ = true,
                          %% race problems.
                          ok
                  end
-         end || {_Key, _TS, {SeqNum, Offset}, BlobSize} = I <- Is,
-                SeqNum /= 0],
+         end || {_Key, _TS, {SeqNum, Offset}, BlobSize} = I <- Is, SeqNum =/= 0],
     ok;
 bz_debug_check_todos(_, _S) ->
     ok.                                         % e.g. {plog_sweep, ...} tuple

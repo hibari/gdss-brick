@@ -195,7 +195,7 @@
 %%%
 
 %%%
-%%% Request Path
+%%% Request Path (write: head brick, read: official tail brick)
 %%%
 %%% (@TODO: Refactor the path. Functions are nested too deep and
 %%%         all levels have almost the same abstruction level.
@@ -207,11 +207,12 @@
 %%%   4.        brick_server:handle_call_do_prescreen/3
 %%%   5.          brick_server:handle_call_do_prescreen2/3
 %%%   6.            brick_server:handle_call_do/3
-%%%   7.              brick_server:preprocess_fold/4
+%%%   7.              brick_server:preprocess_fold/4  (ssf: server side fun)
 %%%   8.                {ok, ...} -> brick_server:handle_call_via_impl({do, _, _, _}=Msg, _, _)
 %%%   9.                  brick_ets:handle_call({do, ...}, ...)  (NOTE: Not gen_server)
 %%%  10.                    brick_ets:do_do/6
-%%%  11.                      brick_ets:do_do1b/7
+%%%  11.                      brick_ets:do_do1b/7 (This may call squidflash_primer/3,
+%%%                                                and may return {noreply_now, state()})
 %%%  12.                        brick_ets:do_do2/3
 %%%  13.                          brick_ets:do_txnlist/3 or do_dolist/4
 %%%  14.                            brick_ets:get_key/3, set_key/6, etc.
@@ -257,6 +258,28 @@
 
 %%%  32b.                  OrigReturn ->
 %%%  33b.                    brick_server:calc_original_return/2
+
+
+%%% Request path (write: middle and tail bricks)
+%%%
+%%%   1. brick_server:handle_cast({ch_log_replay_v2, ...})
+%%%   2.   brick_server:exit_if_bad_serial_from_upstream/4
+%%%   3.   brick_server:chain_do_log_replay/5
+%%%   4.     brick_ets:bcb_log_mods/3
+%%%   5.       brick_ets:filter_mods_from_upstream/2
+%%%   6.         brick_ets:bigdata_dir_store_val/3
+%%%   8.         brick_ets:log_mod2/3
+%%%   9.           brick_ets:wal_write_metadata_term/3
+%%%  10.             gmt_log_local:write_hunk/7
+%%%  11a.   {goahed, _, _} ->
+%%%  12a.     brick_ets:bcb_map_mods_to_storage/2
+
+%%%    a.     brick_server:chain_send_downstream/6
+
+%%%  11b.   {wait, _, _} ->
+%%%  12b.     brick_ets:bcb_async_flush_log_serial/2
+
+%%%    b.     brick_ets:bcb_add_mods_to_dirty_tab/2
 
 
 %%%----------------------------------------------------------------------
@@ -548,72 +571,71 @@ init([ServerName, Options]) ->
 %%          {stop, Reason, Reply, State}   | (terminate/2 is called)
 %%          {stop, Reason, State}            (terminate/2 is called)
 %%----------------------------------------------------------------------
-handle_call({do, _SentAt, L, DoFlags} = DoOp, From, State) ->
-    case do_do(L, DoFlags, DoOp, From, State#state{thisdo_mods = []}, check_dirty) of
+
+%% @TODO: CHECKME/ENHANCEME: It seems this clause is directly called by
+%% brick_server's gen_server process. Move this clause out from gen_server
+%% callback and make it an indipendent function. (e.g. bcb_handle_do/3)
+handle_call({do, _SentAt, DoOpList, DoFlags}=DoOp, From, State) ->
+    %% do_do/6 reads/writes blob values from/to disk, and build
+    %% the metadata modification list (thisdo_mods).
+    case do_do(DoOpList, DoFlags, DoOp, From, State#state{thisdo_mods=[]}, check_dirty) of
         has_dirty_keys ->
-            ?DBG_OP("do ~w [has_dirty_keys] ~w", [State#state.name, DoOp]),
-            DQI = #dirty_q{from = From, do_op = DoOp},
+            DQI = #dirty_q{from=From, do_op=DoOp},
             DirtyQ = State#state.wait_on_dirty_q,
-            {noreply, State#state{wait_on_dirty_q = queue:in(DQI, DirtyQ)}};
+            {noreply, State#state{wait_on_dirty_q=queue:in(DQI, DirtyQ)}};
         {no_dirty_keys, {Reply, NewState}} ->
-            %% #state.thisdo_mods will be in reverse order of DoOpList!
-            Thisdo_Mods = lists:reverse(NewState#state.thisdo_mods),
-            if NewState#state.read_only_p, Thisdo_Mods =/= [] ->
-                    ?DBG_OP("do ~w [read_only_mode] ~w", [State#state.name, DoOp]),
+            if NewState#state.read_only_p, NewState#state.thisdo_mods =/= [] ->
+                    %% This is a tail brick.
                     {up1_read_only_mode, From, DoOp, NewState};
                true ->
+                    %% #state.thisdo_mods will be in reverse order of DoOpList!
+                    Thisdo_Mods = lists:reverse(NewState#state.thisdo_mods),
+                    %% Write the metadata modifications to the common log.
                     SyncOverride = proplists:get_value(sync_override, DoFlags),
                     case log_mods(NewState, SyncOverride) of
                         {goahead, NewState3} ->
-                            ?DBG_TLOG("do ~w [goahead] ~w", [State#state.name, DoOp]),
+                            %% Apply the metadata modifications to ctab
                             ok = map_mods_into_ets(Thisdo_Mods, NewState3),
-                            ?DBG_OP("do ~w [send_downstream]", [State#state.name]),
-                            LoggingSerial = NewState3#state.logging_op_serial,
-                            ToDos = [{chain_send_downstream, LoggingSerial,
-                                      DoFlags, From, Reply, Thisdo_Mods}],
-                            ?DBG_TLOG("do ~w [todos_going_up] ~w", [State#state.name, ToDos]),
-                            N_do = NewState3#state.n_do,
-                            %% !@#$!%! Grrr.....
-                            %% If we're a head brick, we can increment
-                            %% LoggingSerial all we want.  However, we
-                            %% don't have carte blanche if we're a
-                            %% tail brick.  If we're a tail,
-                            %% incrementing this serial creates very
-                            %% weird, bad situations with out-of-order
-                            %% sync'ing.  So, only increment the
-                            %% serial if we've actually got mods.
-                            NL = if Thisdo_Mods =:= [] -> LoggingSerial;
-                                    true              -> LoggingSerial + 1
-                                 end,
                             case proplists:get_value(local_op_only_do_not_forward, DoFlags) of
                                 true ->
                                     {reply, Reply, NewState3};
                                 _ ->
+                                    %% Send the modifications to downstream
+                                    LoggingSerial = NewState3#state.logging_op_serial,
+                                    ToDos = [{chain_send_downstream, LoggingSerial,
+                                              DoFlags, From, Reply, Thisdo_Mods}],
+                                    %% If we've got modifications, we should be a head
+                                    %% brick. Therefore we need to increment LoggingSerial.
+                                    %% If we're other brick, we must not change LiggingSerial.
+                                    LoggingSerial2 = case Thisdo_Mods of
+                                                         [] ->
+                                                             LoggingSerial;
+                                                         _ ->
+                                                             LoggingSerial + 1
+                                                     end,
                                     {up1, ToDos,
                                      {noreply, NewState3#state{
-                                                 n_do = N_do + 1,
-                                                 logging_op_serial = NL}}}
+                                                 n_do=NewState3#state.n_do + 1,
+                                                 logging_op_serial=LoggingSerial2}}}
                             end;
                         {wait, NewState3} ->
-                            ?DBG_TLOG("do ~w [wait]", [State#state.name, DoOp]),
+                            %% Apply the metadata modifications to dirty tab
                             add_mods_to_dirty_tab(Thisdo_Mods, NewState3),
                             LoggingSerial = NewState3#state.logging_op_serial,
                             SyncMsg = {sync_msg, LoggingSerial},
                             NewState3#state.sync_pid ! SyncMsg,
-                            LQI = #log_q{logging_serial = LoggingSerial,
-                                         thisdo_mods = Thisdo_Mods,
-                                         doflags = DoFlags,
-                                         from = From, reply = Reply},
+                            LQI = #log_q{logging_serial=LoggingSerial,
+                                         thisdo_mods=Thisdo_Mods,
+                                         doflags=DoFlags,
+                                         from=From, reply=Reply},
                             NewQ = queue:in(LQI, NewState3#state.logging_op_q),
                             N_do = NewState3#state.n_do,
-                            %% If we had to wait for logging, then
-                            %% we're waiting because there's something
-                            %% we actually *are* logging.  So
-                            %% increasing the serial here is good.
-                            NL = LoggingSerial + 1,
-                            NewState4 = NewState3#state{n_do = N_do + 1,
-                                                        logging_op_serial = NL,
-                                                        logging_op_q = NewQ},
+                            %% {wait, _} means we've got modifications and we should
+                            %% be a head brick. Therefore we need to increment LoggingSerial.
+                            LoggingSerial2 = LoggingSerial + 1,
+                            NewState4 = NewState3#state{n_do=N_do + 1,
+                                                        logging_op_serial=LoggingSerial2,
+                                                        logging_op_q=NewQ},
                             {noreply, NewState4}
                     end
             end;
@@ -866,18 +888,28 @@ do_flush_all(State) ->
     catch ets:delete_all_objects(State#state.shadowtab),
     do_checkpoint(State, []).
 
-%% @spec (list(), list(), do_op(), from_spec(), state_r(), check_dirty | term()) ->
+%% @spec (do_op(), from_spec(), state_r(), check_dirty | term()) ->
 %%       has_dirty_keys | {no_dirty_keys, {reply_term(), new_state_r()}} |
 %%       {reply_now, term(), new_state_r()} | {noreply_now, new_state_r()}
 %% @doc Do a 'do', phase 1: Check to see if all keys are local to this brick.
 
-do_do(L, DoFlags, DoOp, From, State, CheckDirty) ->
-    %% CHAIN TODO: I think the not_calculated is probably not a good
-    %%             idea, since chain processing has already harvested
-    %%             the keys.  However ... chain processing is *supposed*
-    %%             to be orthogonal & independent.  :-)
+-spec do_do(do_op_list(), flags_list(), term(), pid(), state_r(), check_dirty|false) ->
+                   has_dirty_keys
+                       | {no_dirty_keys, {do_res(), state_r()}}
+                       | {noreply_now, state_r()}.
+do_do(DoList, Flags, DoOp, From, State, CheckDirty) ->
     try
-        do_do1b(not_calculated, L, DoFlags, DoOp, From, State, CheckDirty)
+        case do_do1b(DoList, Flags, DoOp, From, State, CheckDirty) of
+            has_dirty_keys ->
+                %% ?E_DBG("Response: has_dirty_keys", []),
+                has_dirty_keys;
+            {no_dirty_keys, {_Reply, _NewState}}=Response ->
+                %% ?E_DBG("Response: ~p", [_Reply]),
+                Response;
+            {noreply_now, _NewState}=Response ->
+                %% ?E_DBG("Response: noreply_now", []),
+                Response
+        end
     catch
         throw:silently_drop_reply -> % Instead, catch 1 caller higher? {shrug}
             silently_drop_reply
@@ -885,47 +917,118 @@ do_do(L, DoFlags, DoOp, From, State, CheckDirty) ->
 
 %% @doc Do a 'do', phase 1b: Check for any dirty keys.
 
-do_do1b(DoKeys0, L, DoFlags, DoOp, From, State, check_dirty)
+do_do1b(DoList, DoFlags, DoOp, From, State, check_dirty)
   when State#state.do_logging =:= true ->
-    DoKeys = if
-                 DoKeys0 =:= not_calculated ->
-                     brick_server:harvest_do_keys(L);
-                 true ->
-                     DoKeys0
-             end,
+    DoKeys = brick_server:harvest_do_keys(DoList),
     case any_dirty_keys_p(DoKeys, State) of
         true ->
             has_dirty_keys;
         false ->
-            if State#state.bigdata_dir =:= undefined ->
-                    %% QQQ TODO Is it a good idea to stash DoKeys
-                    %% inside State at this point, or do it someplace
-                    %% else?  Earlier?  Later?  But later would mean
-                    %% changing arity on do_do2() and more?  Well, it
-                    %% turns out that we don't need to keep DoKeys and
-                    %% the read/write info it stores ... we can use
-                    %% instead: if Thisdo_Mods =:= [], then all ops
-                    %% were read-only.
-                    {no_dirty_keys, do_do2(L, DoFlags, State)};
-               true ->
-                    ReadP = any_readonly_keys_p(DoKeys),
-                    Resub = proplists:get_value(squidflash_resubmit, DoFlags),
-                    if
-                        ReadP =:= true andalso Resub =:= undefined ->
-                            case squidflash_primer(DoOp, From, State) of
-                                goahead ->
-                                    {no_dirty_keys, do_do2(L, DoFlags, State)};
-                                _Else ->
-                                    {noreply_now, State}
-                            end;
-                        true ->
-                            {no_dirty_keys, do_do2(L, DoFlags, State)}
+            SF_Resubmit = proplists:get_value(squidflash_resubmit, DoFlags) =:= true, %% true or undefined
+            case State#state.bigdata_dir =:= undefined
+                orelse SF_Resubmit of
+                true ->
+                    if SF_Resubmit ->
+                            %% ?E_DBG("~w - squid_flash_resubmit. DoList: ~p",
+                            %%        [State#state.name, DoList]);
+                            ok;
+                       true ->
+                            ok
+                    end,
+                    {no_dirty_keys, do_do2(DoList, DoFlags, State)};
+                false ->
+                    case keys_for_priming(DoList, DoFlags, State) of
+                        [] ->
+                            {no_dirty_keys, do_do2(DoList, DoFlags, State)};
+                        Keys ->
+                            squidflash_primer(Keys, DoOp, From, State),
+                            {noreply_now, State}
                     end
             end
     end;
-do_do1b(_DoKeys, L, DoFlags, _DoOp, _From, State, _) ->
+do_do1b(DoList, DoFlags, _DoOp, _From, State, _) ->
     %% No logging, so no worries about ops on dirty keys.
-    {no_dirty_keys, do_do2(L, DoFlags, State)}.
+    {no_dirty_keys, do_do2(DoList, DoFlags, State)}.
+
+keys_for_priming(DoList, DoFlags, State) ->
+    lists:foldl(
+      fun({get, Key, Flags}, Acc) ->
+              case {proplists:get_value(witness, Flags),
+                    my_lookup(State, Key, false)} of
+                  {true, _} ->
+                      Acc;
+                  {undefined, []} ->
+                      Acc;
+                  {undefined, [StoreTuple]} ->
+                      accumulate_maybe(Key, StoreTuple, Acc)
+              end;
+
+         ({get_many, Key, Flags}, Acc) ->
+              case (proplists:get_value(witness, Flags, false) orelse
+                    proplists:get_value(get_many_raw_storetuples, Flags, false)) of
+                  true ->
+                      Acc;
+                  false ->
+                      %% Bummer, get_many1() won't give us raw val
+                      %% tuples.
+                      {X, _S2} = get_many1(Key, [witness|Flags],
+                                           true, DoFlags, State),
+                      {L, _MoreP} = X,
+                      F_look = fun(K, Acc2) ->
+                                       [StoreTuple] = my_lookup(State, K, false),
+                                       accumulate_maybe(Key, StoreTuple, Acc2)
+                               end,
+                      lists:foldl(fun({K, _TS}, Acc2) ->
+                                          F_look(K, Acc2);
+                                     ({K, _TS, _Flags}, Acc2) ->
+                                          F_look(K, Acc2)
+                                  end, [], L) ++ Acc
+              end;
+
+         ({rename, Key, _Timestamp, _NewKey, _ExpTime, _Flags}, Acc) ->
+              case my_lookup(State, Key, false) of
+                  [] ->
+                      Acc;
+                  [StoreTuple] ->
+                      case is_sequence_frozen(StoreTuple) of
+                          true ->
+                              accumulate_maybe(Key, StoreTuple, Acc);
+                          false ->
+                              Acc
+                      end;
+                  false ->
+                      Acc
+              end;
+
+         (_, Acc) ->
+              Acc
+      end, [], DoList).
+
+accumulate_maybe(Key, StoreTuple, Acc) ->
+    case storetuple_val(StoreTuple) of
+        Val when is_tuple(Val) ->
+            ValLen = storetuple_vallen(StoreTuple),
+            [{Key, Val, ValLen}|Acc];
+        Blob when is_binary(Blob) ->
+            Acc
+    end.
+
+is_sequence_frozen(StoreTuple) ->
+    case storetuple_val(StoreTuple) of
+        {_Seq, _} ->
+            true;
+        Blob when is_binary(Blob) ->
+            false
+    end.
+
+is_sequence_frozen(Key, State) ->
+    case key_exists_p(Key, [], State, false) of
+        StoreTuple when is_tuple(StoreTuple) ->
+            is_sequence_frozen(StoreTuple);
+        _ ->
+            false
+    end.
+
 
 %% @doc Do a 'do', phase 2: If a 'txn' is present, check txn preconditions,
 %% then (in all cases) perform the do's.
@@ -1327,54 +1430,98 @@ set_key(Key, TStamp, Value, ExpTime, Flags, State) ->
     end.
 
 rename_key(Key, TStamp, NewKey, ExpTime, Flags, State) ->
+    case rename_key_check_oldkey(Key, TStamp, NewKey, ExpTime, Flags, State) of
+        {ok, PreviousExp, PreviousFlags} ->
+            case rename_key_check_newkey(Key, TStamp, NewKey, ExpTime, Flags, State) of
+               ok ->
+                    case rename_key_apply_params(ExpTime, PreviousExp, Flags, PreviousFlags) of
+                        {ok, NewExp, NewFlags} ->
+                            %% case is_sequence_frozen(Key, State) of
+                            case false of
+                                true ->
+                                    case rename_key_with_get_set_delete(
+                                           Key, TStamp, NewKey, NewExp, NewFlags, State) of
+                                        {{ok, _}, _} = Ok ->
+                                            Ok;
+                                        Err ->
+                                            Err
+                                    end;
+                                false ->
+                                    %% utilize metadata operation
+                                    case my_insert(State, Key, TStamp, {?KEY_SWITCHAROO, NewKey},
+                                                   NewExp, NewFlags) of
+                                        {val_error, _} = Err ->
+                                            {Err, State};
+                                        {{ok, _}, _} = Ok ->
+                                            Ok
+                                    end
+                            end;
+                        Err ->
+                            {Err, State}
+                    end;
+                Err ->
+                    {Err, State}
+            end;
+        Err ->
+            {Err, State}
+    end.
+
+rename_key_check_oldkey(Key, TStamp, NewKey, _ExpTime, Flags, State) ->
     case key_exists_p(Key, Flags, State, false) of
         {NewKey, _TS, _, _, _PreviousExp, _} ->
             %% special case when Key =:= NewKey
-            {key_not_exist, State};
-        {Key, TS, _, _, PreviousExp, PreviousFlags} ->
-            case apply_exp_time_directive(Flags, ExpTime, PreviousExp, keep) of
-                {ok, NewExpTime} ->
-                    case apply_attrib_directive(Flags, PreviousFlags, keep) of
-                        {ok, NewFlags} ->
-                            rename_key2(Key, TStamp, NewKey, NewExpTime, NewFlags, State, TS);
-                        {error, Err} ->
-                            {Err, State}
-                    end;
-                {error, Err} ->
-                    {Err, State}
-            end;
+            key_not_exist;
+        {Key, TS, _, _, PreviousExp, PreviousFlags} when TStamp > TS ->
+            {ok, PreviousExp, PreviousFlags};
+        {Key, TS, _, _, _PreviousExp, _PreviousFlags} ->
+            {ts_error, TS};
         {ts_error, _} = Err ->
-            {Err, State};
+            Err;
         _ ->
-            {key_not_exist, State}
+            key_not_exist
     end.
 
-rename_key2(Key, TStamp, NewKey, ExpTime, Flags, State, TS) ->
-    if
-        TStamp > TS ->
-            case key_exists_p(NewKey, [], State, false) of
-                false ->
-                    %% NewKey doesn't exist
-                    case my_insert(State, Key, TStamp, {?KEY_SWITCHAROO, NewKey}, ExpTime, Flags) of
-                        {val_error, _} = Err ->
-                            {Err, State};
-                        {{ok, _}, _} = Ok ->
-                            Ok
-                    end;
-                {NewKey, OldTS, _, _, _, _} when TStamp > OldTS ->
-                    %% NewKey does exist and TStamp is OK
-                    case my_insert(State, Key, TStamp, {?KEY_SWITCHAROO, NewKey}, ExpTime, Flags) of
-                        {val_error, _} = Err ->
-                            {Err, State};
-                        {{ok, _}, _} = Ok ->
-                            Ok
-                    end;
-                {NewKey, OldTS, _, _, _, _} ->
-                    %% Otherwise TStamp is not ok
-                    {{ts_error, OldTS}, State}
+rename_key_check_newkey(_Key, TStamp, NewKey, _ExpTime, _Flags, State) ->
+    case key_exists_p(NewKey, [], State, false) of
+        false ->
+            %% NewKey doesn't exist
+            ok;
+        {NewKey, OldTS, _, _, _, _} when TStamp > OldTS ->
+            %% NewKey does exist and TStamp is OK
+            ok;
+        {NewKey, OldTS, _, _, _, _} ->
+            %% Otherwise TStamp is not ok
+            {ts_error, OldTS}
+    end.
+
+rename_key_apply_params(ExpTime, PreviousExp, Flags, PreviousFlags) ->
+    case apply_exp_time_directive(Flags, ExpTime, PreviousExp, keep) of
+        {ok, NewExp} ->
+            case apply_attrib_directive(Flags, PreviousFlags, keep) of
+                {ok, NewFlags} ->
+                    {ok, NewExp, NewFlags};
+                {error, Err} ->
+                    Err
             end;
-        true ->
-            {{ts_error, TS}, State}
+        {error, Err} ->
+            Err
+    end.
+
+rename_key_with_get_set_delete(Key, TStamp, NewKey, ExpTime, Flags, State) ->
+    %% Get the old value. It has been loaded by the squidflash primer.
+    [StoreTuple] = my_lookup(State, Key, true),
+    Value = storetuple_val(StoreTuple),
+    case set_key(NewKey, TStamp, Value, ExpTime, Flags, State) of
+        {{ok, _}, NewState1} ->
+            DeleteTS = brick_server:make_timestamp(),
+            case delete_key(Key, DeleteTS, [], NewState1) of
+                {ok, NewState2} ->
+                    {{ok, TStamp}, NewState2};
+                Err ->
+                    Err
+            end;
+        Err ->
+            Err
     end.
 
 get_key(Key, Flags, State) ->
@@ -2064,6 +2211,8 @@ my_delete_ignore_logging2(State, Key, Timestamp, ExpTime) ->
     exptime_delete(State#state.etab, Key, ExpTime),
     ets:insert(State#state.shadowtab, {Key, delete, Timestamp, ExpTime}).
 
+%% If MustHaveVal_p is true, it will read the value from bigdata_dir.
+-spec my_lookup(state_r(), key(), MustHaveVal_p::boolean()) -> store_tuple().
 my_lookup(State, Key, _MustHaveVal_p = false) ->
     my_lookup2(State, Key);
 my_lookup(State, Key, true) ->
@@ -2227,48 +2376,56 @@ filter_mods_for_downstream(Thisdo_Mods) ->
                       X
               end, Thisdo_Mods).
 
-filter_mods_from_upstream(Thisdo_Mods, S)
-  when S#state.bigdata_dir =:= undefined ->
+filter_mods_from_upstream(Thisdo_Mods, #state{bigdata_dir=undefined}) ->
     Thisdo_Mods;
-filter_mods_from_upstream(Thisdo_Mods, S) ->
-    Ms = lists:map(fun({insert, ST}) ->
-                           Key = storetuple_key(ST),
-                           Val = storetuple_val(ST),
-                           Loc = bigdata_dir_store_val(Key, Val, S),
-                           {insert, ST, storetuple_replace_val(ST, Loc)};
-                      %% Do not modify {insert_value_into_ram,...} tuples here.
-                      ({insert, ST, BigDataDirThing}) ->
-                           ?DBG_OP("Error ~w bad_mod_from_upstream: ~w, ~w", [S#state.name, ST, BigDataDirThing]),
-                           ?E_ERROR("BUG: Error ~w bad_mod_from_upstream: ~p, ~p", [S#state.name, ST, BigDataDirThing]),
-                           exit({bug, S#state.name, bad_mod_from_upstream,
-                                 ST, BigDataDirThing});
-                      ({insert_constant_value, ST}) ->
-                           Key = storetuple_key(ST),
-                           TS = storetuple_ts(ST),
-                           [CurST] = my_lookup(S, Key, false),
-                           CurVal = storetuple_val(CurST),
-                           CurValLen = storetuple_vallen(CurST),
-                           Exp = storetuple_exptime(ST),
-                           Flags = storetuple_flags(ST),
-                           NewST = storetuple_make(
-                                     Key, TS, CurVal, CurValLen, Exp, Flags),
-                           {insert_constant_value, NewST};
-                      ({insert_existing_value, ST, OldKey, OldTimestamp}) ->
-                           Key = storetuple_key(ST),
-                           TS = storetuple_ts(ST),
-                           [CurST] = my_lookup(S, OldKey, false),
-                           CurVal = storetuple_val(CurST),
-                           CurValLen = storetuple_vallen(CurST),
-                           Exp = storetuple_exptime(ST),
-                           Flags = storetuple_flags(ST),
-                           NewST = storetuple_make(
-                                     Key, TS, CurVal, CurValLen, Exp, Flags),
-                           {insert_existing_value, NewST, OldKey, OldTimestamp};
-                      (X) ->
-                           X
-                   end, Thisdo_Mods),
-    %%?DBG_GEN("WWWW: 2: ~p", [Ms]),
-    Ms.
+filter_mods_from_upstream(Thisdo_Mods, #state{name=Name}=State) ->
+    lists:map(fun({insert, ST}) ->
+                      Key = storetuple_key(ST),
+                      Val = storetuple_val(ST),
+                      Loc = bigdata_dir_store_val(Key, Val, State),
+                      {insert, ST, storetuple_replace_val(ST, Loc)};
+                 %% Do not modify {insert_value_into_ram,...} tuples here.
+                 ({insert, ST, BigDataDirThing}) ->
+                      ?E_CRITICAL("BUG: Error ~w bad_mod_from_upstream: ~p, ~p",
+                                  [Name, ST, BigDataDirThing]),
+                      exit({bug, Name, bad_mod_from_upstream, ST, BigDataDirThing});
+                 %% ({insert_constant_value, ST}) ->
+                 %%      Key = storetuple_key(ST),
+                 %%      TS = storetuple_ts(ST),
+                 %%      [CurST] = my_lookup(S, Key, false),
+                 %%      CurVal = storetuple_val(CurST),
+                 %%      CurValLen = storetuple_vallen(CurST),
+                 %%      Exp = storetuple_exptime(ST),
+                 %%      Flags = storetuple_flags(ST),
+                 %%      NewST = storetuple_make(
+                 %%                Key, TS, CurVal, CurValLen, Exp, Flags),
+                 %%      {insert_constant_value, NewST};
+                 ({insert_existing_value, ST, OldKey, OldTimestamp}) ->
+                      case is_sequence_frozen(OldKey, State) of
+                          true ->
+                              %% @TODO: Do squidflash_prime
+                              [CurSt] = my_lookup(State, OldKey, true),
+                              CurVal = storetuple_val(CurSt),
+                              Key = storetuple_key(ST),
+                              Loc = bigdata_dir_store_val(Key, CurVal, State),
+                              ?E_DBG("insert_exsiting_value - sequence_frozen", []),
+                              {insert, ST, storetuple_replace_val(ST, Loc)};
+                          false ->
+                              [CurST] = my_lookup(State, OldKey, false),
+                              CurVal = storetuple_val(CurST),
+                              CurValLen = storetuple_vallen(CurST),
+                              Key = storetuple_key(ST),
+                              TS = storetuple_ts(ST),
+                              Exp = storetuple_exptime(ST),
+                              Flags = storetuple_flags(ST),
+                              NewST = storetuple_make(
+                                        Key, TS, CurVal, CurValLen, Exp, Flags),
+                              ?E_DBG("insert_exsiting_value - ok", []),
+                              {insert_existing_value, NewST, OldKey, OldTimestamp}
+                      end;
+                 (X) ->
+                      X
+              end, Thisdo_Mods).
 
 do_checkpoint(S, _Options) when S#state.check_pid =/= undefined ->
     {sorry, S};
@@ -2738,11 +2895,6 @@ log_mods2_b(Thisdo_Mods0, #state{do_sync=DoSync}=S, SyncOverride) ->
 
 any_dirty_keys_p(DoKeys, State) ->
     lists:any(fun({_, K}) -> check_dirty_key(K, State) end, DoKeys).
-
-any_readonly_keys_p(DoKeys) ->
-    lists:any(fun({read,  _}) -> true;
-                 ({write, _}) -> false end,
-              DoKeys).
 
 check_dirty_key(Key, State) ->
     ets:member(State#state.dirty_tab, Key).
@@ -3380,86 +3532,40 @@ flush_gen_cast_calls(S) ->
 %% * key replaced -> almost certainly in OS buffer cache
 %% * key relocated by scavenger -> almost certainly in OS buffer cache
 
-squidflash_primer({do, _SentAt, Dos, DoFlags} = DoOp, From, S) ->
-    KsRaws = lists:foldl(
-               fun({get, Key, Flags}, Acc) ->
-                       case {proplists:get_value(witness, Flags),
-                             my_lookup(S, Key, false)} of
-                           {true, _} ->
-                               Acc;
-                           {undefined, []} ->
-                               Acc;
-                           {undefined, [ST]} ->
-                               accumulate_maybe(Key, ST, Acc)
-                       end;
-                  ({get_many, Key, Flags}, Acc) ->
-                       case (proplists:get_value(witness, Flags, false) orelse
-                             proplists:get_value(get_many_raw_storetuples, Flags, false)) of
-                           true ->
-                               Acc;
-                           false ->
-                               %% Bummer, get_many1() won't give us raw val
-                               %% tuples.
-                               {X, _S2} = get_many1(Key, [witness|Flags],
-                                                    true, DoFlags, S),
-                               {L, _MoreP} = X,
-                               F_look = fun(K, Acc2) ->
-                                                [ST] = my_lookup(S, K, false),
-                                                accumulate_maybe(Key, ST, Acc2)
-                                        end,
-                               lists:foldl(fun({K, _TS}, Acc2) ->
-                                                   F_look(K, Acc2);
-                                              ({K, _TS, _Flags}, Acc2) ->
-                                                   F_look(K, Acc2)
-                                           end, [], L) ++ Acc
-                       end;
-                  (_, Acc) ->
-                       Acc
-               end, [], Dos),
-    if KsRaws =:= [] ->
-            goahead;
-       true ->
-            %% OK, this state hack pretty ugly, but because we're
-            %% spawning a proc to do our dirty work, options are
-            %% limited.  And I'm lazy.
-            FakeS = #state{name = S#state.name,
-                           log = S#state.log, log_dir = S#state.log_dir,
-                           wal_mod = S#state.wal_mod},
-            Me = self(),
-            spawn(fun() -> squidflash_doit(KsRaws, DoOp, From, Me, FakeS) end)
-    end.
-
-accumulate_maybe(Key, ST, Acc) ->
-    case storetuple_val(ST) of
-        Val when is_tuple(Val) ->
-            ValLen = storetuple_vallen(ST),
-            [{Key, Val, ValLen}|Acc];
-        Blob when is_binary(Blob) ->
-            Acc
-    end.
+squidflash_primer(KsRaws, DoOp, From,
+                  #state{name=Name, log=Log, log_dir=LogDir, wal_mod=WalMod}) ->
+    FakeS = #state{name=Name, log=Log, log_dir=LogDir, wal_mod=WalMod},
+    Me = self(),
+    spawn(fun() ->
+                  squidflash_doit(KsRaws, DoOp, From, Me, FakeS)
+          end).
 
 squidflash_doit(KsRaws, DoOp, From, ParentPid, FakeS) ->
     Me = self(),
     KRV_Refs = [{X, make_ref()} || X <- KsRaws],
-    _ = [catch gmt_parallel_limit:enqueue(
-                 brick_primer_limit,
-                 fun() ->
-                         catch squidflash_prime1(Key, RawVal, ValLen, Me, FakeS),
-                         Me ! Ref,
-                         exit(normal)
-                 end)
-         || {{Key, RawVal, ValLen}, Ref} <- KRV_Refs],
-    _ = [receive
-             Ref -> ok
-         after 10000 ->  % should be impossible, but...
-                 ok
-         end
-         || {_, Ref} <- KRV_Refs],
-    %% TODO: This is also an ugly kludge ... hide it somewhere at
-    %% least?  The alternative is to have a handle_call() ->
-    %% handle_cast() conversion doodad ... this is lazier.
-    {do, _SentAt, Dos, DoFlags} = DoOp,
-    ParentPid ! {'$gen_call', From, {do, now(), Dos, [squidflash_resubmit|DoFlags]}},
+    [catch gmt_parallel_limit:enqueue(
+             brick_primer_limit,
+             fun() ->
+                     catch squidflash_prime1(Key, RawVal, ValLen, Me, FakeS),
+                     Me ! Ref,
+                     exit(normal)
+             end)
+     || {{Key, RawVal, ValLen}, Ref} <- KRV_Refs],
+    [receive
+         Ref ->
+             ok
+     after 10000 ->  % should be impossible, but...
+             ok
+     end
+     || {_, Ref} <- KRV_Refs],
+    {do, _SentAt, DoList, DoFlags} = DoOp,
+    %% @TODO: Hack: We need gen_server:call({do, ..} ..) in brick_server
+    %% to reply to the original requester (From) instead of me (self()).
+    %% Create a brick_server:handle_cast with gen_server:reply to achieve
+    %% this without the hack.
+    ParentPid ! {'$gen_call', From, {do, now(), DoList, [squidflash_resubmit|DoFlags]}},
+    %% ?E_DBG("~w - squidflash_doit done. Resubmitted the do request. From: ~p, Keys: ~p",
+    %%        [FakeS#state.name, From, KsRaws]),
     exit(normal).
 
 squidflash_prime1(Key, RawVal, ValLen, ReplyPid, FakeS) ->
