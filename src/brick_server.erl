@@ -1800,31 +1800,11 @@ handle_cast({ch_log_replay_v2, UpstreamBrick, Serial, _Thisdo_Mods, _From,
                     [Name, UpstreamBrick, Serial, Upstream]),
     {noreply, State};
 %% Apply modifications from upstream.
-handle_cast({ch_log_replay_v2, UpstreamBrick, Serial, Thisdo_Mods, From,
+handle_cast({ch_log_replay_v2, _UpstreamBrick, Serial, Thisdo_Mods, From,
              Reply, LastUpstreamSerial}=Msg, #state{name=_Name}=State) ->
     %% ?DBG_CHAIN_TLOG("ch_log_replay_v2 ~w ~w ~w", [_Name, _UpstreamBrick, Serial]),
     State2 = exit_if_bad_serial_from_upstream(Serial, LastUpstreamSerial, Msg, State),
-    {ImplMod, ImplState} = impl_details(State),
-    case ImplMod:bcb_keys_for_squidflash_priming(Thisdo_Mods, ImplState) of
-        [] ->
-            {State3, _} = chain_do_log_replay(Serial, Thisdo_Mods, From, Reply, State2),
-            {noreply, State3};
-        Keys ->
-            Me = self(),
-            ResubmitFun =
-                fun() ->
-                        gen_server:cast(Me, {ch_log_replay_v2_resubmit,
-                                             UpstreamBrick, Serial, Thisdo_Mods, From,
-                                             Reply, LastUpstreamSerial})
-                end,
-            ImplMod:bcb_squidflash_primer(Keys, ResubmitFun, ImplState),
-            {noreply, State2}
-    end;
-handle_cast({ch_log_replay_v2_resubmit, _UpstreamBrick, Serial, Thisdo_Mods, From,
-             Reply, _LastUpstreamSerial}, #state{name=_Name}=State) ->
-    %% ?DBG_CHAIN_TLOG("ch_log_replay_v2_resubmit ~w ~w ~w", [_Name, UpstreamBrick, Serial]),
-    ?E_DBG("ch_log_replay_v2_resubmit", []),
-    {State3, _} = chain_do_log_replay(Serial, Thisdo_Mods, From, Reply, State),
+    {State3, _} = chain_do_log_replay(Serial, Thisdo_Mods, From, Reply, State2),
     {noreply, State3};
 %% % % % % %
 handle_cast({ch_serial_ack, Serial, BrickName, Node, Props} = Msg, State) ->

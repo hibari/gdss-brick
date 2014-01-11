@@ -2200,6 +2200,13 @@ filter_mods_from_upstream(Thisdo_Mods, #state{name=Name}=State) ->
                  ({insert_existing_value, ST, OldKey, OldTimestamp}) ->
                       case is_sequence_frozen(OldKey, State) of
                           true ->
+                              %% This will read the actual value from disk and block
+                              %% brick_server's main event loop. The squidflash primer
+                              %% technique cannot be used here as it will reorder the
+                              %% modifications from upstream by delaying the read.
+                              %% The hlog sequence is only frozen while it is being
+                              %% scavenged, so in the most of the cases, this case
+                              %% clause will not be executed.
                               [CurSt] = my_lookup(State, OldKey, true),
                               CurVal = storetuple_val(CurSt),
                               Key = storetuple_key(ST),
