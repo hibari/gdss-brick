@@ -44,7 +44,7 @@
 -module(brick_ets).
 
 -behaviour(gen_server).
--compile({inline_size,24}).                     % 24 is the default
+-compile({inline_size,24}).    % 24 is the default
 
 -include("brick.hrl").
 -include("brick_public.hrl").
@@ -67,15 +67,6 @@
 -define(BIGDIR_BITS1_MOD, (1 bsl ?BIGDIR_BITS1)).
 -define(BIGDIR_BITS2_MOD, (1 bsl ?BIGDIR_BITS2)).
 
--export([debug_scan/1,
-         debug_scan/2,
-         debug_scan2/1,
-         debug_scan2/2,
-         debug_scan3/2,
-         debug_scan3/3,
-         debug_scan4/2,
-         debug_scan4/3
-        ]).
 -export([verbose_expiration/2]).
 
 %% External exports
@@ -96,8 +87,12 @@
         ]).
 
 %% Brick callbacks
--export([bcb_force_flush/1,
+-export([bcb_handle_do/3,
+         bcb_force_flush/1,
          bcb_async_flush_log_serial/2,
+         bcb_keys_for_squidflash_priming/2,
+         bcb_keys_for_squidflash_priming/3,
+         bcb_squidflash_primer/3,
          bcb_log_mods/3,
          bcb_map_mods_to_storage/2,
          bcb_get_many/3,
@@ -138,14 +133,6 @@
          checkpoint_start/4
         ]).
 
-%% Debug/temp/benchmarking exports
--export([sync_pid_start/1]).
--export([file_input_fun/2,
-         file_output_fun/1,
-         sort_test0/0,
-         slurp_log_chunks/1
-        ]).
-
 %% For gmt_hlog_common's scavenger support.
 -export([really_cheap_exclusion/3,
          scavenger_get_keys/5,
@@ -162,6 +149,26 @@
          append_external_bad_sequence_file/2,
          delete_external_bad_sequence_file/1
         ]).
+
+-export([file_input_fun/2,
+         file_output_fun/1]).
+
+%% Debug/temp/benchmarking exports
+%% -export([sync_pid_start/1]).
+
+%% -export([sort_test0/0,
+%%          slurp_log_chunks/1
+%%         ]).
+
+%% -export([debug_scan/1,
+%%          debug_scan/2,
+%%          debug_scan2/1,
+%%          debug_scan2/2,
+%%          debug_scan3/2,
+%%          debug_scan3/3,
+%%          debug_scan4/2,
+%%          debug_scan4/3
+%%         ]).
 
 %%%
 %%% ETS Tables (Section 2.3.14.3 of Hibari Contributor's Guide)
@@ -429,23 +436,8 @@
 -include("brick_specs.hrl").
 -include("gmt_hlog.hrl").
 
--type log_fold_fun() :: fun((tuple(),tuple()) -> tuple()).
 -type server_ref() :: atom() | {atom(), atom()} | {global, term()} | pid().
-
--spec disk_log_fold(log_fold_fun(),tuple()|integer(),term()) -> tuple()|integer().
--spec disk_log_fold_bychunk(fun(([tuple()],integer())->integer()),integer(),term()) -> integer().
--spec file_input_fun(term(),term()) -> fun((atom())->end_of_input|{error,term()}).
--spec file_output_fun(term()) -> fun((term()) -> ok | fun()).
--spec really_cheap_exclusion(atom(),fun(),fun()) -> fun().
--spec scavenger_get_keys(brick_server:brick_name(),brick_server:flags_list_many(),
-                         key(),
-                         function(), function()) -> ok.
--spec sequence_file_is_bad_common(nonempty_string(), atom(), pid(), atom(),integer(),integer()) -> ok.
--spec storetuple_make(key(), ts(), term(), integer(), exp_time(), flags_list()) -> store_tuple().
--spec temp_path_to_seqnum(nonempty_string()) -> integer().
--spec which_path(_,atom() | tuple(),_) -> {_,atom() | [any()]}.
-
--spec dump_state(server_ref() | atom()) -> {integer(), list(), state_r()}.
+-type log_fold_fun() :: fun((tuple(),tuple()) -> tuple()).
 
 %%%----------------------------------------------------------------------
 %%% API
@@ -456,6 +448,7 @@ start_link(ServerName, Options) ->
 stop(Server) ->
     gen_server:call(Server, {stop}).
 
+-spec dump_state(server_ref() | atom()) -> {integer(), list(), state_r()}.
 dump_state(Server) ->
     gen_server:call(Server, {dump_state}).
 
@@ -571,82 +564,6 @@ init([ServerName, Options]) ->
 %%          {stop, Reason, Reply, State}   | (terminate/2 is called)
 %%          {stop, Reason, State}            (terminate/2 is called)
 %%----------------------------------------------------------------------
-
-%% @TODO: CHECKME/ENHANCEME: It seems this clause is directly called by
-%% brick_server's gen_server process. Move this clause out from gen_server
-%% callback and make it an indipendent function. (e.g. bcb_handle_do/3)
-handle_call({do, _SentAt, DoOpList, DoFlags}=DoOp, From, State) ->
-    %% do_do/6 reads/writes blob values from/to disk, and build
-    %% the metadata modification list (thisdo_mods).
-    case do_do(DoOpList, DoFlags, DoOp, From, State#state{thisdo_mods=[]}, check_dirty) of
-        has_dirty_keys ->
-            DQI = #dirty_q{from=From, do_op=DoOp},
-            DirtyQ = State#state.wait_on_dirty_q,
-            {noreply, State#state{wait_on_dirty_q=queue:in(DQI, DirtyQ)}};
-        {no_dirty_keys, {Reply, NewState}} ->
-            if NewState#state.read_only_p, NewState#state.thisdo_mods =/= [] ->
-                    %% This is a tail brick.
-                    {up1_read_only_mode, From, DoOp, NewState};
-               true ->
-                    %% #state.thisdo_mods will be in reverse order of DoOpList!
-                    Thisdo_Mods = lists:reverse(NewState#state.thisdo_mods),
-                    %% Write the metadata modifications to the common log.
-                    SyncOverride = proplists:get_value(sync_override, DoFlags),
-                    case log_mods(NewState, SyncOverride) of
-                        {goahead, NewState3} ->
-                            %% Apply the metadata modifications to ctab
-                            ok = map_mods_into_ets(Thisdo_Mods, NewState3),
-                            case proplists:get_value(local_op_only_do_not_forward, DoFlags) of
-                                true ->
-                                    {reply, Reply, NewState3};
-                                _ ->
-                                    %% Send the modifications to downstream
-                                    LoggingSerial = NewState3#state.logging_op_serial,
-                                    ToDos = [{chain_send_downstream, LoggingSerial,
-                                              DoFlags, From, Reply, Thisdo_Mods}],
-                                    %% If we've got modifications, we should be a head
-                                    %% brick. Therefore we need to increment LoggingSerial.
-                                    %% If we're other brick, we must not change LiggingSerial.
-                                    LoggingSerial2 = case Thisdo_Mods of
-                                                         [] ->
-                                                             LoggingSerial;
-                                                         _ ->
-                                                             LoggingSerial + 1
-                                                     end,
-                                    {up1, ToDos,
-                                     {noreply, NewState3#state{
-                                                 n_do=NewState3#state.n_do + 1,
-                                                 logging_op_serial=LoggingSerial2}}}
-                            end;
-                        {wait, NewState3} ->
-                            %% Apply the metadata modifications to dirty tab
-                            add_mods_to_dirty_tab(Thisdo_Mods, NewState3),
-                            LoggingSerial = NewState3#state.logging_op_serial,
-                            SyncMsg = {sync_msg, LoggingSerial},
-                            NewState3#state.sync_pid ! SyncMsg,
-                            LQI = #log_q{logging_serial=LoggingSerial,
-                                         thisdo_mods=Thisdo_Mods,
-                                         doflags=DoFlags,
-                                         from=From, reply=Reply},
-                            NewQ = queue:in(LQI, NewState3#state.logging_op_q),
-                            N_do = NewState3#state.n_do,
-                            %% {wait, _} means we've got modifications and we should
-                            %% be a head brick. Therefore we need to increment LoggingSerial.
-                            LoggingSerial2 = LoggingSerial + 1,
-                            NewState4 = NewState3#state{n_do=N_do + 1,
-                                                        logging_op_serial=LoggingSerial2,
-                                                        logging_op_q=NewQ},
-                            {noreply, NewState4}
-                    end
-            end;
-        {noreply_now, NewState} ->
-            {noreply, NewState};
-        silently_drop_reply ->
-            %% Somewhere deep in the bowels of the do list processing,
-            %% we hit some bad data.  We can't form a good answer, so
-            %% don't reply at all.
-            {noreply, State}
-    end;
 handle_call({status}, _From, State) ->
     Reply = do_status(State),
     {reply, Reply, State};
@@ -888,28 +805,12 @@ do_flush_all(State) ->
     catch ets:delete_all_objects(State#state.shadowtab),
     do_checkpoint(State, []).
 
-%% @spec (do_op(), from_spec(), state_r(), check_dirty | term()) ->
-%%       has_dirty_keys | {no_dirty_keys, {reply_term(), new_state_r()}} |
-%%       {reply_now, term(), new_state_r()} | {noreply_now, new_state_r()}
 %% @doc Do a 'do', phase 1: Check to see if all keys are local to this brick.
-
--spec do_do(do_op_list(), flags_list(), term(), pid(), state_r(), check_dirty|false) ->
-                   has_dirty_keys
-                       | {no_dirty_keys, {do_res(), state_r()}}
-                       | {noreply_now, state_r()}.
-do_do(DoList, Flags, DoOp, From, State, CheckDirty) ->
+-spec do_do(do_op_list(), flags_list(), state_r(), check_dirty|false) ->
+                   has_dirty_keys | {no_dirty_keys, {do_res(), state_r()}}.
+do_do(DoList, DoFlags, State, CheckDirty) ->
     try
-        case do_do1b(DoList, Flags, DoOp, From, State, CheckDirty) of
-            has_dirty_keys ->
-                %% ?E_DBG("Response: has_dirty_keys", []),
-                has_dirty_keys;
-            {no_dirty_keys, {_Reply, _NewState}}=Response ->
-                %% ?E_DBG("Response: ~p", [_Reply]),
-                Response;
-            {noreply_now, _NewState}=Response ->
-                %% ?E_DBG("Response: noreply_now", []),
-                Response
-        end
+        do_do1b(DoList, DoFlags, State, CheckDirty)
     catch
         throw:silently_drop_reply -> % Instead, catch 1 caller higher? {shrug}
             silently_drop_reply
@@ -917,118 +818,17 @@ do_do(DoList, Flags, DoOp, From, State, CheckDirty) ->
 
 %% @doc Do a 'do', phase 1b: Check for any dirty keys.
 
-do_do1b(DoList, DoFlags, DoOp, From, State, check_dirty)
+do_do1b(DoList, DoFlags, State, check_dirty)
   when State#state.do_logging =:= true ->
     DoKeys = brick_server:harvest_do_keys(DoList),
     case any_dirty_keys_p(DoKeys, State) of
         true ->
             has_dirty_keys;
         false ->
-            SF_Resubmit = proplists:get_value(squidflash_resubmit, DoFlags) =:= true, %% true or undefined
-            case State#state.bigdata_dir =:= undefined
-                orelse SF_Resubmit of
-                true ->
-                    if SF_Resubmit ->
-                            %% ?E_DBG("~w - squid_flash_resubmit. DoList: ~p",
-                            %%        [State#state.name, DoList]);
-                            ok;
-                       true ->
-                            ok
-                    end,
-                    {no_dirty_keys, do_do2(DoList, DoFlags, State)};
-                false ->
-                    case keys_for_priming(DoList, DoFlags, State) of
-                        [] ->
-                            {no_dirty_keys, do_do2(DoList, DoFlags, State)};
-                        Keys ->
-                            squidflash_primer(Keys, DoOp, From, State),
-                            {noreply_now, State}
-                    end
-            end
+            {no_dirty_keys, do_do2(DoList, DoFlags, State)}
     end;
-do_do1b(DoList, DoFlags, _DoOp, _From, State, _) ->
-    %% No logging, so no worries about ops on dirty keys.
+do_do1b(DoList, DoFlags, State, _) ->
     {no_dirty_keys, do_do2(DoList, DoFlags, State)}.
-
-keys_for_priming(DoList, DoFlags, State) ->
-    lists:foldl(
-      fun({get, Key, Flags}, Acc) ->
-              case {proplists:get_value(witness, Flags),
-                    my_lookup(State, Key, false)} of
-                  {true, _} ->
-                      Acc;
-                  {undefined, []} ->
-                      Acc;
-                  {undefined, [StoreTuple]} ->
-                      accumulate_maybe(Key, StoreTuple, Acc)
-              end;
-
-         ({get_many, Key, Flags}, Acc) ->
-              case (proplists:get_value(witness, Flags, false) orelse
-                    proplists:get_value(get_many_raw_storetuples, Flags, false)) of
-                  true ->
-                      Acc;
-                  false ->
-                      %% Bummer, get_many1() won't give us raw val
-                      %% tuples.
-                      {X, _S2} = get_many1(Key, [witness|Flags],
-                                           true, DoFlags, State),
-                      {L, _MoreP} = X,
-                      F_look = fun(K, Acc2) ->
-                                       [StoreTuple] = my_lookup(State, K, false),
-                                       accumulate_maybe(Key, StoreTuple, Acc2)
-                               end,
-                      lists:foldl(fun({K, _TS}, Acc2) ->
-                                          F_look(K, Acc2);
-                                     ({K, _TS, _Flags}, Acc2) ->
-                                          F_look(K, Acc2)
-                                  end, [], L) ++ Acc
-              end;
-
-         ({rename, Key, _Timestamp, _NewKey, _ExpTime, _Flags}, Acc) ->
-              case my_lookup(State, Key, false) of
-                  [] ->
-                      Acc;
-                  [StoreTuple] ->
-                      case is_sequence_frozen(StoreTuple) of
-                          true ->
-                              accumulate_maybe(Key, StoreTuple, Acc);
-                          false ->
-                              Acc
-                      end;
-                  false ->
-                      Acc
-              end;
-
-         (_, Acc) ->
-              Acc
-      end, [], DoList).
-
-accumulate_maybe(Key, StoreTuple, Acc) ->
-    case storetuple_val(StoreTuple) of
-        Val when is_tuple(Val) ->
-            ValLen = storetuple_vallen(StoreTuple),
-            [{Key, Val, ValLen}|Acc];
-        Blob when is_binary(Blob) ->
-            Acc
-    end.
-
-is_sequence_frozen(StoreTuple) ->
-    case storetuple_val(StoreTuple) of
-        {_Seq, _} ->
-            true;
-        Blob when is_binary(Blob) ->
-            false
-    end.
-
-is_sequence_frozen(Key, State) ->
-    case key_exists_p(Key, [], State, false) of
-        StoreTuple when is_tuple(StoreTuple) ->
-            is_sequence_frozen(StoreTuple);
-        _ ->
-            false
-    end.
-
 
 %% @doc Do a 'do', phase 2: If a 'txn' is present, check txn preconditions,
 %% then (in all cases) perform the do's.
@@ -1107,8 +907,7 @@ do_txnlist(L, DoFlags, State) ->
 do_txnlist([], State, Acc, true, _N, DoFlags, []) ->
     N_txn = State#state.n_txn,
     {_, Reply} = do_do(lists:reverse(Acc), DoFlags,
-                       doop_not_used, from_not_used,
-                       State#state{n_txn = N_txn + 1}, false),
+                       State#state{n_txn=N_txn + 1}, false),
     Reply;
 do_txnlist([], State, _Acc, false, _, _DoFlags, ErrAcc) ->
     {{txn_fail, lists:reverse(ErrAcc)}, State};
@@ -1436,8 +1235,7 @@ rename_key(Key, TStamp, NewKey, ExpTime, Flags, State) ->
                ok ->
                     case rename_key_apply_params(ExpTime, PreviousExp, Flags, PreviousFlags) of
                         {ok, NewExp, NewFlags} ->
-                            %% case is_sequence_frozen(Key, State) of
-                            case false of
+                            case is_sequence_frozen(Key, State) of
                                 true ->
                                     case rename_key_with_get_set_delete(
                                            Key, TStamp, NewKey, NewExp, NewFlags, State) of
@@ -1946,6 +1744,7 @@ check_flaglist(Flag, [{Flag,FlagVal}|_T]) ->
 check_flaglist(Flag, [_H|T]) ->
     check_flaglist(Flag, T).
 
+-spec storetuple_make(key(), ts(), term(), integer(), exp_time(), flags_list()) -> store_tuple().
 storetuple_make(Key, TStamp, Value, ValueLen, 0, []) ->
     {Key, TStamp, Value, ValueLen};
 storetuple_make(Key, TStamp, Value, ValueLen, 0, Flags)
@@ -2168,11 +1967,9 @@ my_insert_ignore_logging10(State, Key, StoreTuple) ->
 my_insert_ignore_logging3(State, Key, StoreTuple)
   when State#state.bypass_shadowtab =:= true;
        State#state.shadowtab =:= undefined ->
-    ?DBG_ETS("qqq_ins_ignore_logging ~p [regular] ~w", [State#state.name, Key]),
     exptime_insert(State#state.etab, Key, storetuple_exptime(StoreTuple)),
     ets:insert(State#state.ctab, StoreTuple);
 my_insert_ignore_logging3(State, Key, StoreTuple) ->
-    ?DBG_ETS("qqq_ins_ignore_logging ~p [shadow] ~w", [State#state.name, Key]),
     exptime_insert(State#state.etab, Key, storetuple_exptime(StoreTuple)),
     ets:insert(State#state.shadowtab, {Key, insert, StoreTuple}).
 
@@ -2403,7 +2200,6 @@ filter_mods_from_upstream(Thisdo_Mods, #state{name=Name}=State) ->
                  ({insert_existing_value, ST, OldKey, OldTimestamp}) ->
                       case is_sequence_frozen(OldKey, State) of
                           true ->
-                              %% @TODO: Do squidflash_prime
                               [CurSt] = my_lookup(State, OldKey, true),
                               CurVal = storetuple_val(CurSt),
                               Key = storetuple_key(ST),
@@ -3353,6 +3149,7 @@ read_external_bad_sequence_file(Name) ->
 external_bad_sequence_path(Name) ->
     gmt_hlog:log_name2data_dir(Name) ++ "/bad-sequence".
 
+-spec sequence_file_is_bad_common(nonempty_string(), atom(), pid(), atom(),integer(),integer()) -> ok.
 sequence_file_is_bad_common(LogDir, WalMod, _Log, Name, SeqNum, Offset) ->
     BadDir = LogDir ++ "/BAD-CHECKSUM",
     _ = file:make_dir(BadDir),
@@ -3532,15 +3329,15 @@ flush_gen_cast_calls(S) ->
 %% * key replaced -> almost certainly in OS buffer cache
 %% * key relocated by scavenger -> almost certainly in OS buffer cache
 
-squidflash_primer(KsRaws, DoOp, From,
-                  #state{name=Name, log=Log, log_dir=LogDir, wal_mod=WalMod}) ->
+bcb_squidflash_primer(KsRaws, ResubmitFun,
+                      #state{name=Name, log=Log, log_dir=LogDir, wal_mod=WalMod}) ->
     FakeS = #state{name=Name, log=Log, log_dir=LogDir, wal_mod=WalMod},
-    Me = self(),
     spawn(fun() ->
-                  squidflash_doit(KsRaws, DoOp, From, Me, FakeS)
+                  squidflash_doit(KsRaws, ResubmitFun, FakeS)
           end).
 
-squidflash_doit(KsRaws, DoOp, From, ParentPid, FakeS) ->
+squidflash_doit(KsRaws, ResubmitFun, FakeS) ->
+    ?E_DBG("squidflash_doit ~p", [KsRaws]),
     Me = self(),
     KRV_Refs = [{X, make_ref()} || X <- KsRaws],
     [catch gmt_parallel_limit:enqueue(
@@ -3558,14 +3355,9 @@ squidflash_doit(KsRaws, DoOp, From, ParentPid, FakeS) ->
              ok
      end
      || {_, Ref} <- KRV_Refs],
-    {do, _SentAt, DoList, DoFlags} = DoOp,
-    %% @TODO: Hack: We need gen_server:call({do, ..} ..) in brick_server
-    %% to reply to the original requester (From) instead of me (self()).
-    %% Create a brick_server:handle_cast with gen_server:reply to achieve
-    %% this without the hack.
-    ParentPid ! {'$gen_call', From, {do, now(), DoList, [squidflash_resubmit|DoFlags]}},
-    %% ?E_DBG("~w - squidflash_doit done. Resubmitted the do request. From: ~p, Keys: ~p",
-    %%        [FakeS#state.name, From, KsRaws]),
+
+    %% Resubmit the original operations to brick_ets:handle_call or handle_cast.
+    ResubmitFun(),
     exit(normal).
 
 squidflash_prime1(Key, RawVal, ValLen, ReplyPid, FakeS) ->
@@ -3646,20 +3438,22 @@ verbose_expiration(ServerName, KeysTs) ->
 foldl_lump(F_inner, Acc, L, F_outer, Count) ->
     gmt_util:list_chunkfoldl(F_inner, Acc, L, F_outer, Count).
 
-slurp_log_chunks(Log) ->
-    lists:append(slurp_log_chunks(disk_log:chunk(Log, start), Log, [])).
+%% slurp_log_chunks(Log) ->
+%%     lists:append(slurp_log_chunks(disk_log:chunk(Log, start), Log, [])).
 
-slurp_log_chunks(eof, _Log, Acc) ->
-    lists:reverse(Acc);
-slurp_log_chunks({error, _} = Err, _Log, _Acc) ->
-    exit({slurp_log_chunks, Err});
-slurp_log_chunks({Cont, Ts}, Log, Acc) ->
-    slurp_log_chunks(disk_log:chunk(Log, Cont), Log, [Ts|Acc]).
+%% slurp_log_chunks(eof, _Log, Acc) ->
+%%     lists:reverse(Acc);
+%% slurp_log_chunks({error, _} = Err, _Log, _Acc) ->
+%%     exit({slurp_log_chunks, Err});
+%% slurp_log_chunks({Cont, Ts}, Log, Acc) ->
+%%     slurp_log_chunks(disk_log:chunk(Log, Cont), Log, [Ts|Acc]).
 
+-spec disk_log_fold(log_fold_fun(),tuple()|integer(),term()) -> tuple()|integer().
 disk_log_fold(Fun, Acc, Log) ->
     disk_log_fold_2(disk_log:chunk(Log, start), Fun, Acc, Log,
                     fun(X) -> X end).
 
+-spec disk_log_fold_bychunk(fun(([tuple()],integer())->integer()),integer(),term()) -> integer().
 disk_log_fold_bychunk(Fun, Acc, Log) ->
     disk_log_fold_2(disk_log:chunk(Log, start), Fun, Acc, Log,
                     fun(X) -> [X] end).
@@ -3672,9 +3466,11 @@ disk_log_fold_2({Cont, Terms}, Fun, Acc, Log, XForm) ->
     NewAcc = lists:foldl(Fun, Acc, XForm(Terms)),
     disk_log_fold_2(disk_log:chunk(Log, Cont), Fun, NewAcc, Log, XForm).
 
+-spec temp_path_to_seqnum(nonempty_string()) -> integer().
 temp_path_to_seqnum(Path) ->
     list_to_integer(string:substr(Path, string:rchr(Path, $/) + 1)).
 
+-spec which_path(_,atom() | tuple(),_) -> {_,atom() | [any()]}.
 which_path(Dir, WalMod, SeqNum) ->
     P1 = WalMod:log_file_path(Dir, SeqNum),
     case file:read_file_info(P1) of
@@ -3688,6 +3484,9 @@ which_path(Dir, WalMod, SeqNum) ->
             end
     end.
 
+-spec scavenger_get_keys(brick_server:brick_name(),brick_server:flags_list_many(),
+                         key(),
+                         function(), function()) -> ok.
 scavenger_get_keys(Name, Fs, FirstKey, F_k2d, F_lump) ->
     {ok, Retry} = application:get_env(gdss_brick, scavenger_get_many_retry),
     {ok, Max} =  application:get_env(gdss_brick, scavenger_get_many_max),
@@ -3778,6 +3577,7 @@ copy_one_hunk(#scav{name=Name, wal_mod=WalMod, log=Log}, FH, Key, SeqNum, Offset
 %% beyond the reasonable scope of the exclusion, the process must
 %% unregister the name or merely die to free the name.
 
+-spec really_cheap_exclusion(atom(),fun(),fun()) -> fun().
 really_cheap_exclusion(ExclAtom, Fwait, Fgo) ->
     gmt_loop:do_while(
       fun(Count) ->
@@ -3797,6 +3597,7 @@ really_cheap_exclusion(ExclAtom, Fwait, Fgo) ->
 get_bw_ticket(Bytes) ->
     brick_ticket:get(get(zzz_throttle_pid), Bytes).
 
+-spec file_input_fun(term(),term()) -> fun((atom())->end_of_input|{error,term()}).
 file_input_fun(Log, Cont) ->
     fun(close) ->
             ok;
@@ -3813,6 +3614,7 @@ file_input_fun(Log, Cont) ->
             end
     end.
 
+-spec file_output_fun(term()) -> fun((term()) -> ok | fun()).
 file_output_fun(Log) ->
     fun(close) ->
             disk_log:close(Log);
@@ -3821,23 +3623,96 @@ file_output_fun(Log) ->
             file_output_fun(Log)
     end.
 
-sort_test0() ->
-    {ok, TmpLog} = disk_log:open([{name, foo}, {file, "/tmp/footest"}]),
-    _ = [disk_log:log(TmpLog, {xo, X, Y})
-         || X <- lists:seq(1, 50), Y <- lists:seq(1,100)],
-    ok = disk_log:close(TmpLog),
-    {ok, InLog} = disk_log:open([{name, in}, {file, "/tmp/footest"}, {mode, read_only}]),
-    {ok, OutLog} = disk_log:open([{name, out}, {file, "/tmp/footest.out"}]),
-    X = file_sorter:sort(file_input_fun(InLog, start), file_output_fun(OutLog),
-                         [{format, term},
-                          {order, fun({_,_,A}, {_,_,B}) -> A < B end}]),
-    ok = disk_log:close(InLog),
-    ok = disk_log:close(OutLog),
-    X.
+%% sort_test0() ->
+%%     {ok, TmpLog} = disk_log:open([{name, foo}, {file, "/tmp/footest"}]),
+%%     _ = [disk_log:log(TmpLog, {xo, X, Y})
+%%          || X <- lists:seq(1, 50), Y <- lists:seq(1,100)],
+%%     ok = disk_log:close(TmpLog),
+%%     {ok, InLog} = disk_log:open([{name, in}, {file, "/tmp/footest"}, {mode, read_only}]),
+%%     {ok, OutLog} = disk_log:open([{name, out}, {file, "/tmp/footest.out"}]),
+%%     X = file_sorter:sort(file_input_fun(InLog, start), file_output_fun(OutLog),
+%%                          [{format, term},
+%%                           {order, fun({_,_,A}, {_,_,B}) -> A < B end}]),
+%%     ok = disk_log:close(InLog),
+%%     ok = disk_log:close(OutLog),
+%%     X.
 
 %%
 %% Brick callback functions
 %%
+
+bcb_handle_do({do, _SentAt, DoOpList, DoFlags}=DoOp, From, State) ->
+    %% do_do/6 reads/writes blob values from/to disk, and build
+    %% the metadata modification list (thisdo_mods).
+    case do_do(DoOpList, DoFlags, State#state{thisdo_mods=[]}, check_dirty) of
+        has_dirty_keys ->
+            DQI = #dirty_q{from=From, do_op=DoOp},
+            DirtyQ = State#state.wait_on_dirty_q,
+            {noreply, State#state{wait_on_dirty_q=queue:in(DQI, DirtyQ)}};
+        {no_dirty_keys, {Reply, NewState}} ->
+            if NewState#state.read_only_p, NewState#state.thisdo_mods =/= [] ->
+                    %% This is a tail brick.
+                    {up1_read_only_mode, From, DoOp, NewState};
+               true ->
+                    %% #state.thisdo_mods will be in reverse order of DoOpList!
+                    Thisdo_Mods = lists:reverse(NewState#state.thisdo_mods),
+                    %% Write the metadata modifications to the common log.
+                    SyncOverride = proplists:get_value(sync_override, DoFlags),
+                    case log_mods(NewState, SyncOverride) of
+                        {goahead, NewState3} ->
+                            %% Apply the metadata modifications to ctab
+                            ok = map_mods_into_ets(Thisdo_Mods, NewState3),
+                            case proplists:get_value(local_op_only_do_not_forward, DoFlags) of
+                                true ->
+                                    {reply, Reply, NewState3};
+                                _ ->
+                                    %% Send the modifications to downstream
+                                    LoggingSerial = NewState3#state.logging_op_serial,
+                                    ToDos = [{chain_send_downstream, LoggingSerial,
+                                              DoFlags, From, Reply, Thisdo_Mods}],
+                                    %% If we've got modifications, we should be a head
+                                    %% brick. Therefore we need to increment LoggingSerial.
+                                    %% If we're other brick, we must not change LiggingSerial.
+                                    LoggingSerial2 = case Thisdo_Mods of
+                                                         [] ->
+                                                             LoggingSerial;
+                                                         _ ->
+                                                             LoggingSerial + 1
+                                                     end,
+                                    {up1, ToDos,
+                                     {noreply, NewState3#state{
+                                                 n_do=NewState3#state.n_do + 1,
+                                                 logging_op_serial=LoggingSerial2}}}
+                            end;
+                        {wait, NewState3} ->
+                            %% Apply the metadata modifications to dirty tab
+                            add_mods_to_dirty_tab(Thisdo_Mods, NewState3),
+                            LoggingSerial = NewState3#state.logging_op_serial,
+                            SyncMsg = {sync_msg, LoggingSerial},
+                            NewState3#state.sync_pid ! SyncMsg,
+                            LQI = #log_q{logging_serial=LoggingSerial,
+                                         thisdo_mods=Thisdo_Mods,
+                                         doflags=DoFlags,
+                                         from=From, reply=Reply},
+                            NewQ = queue:in(LQI, NewState3#state.logging_op_q),
+                            N_do = NewState3#state.n_do,
+                            %% {wait, _} means we've got modifications and we should
+                            %% be a head brick. Therefore we need to increment LoggingSerial.
+                            LoggingSerial2 = LoggingSerial + 1,
+                            NewState4 = NewState3#state{n_do=N_do + 1,
+                                                        logging_op_serial=LoggingSerial2,
+                                                        logging_op_q=NewQ},
+                            {noreply, NewState4}
+                    end
+            end;
+        {noreply_now, NewState} ->
+            {noreply, NewState};
+        silently_drop_reply ->
+            %% Somewhere deep in the bowels of the do list processing,
+            %% we hit some bad data.  We can't form a good answer, so
+            %% don't reply at all.
+            {noreply, State}
+    end.
 
 %% @doc Flush all volatile data to stable storage <b>synchronously</b>.
 
@@ -3850,8 +3725,116 @@ bcb_async_flush_log_serial(Serial, S) when is_record(S, state) ->
     S#state.sync_pid ! {sync_msg, Serial},
     S.
 
-%% @doc Write Thisdo_Mods list to disk.
+bcb_keys_for_squidflash_priming(_DoList, _DoFlags, #state{bigdata_dir=undefined}) ->
+    [];
+bcb_keys_for_squidflash_priming(DoList, DoFlags, State) ->
+    SF_resubmit = proplists:get_value(squidflash_resubmit, DoFlags) =:= true, %% true or undefined
+    case SF_resubmit of
+        true ->
+            ?E_DBG("squidflash_resubmit", []),
+            [];
+        false ->
+            lists:foldl(
+              fun({get, Key, Flags}, Acc) ->
+                      case {proplists:get_value(witness, Flags),
+                            my_lookup(State, Key, false)} of
+                          {true, _} ->
+                              Acc;
+                          {undefined, []} ->
+                              Acc;
+                          {undefined, [StoreTuple]} ->
+                              accumulate_maybe(Key, StoreTuple, Acc)
+                      end;
 
+                 ({get_many, Key, Flags}, Acc) ->
+                      case (proplists:get_value(witness, Flags, false) orelse
+                            proplists:get_value(get_many_raw_storetuples, Flags, false)) of
+                          true ->
+                              Acc;
+                          false ->
+                              %% Bummer, get_many1() won't give us raw val
+                              %% tuples.
+                              {X, _S2} = get_many1(Key, [witness|Flags],
+                                                   true, DoFlags, State),
+                              {L, _MoreP} = X,
+                              F_look = fun(K, Acc2) ->
+                                               [StoreTuple] = my_lookup(State, K, false),
+                                               accumulate_maybe(Key, StoreTuple, Acc2)
+                                       end,
+                              lists:foldl(fun({K, _TS}, Acc2) ->
+                                                  F_look(K, Acc2);
+                                             ({K, _TS, _Flags}, Acc2) ->
+                                                  F_look(K, Acc2)
+                                          end, [], L) ++ Acc
+                      end;
+
+                 ({rename, Key, _Timestamp, _NewKey, _ExpTime, _Flags}, Acc) ->
+                      case my_lookup(State, Key, false) of
+                          [] ->
+                              Acc;
+                          [StoreTuple] ->
+                              case is_sequence_frozen(StoreTuple) of
+                                  true ->
+                                      accumulate_maybe(Key, StoreTuple, Acc);
+                                  false ->
+                                      Acc
+                              end;
+                          false ->
+                              Acc
+                      end;
+
+                 (_, Acc) ->
+                      Acc
+              end, [], DoList)
+    end.
+
+bcb_keys_for_squidflash_priming(_DoMods, #state{bigdata_dir=undefined}) ->
+    [];
+bcb_keys_for_squidflash_priming(DoMods, State) ->
+    lists:foldl(
+      fun({insert_existing_value, _StoreTuple, OldKey, _OldTimestamp}, Acc) ->
+              case is_sequence_frozen(OldKey, State) of
+                  true ->
+                      case my_lookup(State, OldKey, false) of
+                          [] ->
+
+                              Acc;
+                          [StoreTuple] ->
+                              accumulate_maybe(OldKey, StoreTuple, Acc)
+                      end;
+                  false ->
+                      Acc
+              end;
+         (_, Acc) ->
+              Acc
+      end, [], DoMods).
+
+accumulate_maybe(Key, StoreTuple, Acc) ->
+    case storetuple_val(StoreTuple) of
+        Val when is_tuple(Val) ->
+            ValLen = storetuple_vallen(StoreTuple),
+            [{Key, Val, ValLen}|Acc];
+        Blob when is_binary(Blob) ->
+            Acc
+    end.
+
+is_sequence_frozen(StoreTuple) ->
+    case storetuple_val(StoreTuple) of
+        {_Seq, _} ->
+            true;
+        Blob when is_binary(Blob) ->
+            false
+    end.
+
+is_sequence_frozen(Key, State) ->
+    case key_exists_p(Key, [], State, false) of
+        StoreTuple when is_tuple(StoreTuple) ->
+            is_sequence_frozen(StoreTuple);
+        _ ->
+            false
+    end.
+
+%% @doc Write values and Thisdo_Mods list to disk.
 bcb_log_mods(Thisdo_Mods, Serial, S) when is_record(S, state) ->
     ?DBG_ETS("bcb_log_mods_to_storage ~w: ~w", [S#state.name, Thisdo_Mods]),
     LocalMods = filter_mods_from_upstream(Thisdo_Mods, S),
@@ -4179,120 +4162,120 @@ bcb_common_log_sequence_file_is_bad(SeqNum, S) when is_record(S, state) ->
 %%     Xb5 = get(K2),
 %%     {Xa1, Xa2, Xa3, Xa4, Xa5, Xb1, Xb2, Xb3, Xb4, Xb5}.
 
-debug_scan(Dir) ->
-    debug_scan(Dir, gmt_hlog).
+%% debug_scan(Dir) ->
+%%     debug_scan(Dir, gmt_hlog).
 
-debug_scan(Dir, WalMod) ->
-    WalMod:fold(
-      shortterm, Dir,
-      fun(H, FH, Acc) ->
-              io:format("Hunk: ~p ~p", [H#hunk_summ.seq, H#hunk_summ.off]),
-              if H#hunk_summ.type =:= ?LOGTYPE_METADATA ->
-                      CB = WalMod:read_hunk_member_ll(FH, H, md5, 1),
-                      io:format("~P", [binary_to_term(CB), 40]);
-                 H#hunk_summ.type =:= ?LOGTYPE_BLOB ->
-                      io:format("blob len: ~p", [hd(H#hunk_summ.c_len)]);
-                 true ->
-                      io:format("Unknown hunk type: ~p, ~p", [H#hunk_summ.type, H])
-              end,
-              Acc + 1
-      end, 0).
+%% debug_scan(Dir, WalMod) ->
+%%     WalMod:fold(
+%%       shortterm, Dir,
+%%       fun(H, FH, Acc) ->
+%%               io:format("Hunk: ~p ~p", [H#hunk_summ.seq, H#hunk_summ.off]),
+%%               if H#hunk_summ.type =:= ?LOGTYPE_METADATA ->
+%%                       CB = WalMod:read_hunk_member_ll(FH, H, md5, 1),
+%%                       io:format("~P", [binary_to_term(CB), 40]);
+%%                  H#hunk_summ.type =:= ?LOGTYPE_BLOB ->
+%%                       io:format("blob len: ~p", [hd(H#hunk_summ.c_len)]);
+%%                  true ->
+%%                       io:format("Unknown hunk type: ~p, ~p", [H#hunk_summ.type, H])
+%%               end,
+%%               Acc + 1
+%%       end, 0).
 
-debug_scan2(Dir) ->
-    debug_scan2(Dir, gmt_hlog).
+%% debug_scan2(Dir) ->
+%%     debug_scan2(Dir, gmt_hlog).
 
-debug_scan2(Dir, WalMod) ->
-    WalMod:fold(
-      shortterm, Dir,
-      fun(H, FH, {{Is,Ds,DAs}=Foo, MDs, Bls, Os}) ->
-              if H#hunk_summ.type =:= ?LOGTYPE_METADATA ->
-                      CB = WalMod:read_hunk_member_ll(FH, H, md5, 1),
-                      Mods = binary_to_term(CB),
-                      {I, D, DA} =
-                          lists:foldl(
-                            fun(T, {Ix, Dx, DAx}) when element(1, T) =:= insert ->
-                                    {Ix+1, Dx, DAx};
-                               (T, {Ix, Dx, DAx}) when element(1, T) =:= delete
-                                                       orelse element(1, T) =:= delete_noexptime ->
-                                    {Ix, Dx+1, DAx};
-                               (T, {Ix, Dx, DAx}) when element(1, T) =:= delete_all_table_items ->
-                                    {Ix, Dx, DAx+1};
-                               (_, Acc) ->
-                                    Acc
-                            end, {0, 0, 0}, Mods),
-                      {{Is+I, Ds+D, DAs+DA}, MDs+1, Bls, Os};
-                 H#hunk_summ.type =:= ?LOGTYPE_BLOB ->
-                      CB1 = WalMod:read_hunk_member_ll(FH, H, md5, 1),
-                      H2 = H#hunk_summ{c_blobs = [CB1]},
-                      true = gmt_hlog:md5_checksum_ok_p(H2),
-                      {Foo, MDs, Bls+1, Os};
-                 true ->
-                      CB2 = WalMod:read_hunk_member_ll(FH, H, md5, 1),
-                      H2 = H#hunk_summ{c_blobs = [CB2]},
-                      true = gmt_hlog:md5_checksum_ok_p(H2),
-                      {Foo, MDs, Bls, Os+1}
-              end
-      end, {{0,0,0}, 0, 0, 0}).
+%% debug_scan2(Dir, WalMod) ->
+%%     WalMod:fold(
+%%       shortterm, Dir,
+%%       fun(H, FH, {{Is,Ds,DAs}=Foo, MDs, Bls, Os}) ->
+%%               if H#hunk_summ.type =:= ?LOGTYPE_METADATA ->
+%%                       CB = WalMod:read_hunk_member_ll(FH, H, md5, 1),
+%%                       Mods = binary_to_term(CB),
+%%                       {I, D, DA} =
+%%                           lists:foldl(
+%%                             fun(T, {Ix, Dx, DAx}) when element(1, T) =:= insert ->
+%%                                     {Ix+1, Dx, DAx};
+%%                                (T, {Ix, Dx, DAx}) when element(1, T) =:= delete
+%%                                                        orelse element(1, T) =:= delete_noexptime ->
+%%                                     {Ix, Dx+1, DAx};
+%%                                (T, {Ix, Dx, DAx}) when element(1, T) =:= delete_all_table_items ->
+%%                                     {Ix, Dx, DAx+1};
+%%                                (_, Acc) ->
+%%                                     Acc
+%%                             end, {0, 0, 0}, Mods),
+%%                       {{Is+I, Ds+D, DAs+DA}, MDs+1, Bls, Os};
+%%                  H#hunk_summ.type =:= ?LOGTYPE_BLOB ->
+%%                       CB1 = WalMod:read_hunk_member_ll(FH, H, md5, 1),
+%%                       H2 = H#hunk_summ{c_blobs = [CB1]},
+%%                       true = gmt_hlog:md5_checksum_ok_p(H2),
+%%                       {Foo, MDs, Bls+1, Os};
+%%                  true ->
+%%                       CB2 = WalMod:read_hunk_member_ll(FH, H, md5, 1),
+%%                       H2 = H#hunk_summ{c_blobs = [CB2]},
+%%                       true = gmt_hlog:md5_checksum_ok_p(H2),
+%%                       {Foo, MDs, Bls, Os+1}
+%%               end
+%%       end, {{0,0,0}, 0, 0, 0}).
 
-debug_scan3(Dir, EtsTab) ->
-    debug_scan3(Dir, EtsTab, gmt_hlog).
+%% debug_scan3(Dir, EtsTab) ->
+%%     debug_scan3(Dir, EtsTab, gmt_hlog).
 
-debug_scan3(Dir, EtsTab, WalMod) ->
-    WalMod:fold(
-      shortterm, Dir,
-      fun(H, FH, _Acc) ->
-              if H#hunk_summ.type =:= ?LOGTYPE_METADATA ->
-                      CB = WalMod:read_hunk_member_ll(FH, H, md5, 1),
-                      Mods = binary_to_term(CB),
-                      lists:foreach(
-                        fun(T) when element(1, T) =:= insert ->
-                                Key = element(1, element(2, T)),
-                                ets:insert(EtsTab, {Key, x});
-                           (T) when element(1, T) =:= delete orelse element(1, T) =:= delete_noexptime ->
-                                Key = element(1, element(2, T)),
-                                ets:delete(EtsTab, Key);
-                           (T) when element(1, T) =:= delete_all_table_items ->
-                                ets:delete_all_objects(EtsTab);
-                           (_) ->
-                                blah
-                        end, Mods),
-                      blah;
-                 H#hunk_summ.type =:= ?LOGTYPE_BLOB ->
-                      blah;
-                 true ->
-                      blah
-              end
-      end, unused).
+%% debug_scan3(Dir, EtsTab, WalMod) ->
+%%     WalMod:fold(
+%%       shortterm, Dir,
+%%       fun(H, FH, _Acc) ->
+%%               if H#hunk_summ.type =:= ?LOGTYPE_METADATA ->
+%%                       CB = WalMod:read_hunk_member_ll(FH, H, md5, 1),
+%%                       Mods = binary_to_term(CB),
+%%                       lists:foreach(
+%%                         fun(T) when element(1, T) =:= insert ->
+%%                                 Key = element(1, element(2, T)),
+%%                                 ets:insert(EtsTab, {Key, x});
+%%                            (T) when element(1, T) =:= delete orelse element(1, T) =:= delete_noexptime ->
+%%                                 Key = element(1, element(2, T)),
+%%                                 ets:delete(EtsTab, Key);
+%%                            (T) when element(1, T) =:= delete_all_table_items ->
+%%                                 ets:delete_all_objects(EtsTab);
+%%                            (_) ->
+%%                                 blah
+%%                         end, Mods),
+%%                       blah;
+%%                  H#hunk_summ.type =:= ?LOGTYPE_BLOB ->
+%%                       blah;
+%%                  true ->
+%%                       blah
+%%               end
+%%       end, unused).
 
-debug_scan4(Dir, OutFile) ->
-    debug_scan4(Dir, OutFile, gmt_hlog).
+%% debug_scan4(Dir, OutFile) ->
+%%     debug_scan4(Dir, OutFile, gmt_hlog).
 
-debug_scan4(Dir, OutFile, WalMod) ->
-    {ok, OutFH} = file:open(OutFile, [write, delayed_write]),
-    X = WalMod:fold(
-          shortterm, Dir,
-          fun(H, FH, _Acc) ->
-                  if H#hunk_summ.type =:= ?LOGTYPE_METADATA ->
-                          CB = WalMod:read_hunk_member_ll(FH, H, md5, 1),
-                          Mods = binary_to_term(CB),
-                          lists:foreach(
-                            fun(T) when element(1, T) =:= insert orelse element(1, T) =:= insert_value_into_ram ->
-                                    Key = element(1, element(2, T)),
-                                    io:format(OutFH, "i ~p", [Key]);
-                               (T) when element(1, T) =:= delete orelse element(1, T) =:= delete_noexptime ->
-                                    Key = element(2, T),
-                                    io:format(OutFH, "d ~p", [Key]);
-                               (T) when element(1, T) =:= delete_all_table_items ->
-                                    io:format(OutFH, "delete_all_table_items ", []);
-                               (T) ->
-                                    io:format(OutFH, "? ~p", [T])
-                            end, Mods),
-                          blah;
-                     H#hunk_summ.type =:= ?LOGTYPE_BLOB ->
-                          blah;
-                     true ->
-                          blah
-                  end
-          end, unused),
-    ok = file:close(OutFH),
-    X.
+%% debug_scan4(Dir, OutFile, WalMod) ->
+%%     {ok, OutFH} = file:open(OutFile, [write, delayed_write]),
+%%     X = WalMod:fold(
+%%           shortterm, Dir,
+%%           fun(H, FH, _Acc) ->
+%%                   if H#hunk_summ.type =:= ?LOGTYPE_METADATA ->
+%%                           CB = WalMod:read_hunk_member_ll(FH, H, md5, 1),
+%%                           Mods = binary_to_term(CB),
+%%                           lists:foreach(
+%%                             fun(T) when element(1, T) =:= insert orelse element(1, T) =:= insert_value_into_ram ->
+%%                                     Key = element(1, element(2, T)),
+%%                                     io:format(OutFH, "i ~p", [Key]);
+%%                                (T) when element(1, T) =:= delete orelse element(1, T) =:= delete_noexptime ->
+%%                                     Key = element(2, T),
+%%                                     io:format(OutFH, "d ~p", [Key]);
+%%                                (T) when element(1, T) =:= delete_all_table_items ->
+%%                                     io:format(OutFH, "delete_all_table_items ", []);
+%%                                (T) ->
+%%                                     io:format(OutFH, "? ~p", [T])
+%%                             end, Mods),
+%%                           blah;
+%%                      H#hunk_summ.type =:= ?LOGTYPE_BLOB ->
+%%                           blah;
+%%                      true ->
+%%                           blah
+%%                   end
+%%           end, unused),
+%%     ok = file:close(OutFH),
+%%     X.

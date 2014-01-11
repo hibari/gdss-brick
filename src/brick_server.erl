@@ -1715,9 +1715,6 @@ handle_call_do_prescreen2({do, _, _, _} = Msg, From, State) ->
 %% @spec (do_op(), term(), state_r()) -> gen_server_handle_call_reply_tuple()
 %% @doc Perform the calculation originally done by handle_call() for
 %% a single do op.
-%%
-%% This code was moved to a separate function to avoid the distracting
-%% clutter in handle_call().
 
 -spec handle_call_do(do_op(), term(), state_r()) -> gen_server_handle_call_reply_tuple().
 handle_call_do({do, _SentAt, [] = _DoList, _DoFlags}, _From, State) ->
@@ -1732,7 +1729,6 @@ handle_call_do({do, SentAt, DoList, DoFlags0} = _Msg, From, State) ->
               end ++ DoFlags0,
     case chain_all_do_list_keys_local_p(DoList, DoFlags, State) of
         {true, _DoKeys} ->
-            %% QQQ: _DoKeys = [{read,<<"foo">>}]
             case preprocess_fold(DoList, DoFlags,
                                  State#state.do_list_preprocess, State) of
                 {ok, DoList2, DoFlags2, State2} ->
@@ -1805,13 +1801,31 @@ handle_cast({ch_log_replay_v2, UpstreamBrick, Serial, _Thisdo_Mods, _From,
     {noreply, State};
 %% Apply modifications from upstream.
 handle_cast({ch_log_replay_v2, UpstreamBrick, Serial, Thisdo_Mods, From,
-             Reply, LastUpstreamSerial}=Msg, #state{name=Name}=State) ->
-    ?DBG_CHAIN_TLOG("ch_log_replay_v2 ~w ~w ~w", [Name, UpstreamBrick, Serial]),
-    State2 = exit_if_bad_serial_from_upstream(Serial, LastUpstreamSerial,
-                                              Msg, State),
-    {NewState, _} =
-        chain_do_log_replay(Serial, Thisdo_Mods, From, Reply, State2),
-    {noreply, NewState};
+             Reply, LastUpstreamSerial}=Msg, #state{name=_Name}=State) ->
+    %% ?DBG_CHAIN_TLOG("ch_log_replay_v2 ~w ~w ~w", [_Name, _UpstreamBrick, Serial]),
+    State2 = exit_if_bad_serial_from_upstream(Serial, LastUpstreamSerial, Msg, State),
+    {ImplMod, ImplState} = impl_details(State),
+    case ImplMod:bcb_keys_for_squidflash_priming(Thisdo_Mods, ImplState) of
+        [] ->
+            {State3, _} = chain_do_log_replay(Serial, Thisdo_Mods, From, Reply, State2),
+            {noreply, State3};
+        Keys ->
+            Me = self(),
+            ResubmitFun =
+                fun() ->
+                        gen_server:cast(Me, {ch_log_replay_v2_resubmit,
+                                             UpstreamBrick, Serial, Thisdo_Mods, From,
+                                             Reply, LastUpstreamSerial})
+                end,
+            ImplMod:bcb_squidflash_primer(Keys, ResubmitFun, ImplState),
+            {noreply, State2}
+    end;
+handle_cast({ch_log_replay_v2_resubmit, _UpstreamBrick, Serial, Thisdo_Mods, From,
+             Reply, _LastUpstreamSerial}, #state{name=_Name}=State) ->
+    %% ?DBG_CHAIN_TLOG("ch_log_replay_v2_resubmit ~w ~w ~w", [_Name, UpstreamBrick, Serial]),
+    ?E_DBG("ch_log_replay_v2_resubmit", []),
+    {State3, _} = chain_do_log_replay(Serial, Thisdo_Mods, From, Reply, State),
+    {noreply, State3};
 %% % % % % %
 handle_cast({ch_serial_ack, Serial, BrickName, Node, Props} = Msg, State) ->
     CS = State#state.chainstate,
@@ -2818,24 +2832,39 @@ throttle_tab_name(Brick) ->
 %%      mode is cancelled. </li>
 %% </ul>
 
-handle_call_via_impl(Msg, From, State) ->
+handle_call_via_impl({do, _SentAt, DoOpList, DoFlags}=Msg, From, State) ->
     {ImplMod, ImplState} = impl_details(State),
-    false = size(ImplState) =:= record_info(size, state), %sanity
-    case ImplMod:handle_call(Msg, From, ImplState) of
-        {up1, ToDos, OrigReturn} ->
-            State2 = do_chain_todos_iff_empty_log_q(ToDos, State),
-            calc_original_return(OrigReturn, State2);
-        {up1_sync_done, _LastLogSerial, _ToDos, _OrigReturn} ->
-            throw(inconceivable_1239875);
-        {up1_read_only_mode, From, DoOp, S} ->
-            DQI = #dirty_q{from = From, do_op = DoOp},
-            CS = State#state.chainstate,
-            Ws = [DQI|CS#chain_r.read_only_waiters],
-            CS2 = CS#chain_r{read_only_waiters = Ws},
-            ?DBG_OP("up1_read_only_mode ~w read_only_waiters ~w", [State#state.name, Ws]),
-            {noreply, State#state{chainstate = CS2, impl_state = S}};
-        OrigReturn ->
-            calc_original_return(OrigReturn, State)
+    case ImplMod:bcb_keys_for_squidflash_priming(DoOpList, DoFlags, ImplState) of
+        [] ->
+            case ImplMod:bcb_handle_do(Msg, From, ImplState) of
+                {up1, ToDos, OrigReturn} ->
+                    State2 = do_chain_todos_iff_empty_log_q(ToDos, State),
+                    calc_original_return(OrigReturn, State2);
+                {up1_sync_done, _LastLogSerial, _ToDos, _OrigReturn} ->
+                    throw(inconceivable_1239875);
+                {up1_read_only_mode, From, DoOp, S} ->
+                    DQI = #dirty_q{from = From, do_op = DoOp},
+                    CS = State#state.chainstate,
+                    Ws = [DQI|CS#chain_r.read_only_waiters],
+                    CS2 = CS#chain_r{read_only_waiters = Ws},
+                    ?DBG_OP("up1_read_only_mode ~w read_only_waiters ~w", [State#state.name, Ws]),
+                    {noreply, State#state{chainstate = CS2, impl_state = S}};
+                OrigReturn ->
+                    calc_original_return(OrigReturn, State)
+            end;
+        Keys ->
+            Me = self(),
+            %% @TODO: Hack: We need gen_server:call({do, ..} ..) in brick_server
+            %% to reply to the original requester (From) instead of me (self()).
+            %% Create a brick_server:handle_cast with gen_server:reply to achieve
+            %% this without the hack.
+            ResubmitFun =
+                fun() ->
+                        Me ! {'$gen_call', From,
+                              {do, now(), DoOpList, [squidflash_resubmit|DoFlags]}}
+                end,
+            ImplMod:bcb_squidflash_primer(Keys, ResubmitFun, ImplState),
+            {noreply, State}
     end.
 
 %% @spec (gen_server_handle_call_reply_tuple(), state_r())
@@ -3459,7 +3488,6 @@ chain_do_log_replay(Serial, Thisdo_Mods, From, Reply, S) ->
 chain_do_log_replay(ChainSerial, DoFlags, Thisdo_Mods, From, Reply, S)
   when is_list(Thisdo_Mods) ->
     {ImplMod, ImplState} = impl_details(S),
-    false = size(ImplState) =:= record_info(size, state), %sanity
     case ImplMod:bcb_log_mods(Thisdo_Mods, ChainSerial, ImplState) of
         {goahead, ImplState2, LocalMods} ->
             ?DBG_CHAIN_TLOG("chain_do_log_replay ~w calling bcb_map_mods_to_storage", [S#state.name]),
@@ -5206,10 +5234,8 @@ role_is_headlike_p(S) ->
 %% @spec (state_r()) -> {atom(), term()}
 %% @doc Extract the brick's implementation-dependent module name and state.
 
-impl_details(S) when is_record(S, state) ->
-    {S#state.impl_mod, S#state.impl_state};
-impl_details(S) ->
-    exit({bummer_99932, impl_details, bad_record, S}).
+impl_details(#state{impl_mod=ImplMod, impl_state=ImplState}) ->
+    {ImplMod, ImplState}.
 
 %% @spec (term(), term(), state_r()) -> state_r()
 %% @doc Convenience function to set brick-specific metadata.
