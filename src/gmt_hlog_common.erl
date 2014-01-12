@@ -949,18 +949,20 @@ add_metadata_db_op({insert_existing_value, StoreTuple, _OldKey, _OldTimestamp}, 
     leveldb:add_put(metadata_db_key(StoreTuple), term_to_binary(StoreTuple), Batch);
 add_metadata_db_op({delete, _Key, 0, _ExpTime}=Op, _Batch) ->
     error({timestamp_is_zero, Op});
-add_metadata_db_op({delete, Key, Timestamp, _ExpTime}, Batch) ->
+add_metadata_db_op({delete, Key, _Timestamp, _ExpTime}, Batch) ->
     %% ?E_DBG("store_tuple: delete - key: ~p, ts: ~w", [Key, Timestamp]),
-    DeleteMarker = make_delete_marker(Key, Timestamp),
-    leveldb:add_put(metadata_db_key(Key, Timestamp),
-                    term_to_binary(DeleteMarker), Batch);
+%%     DeleteMarker = make_delete_marker(Key, Timestamp),
+%%     leveldb:add_put(metadata_db_key(Key, Timestamp),
+%%                     term_to_binary(DeleteMarker), Batch);
+    leveldb:add_delete(metadata_db_key(Key, 0), Batch);
 add_metadata_db_op({delete_noexptime, _Key, 0}=Op, _Batch) ->
     error({timestamp_is_zero, Op});
-add_metadata_db_op({delete_noexptime, Key, Timestamp}, Batch) ->
+add_metadata_db_op({delete_noexptime, Key, _Timestamp}, Batch) ->
     %% ?E_DBG("store_tuple: delete_noexptime - key: ~p", [Key]),
-    DeleteMarker = make_delete_marker(Key, Timestamp),
-    leveldb:add_put(metadata_db_key(Key, Timestamp),
-                    term_to_binary(DeleteMarker), Batch);
+%%     DeleteMarker = make_delete_marker(Key, Timestamp),
+%%     leveldb:add_put(metadata_db_key(Key, Timestamp),
+%%                     term_to_binary(DeleteMarker), Batch);
+    leveldb:add_delete(metadata_db_key(Key, 0), Batch);
 add_metadata_db_op({delete_all_table_items}=Op, _Batch) ->
     error({writeback_not_implemented, Op});
 add_metadata_db_op({md_insert, _Tuple}=Op, _Batch) ->
@@ -974,22 +976,26 @@ add_metadata_db_op({log_directive, map_sleep, _Delay}=Op, _Batch) ->
 add_metadata_db_op({log_noop}, Batch) ->
     Batch. %% noop
 
+%% As for Hibari 0.3.0, metadata DB key is {Key, 0}. (The reversed
+%% timestamp is always zero.)
 -spec metadata_db_key(store_tuple()) -> binary().
 metadata_db_key(StoreTuple) ->
     Key = brick_ets:storetuple_key(StoreTuple),
-    Timestamp = brick_ets:storetuple_ts(StoreTuple),
-    metadata_db_key(Key, Timestamp).
+    %% Timestamp = brick_ets:storetuple_ts(StoreTuple),
+    %% metadata_db_key(Key, Timestamp).
+    metadata_db_key(Key, 0).
 
 -spec metadata_db_key(key(), ts()) -> binary().
-metadata_db_key(Key, Timestamp) ->
+metadata_db_key(Key, _Timestamp) ->
     %% NOTE: Using reversed timestamp, so that Key-values will be sorted
     %%       in LevelDB from newer to older.
-    ReversedTimestamp = -(Timestamp),
+    %% ReversedTimestamp = -(Timestamp),
+    ReversedTimestamp = 0,
     sext:encode({Key, ReversedTimestamp}).
 
--spec make_delete_marker(key(), ts()) -> tuple().
-make_delete_marker(Key, Timestamp) ->
-    {Key, Timestamp, delete_marker}.
+%% -spec make_delete_marker(key(), ts()) -> tuple().
+%% make_delete_marker(Key, Timestamp) ->
+%%     {Key, Timestamp, delete_marker}.
 
 
 %% 17: --------------------
