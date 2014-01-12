@@ -229,7 +229,7 @@
         ]).
 
 %% Debugging
--export([debug_fold_a_file/1]).
+%% -export([debug_fold_a_file/1]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -1621,28 +1621,28 @@ debug_sleep(0) ->
 debug_sleep(N) ->
     timer:sleep(N).
 
-debug_fold_a_file(FH) ->
-    F = fun(A, _, Acc) ->
-                case read_hunk_summ_ll(FH, element(3,A)) of
-                    {error,_,_} ->
-                        [element(3,A)|Acc];
-                    {ok, Summ} ->
-                        try
-                            Offset = element(3,A),
-                            Summ2 = Summ#hunk_summ{seq = 100603,
-                                                   off = Offset},
-                            B = read_hunk_member_ll(FH, Summ2, md5, 1),
-                            <<_/binary>> = B,
-                            Acc
-                            %%  if abs(Offset - 6119206) < 10*1000 ->
-                            %%          [{maybe, Offset - 6119206, Summ2}|Acc];
-                            %%     true ->
-                            %%          Acc
-                            %%  end
-                        catch X:Y ->
-                                [{X,Y,Summ}|Acc]
-                        end
-                end
-        end,
-    fold_a_file(FH, 63206003, 100603, 0, F, []).
+%% debug_fold_a_file(FH) ->
+%%     F = fun(A, _, Acc) ->
+%%                 case read_hunk_summ_ll(FH, element(3,A)) of
+%%                     {error,_,_} ->
+%%                         [element(3,A)|Acc];
+%%                     {ok, Summ} ->
+%%                         try
+%%                             Offset = element(3,A),
+%%                             Summ2 = Summ#hunk_summ{seq = 100603,
+%%                                                    off = Offset},
+%%                             B = read_hunk_member_ll(FH, Summ2, md5, 1),
+%%                             <<_/binary>> = B,
+%%                             Acc
+%%                             %%  if abs(Offset - 6119206) < 10*1000 ->
+%%                             %%          [{maybe, Offset - 6119206, Summ2}|Acc];
+%%                             %%     true ->
+%%                             %%          Acc
+%%                             %%  end
+%%                         catch X:Y ->
+%%                                 [{X,Y,Summ}|Acc]
+%%                         end
+%%                 end
+%%         end,
+%%     fold_a_file(FH, 63206003, 100603, 0, F, []).
 
