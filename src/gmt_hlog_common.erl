@@ -33,7 +33,7 @@
 -include("gmt_hlog.hrl").
 -include_lib("kernel/include/file.hrl").
 
--define(WB_BATCH_SIZE, 200). % For write_back buffering.
+-define(WB_BATCH_SIZE, 500). % For write_back buffering.
 -define(WAIT_BEFORE_EXIT, timer:sleep(1500)). %% milliseconds
 
 %% API
@@ -402,10 +402,10 @@ handle_info({async_writeback_finished, Pid, NewSeqNum, NewOffset},
                    last_seqnum=SeqNum,
                    last_offset=Offset}=State) ->
     %% update state
-    NewState = if NewSeqNum > SeqNum orelse
-                  (NewSeqNum =:= SeqNum andalso NewOffset > Offset) ->
+    NewState = if NewSeqNum > SeqNum
+                  orelse (NewSeqNum =:= SeqNum andalso NewOffset > Offset) ->
                        State#state{last_seqnum=NewSeqNum, last_offset=NewOffset};
-                  (NewSeqNum =:= SeqNum andalso NewOffset =:= Offset) ->
+                  NewSeqNum =:= SeqNum andalso NewOffset =:= Offset ->
                        State;
                   true ->
                        ?E_NOTICE("async_writeback_finished - Illegal position: "
@@ -610,10 +610,13 @@ do_metadata_hunk_writeback(OldSeqNum, OldOffset, StopSeqNum, StopOffset, S)->
         {#wb{exactly_count=0}, []} ->
             {ok, 0};
 
-        {#wb{exactly_ts=Ts, exactly_count=Count}=WB, []} ->
-            ?E_DBG("~w hunks to write back", [Count]),
-            ok = write_back_exactly_to_logs(Ts, S),
+        {#wb{exactly_count=Count}=WB, []} ->
+            ?E_DBG("~w metadata hunks to write back", [Count]),
+            Start = now(),
             ok = write_back_to_stable_storege(WB, S),
+            Elapse = timer:now_diff(now(), Start) div 1000,
+            ?E_INFO("Wrote back ~w metadata hunks to stable storage. [~w ms]",
+                    [Count, Elapse]),
             {ok, Count};
 
         {#wb{exactly_count=Count}, ErrList} ->
@@ -647,111 +650,6 @@ do_metadata_hunk_writeback(OldSeqNum, OldOffset, StopSeqNum, StopOffset, S)->
                     %% {ok, WB2#wb.exactly_count}
                     {ok, Count}
             end
-    end.
-
-peek_first_brick_name(Ts) ->
-    case Ts of
-        [T|_] -> element(2, T);
-        []    -> ''
-    end.
-
-write_back_exactly_to_logs(Ts, S) ->
-    %% Sort metadata tuples by brickname, seqnum, and offset.
-    SortedTs = lists:sort(Ts),
-    FirstBrickName = peek_first_brick_name(SortedTs),
-    write_back_to_local_log(SortedTs, undefined, 0, undefined,
-                            FirstBrickName, [], ?WB_BATCH_SIZE, S).
-
-%% -spec write_back_to_local_log([metadata_tuple()], state_readonly()) -> ????.
-write_back_to_local_log([{eee, LocalBrickName, SeqNum, Offset, _Key, _TypeNum,
-                          H_Len, H_Bytes}|Ts] = AllTs,
-                        LogSeqNum,
-                        LogFH_pos,
-                        I_LogFH,
-                        LastBrickName,
-                        I_TsAcc,
-                        Count,
-                        S)
-  when Count > 0,
-       LocalBrickName =:= LastBrickName ->
-
-    {LogFH, TsAcc} =
-        if LogSeqNum =:= SeqNum andalso I_LogFH =/= undefined ->
-                {I_LogFH, I_TsAcc};
-           true ->
-                if I_LogFH =/= undefined ->
-                        write_back_metadata_hunk(I_LogFH, lists:reverse(I_TsAcc));
-                   true ->
-                        ok
-                end,
-                %% ?DBG_TLOG("write_back_to_local_log [close] ~w", [I_LogFH]),
-                (catch file:close(I_LogFH)),
-
-                LogDir = gmt_hlog:log_name2data_dir(LocalBrickName),
-                {ok, Lfh} = open_log_file_mkdir(LogDir, SeqNum, [read,write,binary]),
-                case check_hlog_header(Lfh) of
-                    created ->
-                        ?E_INFO("Created local log file with sequence ~w: ~s",
-                                [SeqNum, gmt_hlog:log_file_path(LogDir, SeqNum)]);
-                    ok ->
-                        ok
-                end,
-                {Lfh, []}
-        end,
-    if TsAcc =:= [] ->
-            %% ?E_DBG("1a", []),
-            {ok, Offset} = file:position(LogFH, {bof, Offset}),
-            write_back_to_local_log(Ts, SeqNum, Offset + H_Len,
-                                    LogFH, LocalBrickName,
-                                    [H_Bytes|TsAcc],
-                                    Count - 1, S);
-
-       LogSeqNum =:= SeqNum, LogFH_pos =:= Offset ->
-            %% ?E_DBG("1b", []),
-            write_back_to_local_log(Ts, SeqNum, Offset + H_Len,
-                                    LogFH, LocalBrickName,
-                                    [H_Bytes|TsAcc],
-                                    Count - 1, S);
-       true ->
-            %% ?E_DBG("1c", []),
-            %% Writeback!
-            write_back_to_local_log(AllTs, SeqNum, LogFH_pos, LogFH,
-                                    LastBrickName, TsAcc, 0, S)
-    end;
-
-%% Writeback what we have at the current LogFH file position (already
-%% set!), then reset accumulators & counter and resume iteration.
-write_back_to_local_log(AllTs, SeqNum, _LogFH_pos, LogFH,
-                        LastBrickName, TsAcc, _Count, S)
-  when LogFH =/= undefined ->
-    %% ?E_DBG("2", []),
-    write_back_metadata_hunk(LogFH, lists:reverse(TsAcc)),
-    ?E_DBG("Wrote ~w hunks for ~w", [length(TsAcc), LastBrickName]),
-    case peek_first_brick_name(AllTs) of
-        LastBrickName ->
-            %% ?E_DBG("2a", []),
-            write_back_to_local_log(AllTs, SeqNum, 0, LogFH,
-                                    LastBrickName, [], ?WB_BATCH_SIZE, S);
-        OtherBrickName ->
-            %% ?E_DBG("2b", []),
-            (catch file:close(LogFH)),
-            write_back_to_local_log(AllTs, undefined, 0, undefined,
-                                    OtherBrickName, [], ?WB_BATCH_SIZE, S)
-    end;
-
-%% No more input, perhaps one last writeback?
-write_back_to_local_log([] = AllTs, SeqNum, FH_pos, LogFH,
-                        LastBrickName, TsAcc, _Count, S) ->
-    %% ?E_DBG("3", []),
-    if TsAcc =:= [] ->
-            %% ?E_DBG("3a", []),
-            (catch file:close(LogFH)),
-            ok;
-       true ->
-            %% ?E_DBG("3b", []),
-            %% Writeback one last time.
-            write_back_to_local_log(AllTs, SeqNum, FH_pos, LogFH,
-                                    LastBrickName, TsAcc, 0, S)
     end.
 
 -spec write_back_to_stable_storege(wb_r(), state_readonly()) -> ok | {error, [term()]}.
@@ -799,6 +697,7 @@ group_store_tuples_by_brick(MetaDataTuples) ->
 %%     LevelDB disk sync). Test with chain length = 3. - *DONE*
 %%  4. Update the scavenger logic to support frozen log.
 %%  5. Rewrite brick_ets:wal_scan_all/2 to utilize the metadata DB.
+%%     - *DONE* except test cases
 %%  6. Remove the brick local log and checkpoint process.
 %%  7. Revise WAL format.
 %%  8. Make write-back process more intelligent; every N hunks have
@@ -903,7 +802,7 @@ write_back_to_metadata_db(MetadataDB, _BrickName, DoMods, IsLastBatch) ->
     case {IsLastBatch, IsEmptyBatch} of
         {true, true} ->
             %% Write something to sync.
-            Batch1 = [leveldb:mk_put(<<"control sync">>, <<"sync">>)],
+            Batch1 = [leveldb:mk_put(sext:encode(control_sync), <<"sync">>)],
             WriteOptions = [sync];
         {true, false} ->
             Batch1 = Batch,
@@ -916,41 +815,20 @@ write_back_to_metadata_db(MetadataDB, _BrickName, DoMods, IsLastBatch) ->
             WriteOptions = []
     end,
     true = leveldb:write(MetadataDB, Batch1, WriteOptions),
-    %% if
-    %%     IsLastBatch orelse not IsEmptyBatch ->
-    %%         ?E_DBG("Wrote one hunk for ~s with write options ~w",
-    %%                [BrickName, WriteOptions]);
-    %%     true ->
-    %%         ok
-    %% end,
     ok.
 
 -spec add_metadata_db_op(do_mod(), write_batch()) -> write_batch().
 add_metadata_db_op({insert, StoreTuple}, Batch) ->
-    %% Key = brick_ets:storetuple_key(StoreTuple),
-    %% Timestamp = brick_ets:storetuple_ts(StoreTuple),
-    %% ?E_DBG("store_tuple: insert - key: ~p, ts: ~w", [Key, Timestamp]),
     leveldb:add_put(metadata_db_key(StoreTuple), term_to_binary(StoreTuple), Batch);
 add_metadata_db_op({insert_value_into_ram, StoreTuple}, Batch) ->
-    %% Key = brick_ets:storetuple_key(StoreTuple),
-    %% Timestamp = brick_ets:storetuple_ts(StoreTuple),
-    %% ?E_DBG("store_tuple: insert_value_into_ram - key: ~p, ts: ~w", [Key, Timestamp]),
     leveldb:add_put(metadata_db_key(StoreTuple), term_to_binary(StoreTuple), Batch);
 add_metadata_db_op({insert_constant_value, StoreTuple}, Batch) ->
-    %% Key = brick_ets:storetuple_key(StoreTuple),
-    %% Timestamp = brick_ets:storetuple_ts(StoreTuple),
-    %% ?E_DBG("store_tuple: insert_constant_value - key: ~p, ts: ~w", [Key, Timestamp]),
     leveldb:add_put(metadata_db_key(StoreTuple), term_to_binary(StoreTuple), Batch);
 add_metadata_db_op({insert_existing_value, StoreTuple, _OldKey, _OldTimestamp}, Batch) ->
-    %% Key = brick_ets:storetuple_key(StoreTuple),
-    %% Timestamp = brick_ets:storetuple_ts(StoreTuple),
-    %% ?E_DBG("store_tuple: insert_existing_value - key: ~p, ts: ~w, oldkey: ~p, oldts: ~w",
-    %%        [Key, Timestamp, OldKey, OldTimestamp]),
     leveldb:add_put(metadata_db_key(StoreTuple), term_to_binary(StoreTuple), Batch);
 add_metadata_db_op({delete, _Key, 0, _ExpTime}=Op, _Batch) ->
     error({timestamp_is_zero, Op});
 add_metadata_db_op({delete, Key, _Timestamp, _ExpTime}, Batch) ->
-    %% ?E_DBG("store_tuple: delete - key: ~p, ts: ~w", [Key, Timestamp]),
 %%     DeleteMarker = make_delete_marker(Key, Timestamp),
 %%     leveldb:add_put(metadata_db_key(Key, Timestamp),
 %%                     term_to_binary(DeleteMarker), Batch);
@@ -958,7 +836,6 @@ add_metadata_db_op({delete, Key, _Timestamp, _ExpTime}, Batch) ->
 add_metadata_db_op({delete_noexptime, _Key, 0}=Op, _Batch) ->
     error({timestamp_is_zero, Op});
 add_metadata_db_op({delete_noexptime, Key, _Timestamp}, Batch) ->
-    %% ?E_DBG("store_tuple: delete_noexptime - key: ~p", [Key]),
 %%     DeleteMarker = make_delete_marker(Key, Timestamp),
 %%     leveldb:add_put(metadata_db_key(Key, Timestamp),
 %%                     term_to_binary(DeleteMarker), Batch);
@@ -966,6 +843,17 @@ add_metadata_db_op({delete_noexptime, Key, _Timestamp}, Batch) ->
 add_metadata_db_op({delete_all_table_items}=Op, _Batch) ->
     error({writeback_not_implemented, Op});
 add_metadata_db_op({md_insert, _Tuple}=Op, _Batch) ->
+    %% @TODO: CHECKME: brick_ets:checkpoint_start/4, which was deleted after
+    %% commit #b2952a393, had the following code to dump brick's private
+    %% metadata. Check when metadata will be written and implement
+    %% add_metadata_db_op/2 for it.
+    %% ----
+    %% %% Dump data from the private metadata table.
+    %% MDs = term_to_binary([{md_insert, T} ||
+    %%                       T <- ets:tab2list(S_ro#state.mdtab)]),
+    %% {_, Bin2} = WalMod:create_hunk(?LOGTYPE_METADATA, [MDs], []),
+    %% ok = file:write(CheckFH, Bin2),
+    %% ----
     error({writeback_not_implemented, Op});
 add_metadata_db_op({md_delete, _Key}=Op, _Batch) ->
     error({writeback_not_implemented, Op});
@@ -990,7 +878,7 @@ metadata_db_key(Key, _Timestamp) ->
     %% NOTE: Using reversed timestamp, so that Key-values will be sorted
     %%       in LevelDB from newer to older.
     %% ReversedTimestamp = -(Timestamp),
-    ReversedTimestamp = 0,
+    ReversedTimestamp = -0,
     sext:encode({Key, ReversedTimestamp}).
 
 %% -spec make_delete_marker(key(), ts()) -> tuple().
@@ -1056,37 +944,6 @@ tool_list_md1(DB, Key, Count, Limit) ->
 
 
 
-
--spec check_hlog_header(file:fd()) -> ok | created.
-check_hlog_header(FH) ->
-    FileHeader = gmt_hlog:file_header_version_1(),
-    {ok, 0} = file:position(FH, {bof, 0}),
-    case file:read(FH, erlang:iolist_size(FileHeader)) of
-        %% Kosher cases only
-        {ok, FileHeader} ->
-            ok;
-        eof -> % File is 0 bytes or at least smaller than header
-            {ok, 0} = file:position(FH, {bof, 0}),
-            ok = file:write(FH, FileHeader),
-            created
-    end.
-
--spec open_log_file_mkdir(dirname(), seqnum(), openmode()) -> {ok, file:fd()} | {error, atom()}.
-open_log_file_mkdir(Dir, SeqNum, Options) when SeqNum > 0 ->
-    case gmt_hlog:open_log_file(Dir, SeqNum, Options) of
-        {error, enoent} ->
-            ok = file:make_dir(Dir), % FIX later: ICKY assumption!! SeqNum > 0.
-            ok = file:make_dir(Dir ++ "/s"), % FIX later: ICKY assumption!!
-            ?DBG_TLOG("open_log_file_mkdir ~s", [Dir]),
-            open_log_file_mkdir(Dir, SeqNum, Options);
-        Res ->
-            Res
-    end.
-
--spec write_back_metadata_hunk(file:fd(), iodata()) -> ok.
-write_back_metadata_hunk(LogFH, LogBytes) ->
-    ok = file:write(LogFH, LogBytes),
-    ok.
 
 %% do_register_local_brick(Brick, #state{brick_registory = _Dict} = S) ->
 do_register_local_brick(Brick, S) ->

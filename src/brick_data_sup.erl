@@ -77,10 +77,6 @@ init([]) ->
     BrickMboxMon =
         {brick_mboxmon, {brick_mboxmon, start_link, []},
          permanent, 2000, worker, [brick_mboxmon]},
-    {ok, Rate} = application:get_env(gdss_brick, brick_check_checkpoint_throttle_bytes),
-    BrickCPThrottle =
-        {brick_cp_throttle, {brick_ticket, start_link, [cp_throttle, Rate]},
-         permanent, 2000, worker, [brick_ticket]},
     {ok, PrimerRate} = application:get_env(gdss_brick, brick_max_primers),
 
     BrickPrimerThrottle =
@@ -94,7 +90,6 @@ init([]) ->
                                  BrickBrickSup,
                                  BrickShepherd,
                                  BrickMboxMon,
-                                 BrickCPThrottle,
                                  BrickPrimerThrottle
                                 ]}}.
 

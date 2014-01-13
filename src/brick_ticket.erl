@@ -109,7 +109,7 @@ change_rate(Server, NewRate) ->
 %%--------------------------------------------------------------------
 init([Name, Count, Interval, Timeout]) ->
     try
-        if Name == undefined ->
+        if Name =:= undefined ->
                 ok;
            true ->
                 true = register(Name, self())
@@ -140,7 +140,7 @@ handle_call({get, N}, _From, State) ->
     case State#state.current - N of
         New when New >= 0 ->
             {reply, N, State#state{current = New}, State#state.timeout};
-        _X when State#state.current == 0 ->
+        _X when State#state.current =:= 0 ->
             {reply, 0, State, State#state.timeout};
         _X when N =< 0 ->
             {reply, 0, State, State#state.timeout};

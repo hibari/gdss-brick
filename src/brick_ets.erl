@@ -129,8 +129,7 @@
         ]).
 
 %% Internal exports
--export([sync_pid_loop/1,
-         checkpoint_start/4
+-export([sync_pid_loop/1
         ]).
 
 %% For gmt_hlog_common's scavenger support.
@@ -145,9 +144,7 @@
 -export([storetuple_make/6]).
 
 %% For gmt_hlog_common's use
--export([sequence_file_is_bad_common/6,
-         append_external_bad_sequence_file/2,
-         delete_external_bad_sequence_file/1
+-export([sequence_file_is_bad_common/6
         ]).
 
 -export([file_input_fun/2,
@@ -184,6 +181,7 @@
 %%%    Section 2.3.14.6, "The dirty keys table".
 %%%
 %%% #state.shadowtab, the shadow table:
+%%%    (Hibari 3.0 or newer do not have this table anymore.)
 %%%    During checkpoints, the contents table is frozen while the
 %%%    checkpoint process dumps its contents. All updates made while
 %%%    the checkpoint is running (insert or delete) are stored in this
@@ -341,10 +339,6 @@
                   {delete_noexptime, key(), ts()} |    %% Hibari 0.3 or newer
                   %% {delete_noexptime, key()} |       %% Hibari 0.1.x
 
-                  %% Delete all objects from mdtab, etab and ctab.
-                  %% Recorded at the beginning of a checkpoint file.
-                  {delete_all_table_items} |
-
                   %% Brick Privete Metadata
                   {md_insert, tuple()} |
                   {md_delete, key()} |
@@ -392,17 +386,10 @@
           %% too many times.
           thisdo_mods :: [do_mod()],              % List of mods by this 'do'
 
-          check_pid :: pid(),                     % Pid of checkpoint helper
-          check_lastseqnum :: seqnum(),           % integer() seq # of last checkpoint
           ctab :: table_name(),                   % ETS table for cache
-          shadowtab :: table_name(),              % Checkpoint shadow for ctab
-          shadowtab_name :: table_name(),         % atom(), name shortcut only
-          bypass_shadowtab = false :: boolean(),  % Flag for fold_shadow_into_ctab()
           etab :: table_name(),                   % Expiry index table
           mdtab :: table_name(),                  % Private metadata table
           sync_pid :: pid(),                      % Pid of log sync process
-          checkpoint_timer :: reference(),        % Timer for checkpoint
-          checkpoint_opts :: proplist(),          % Proplist for checkpoint
           dirty_tab :: table_name(),              % ETS table: dirty key search
           wait_on_dirty_q :: queue(),             % Queue of ops waiting on
                                                   % dirty keys
@@ -509,7 +496,6 @@ init([ServerName, Options]) ->
     ETab = ets:new(ETabName, [ordered_set, protected, named_table]),
     MDTabName = list_to_atom(atom_to_list(ServerName) ++ "_md"),
     MDTab = ets:new(MDTabName, [ordered_set, protected, named_table]),
-    ShadowTabName = list_to_atom(atom_to_list(ServerName) ++ "_shadow"),
 
     {ok, LogPid} = WalMod:start_link([{name, ServerName},
                                       {file_len_max, MaxLogSize},
@@ -529,8 +515,10 @@ init([ServerName, Options]) ->
         case application:get_env(gdss_brick, brick_expiration_processor) of
             {ok, "["++_ = ExpConfig} ->
                 case brick_server:get_tabprop_via_str(ServerName, ExpConfig) of
-                    undefined -> DefaultExpFun;
-                    XF        -> XF
+                    undefined ->
+                        DefaultExpFun;
+                    XF ->
+                        XF
                 end;
             _ ->
                 DefaultExpFun
@@ -541,16 +529,24 @@ init([ServerName, Options]) ->
     %%     log's directory name: hlog.X
     %%     log's registered name: X_hlog
     LogDir = WalMod:log_name2data_dir(ServerName),
-    State0 = #state{name = ServerName, options = Options, start_time = now(),
-                    do_logging = DoLogging, do_sync = DoSync,
-                    log_dir = LogDir, bigdata_dir = BigDataDir,
-                    log = LogPid, ctab = CTab, etab = ETab, mdtab = MDTab,
-                    shadowtab = undefined, shadowtab_name = ShadowTabName,
-                    sync_pid = SyncPid,
-                    dirty_tab = DirtyTab, wait_on_dirty_q = WaitOnDirty,
-                    logging_op_q = LogOpQ, do_expiry_fun = DoExpFun,
-                    wal_mod = WalMod,
-                    max_log_size = MaxLogSize - 32 % TODO: remove fudge factor!
+    State0 = #state{name=ServerName,
+                    options=Options,
+                    start_time=now(),
+                    do_logging=DoLogging,
+                    do_sync=DoSync,
+                    log_dir=LogDir,
+                    bigdata_dir=BigDataDir,
+                    log=LogPid,
+                    ctab=CTab,
+                    etab=ETab,
+                    mdtab=MDTab,
+                    sync_pid=SyncPid,
+                    dirty_tab=DirtyTab,
+                    wait_on_dirty_q=WaitOnDirty,
+                    logging_op_q=LogOpQ,
+                    do_expiry_fun=DoExpFun,
+                    wal_mod=WalMod,
+                    max_log_size=MaxLogSize - 32 % TODO: remove fudge factor!
                    },
     self() ! do_init_second_half,
     {ok, State0}.
@@ -572,20 +568,21 @@ handle_call({state}, _From, State) ->
 handle_call({flush_all}, _From, State) ->
     {Reply, NewState} = do_flush_all(State),
     {reply, Reply, NewState};
-handle_call({checkpoint, Options}, _From, State) ->
-    {Reply, NewState} = do_checkpoint(State, Options),
-    {reply, Reply, NewState};
 handle_call({dump_state}, _From, State) ->
     L = ets:tab2list(State#state.ctab),
     {reply, {length(L), L, State}, State};
 handle_call({sync_stats, Seconds}, _From, State) ->
     catch brick_itimer:cancel(State#state.syncsum_tref),
-    {ok, TRef} = if Seconds > 0 -> brick_itimer:send_interval(Seconds*1000,
-                                                              log_sync_stats);
-                    true        -> {ok, undefined}
+    {ok, TRef} = if
+                     Seconds > 0 ->
+                         brick_itimer:send_interval(Seconds*1000, log_sync_stats);
+                     true ->
+                         {ok, undefined}
                  end,
-    {reply, Seconds, State#state{syncsum_count = 0, syncsum_msec = 0,
-                                 syncsum_len = 0, syncsum_tref = TRef}};
+    {reply, Seconds, State#state{syncsum_count=0,
+                                 syncsum_msec=0,
+                                 syncsum_len=0,
+                                 syncsum_tref=TRef}};
 handle_call({set_do_sync, NewValue}, _From, State) ->
     {reply, State#state.do_sync, State#state{do_sync = NewValue}};
 handle_call({set_do_logging, NewValue}, _From, State) ->
@@ -601,8 +598,6 @@ handle_call(Request, _From, State) ->
 %%          {noreply, State, Timeout} |
 %%          {stop, Reason, State}            (terminate/2 is called)
 %%----------------------------------------------------------------------
-handle_cast({checkpoint_last_seqnum, SeqNum}, State) ->
-    {noreply, State#state{check_lastseqnum = SeqNum}};
 handle_cast({incr_expired, Amount}, #state{n_expired = N} = State) ->
     {noreply, State#state{n_expired = N + Amount}};
 handle_cast(Msg, State) ->
@@ -643,19 +638,6 @@ handle_info(check_expiry, State) ->
         _ ->
             {noreply, State}
     end;
-handle_info(check_checkpoint, State) ->
-    {noreply, do_check_checkpoint(State)};
-handle_info({'EXIT', Pid, Reason}, State) when Pid =:= State#state.check_pid ->
-    case Reason of
-        done ->
-            ok;
-        {{?MODULE,_,_}, {line, _}, done} ->     % smart exceptions too helpful!
-            ok;
-        _ ->
-            ?E_WARNING("checkpoint: pid ~p died with ~p", [Pid, Reason])
-    end,
-    NewState = fold_shadow_into_ctab(State),
-    {noreply, NewState#state{check_pid = undefined}};
 handle_info({'EXIT', Pid, Reason}, State) when Pid =:= State#state.sync_pid ->
     ?ELOG_ERROR("~s: sync pid ~p died ~p",
                 [State#state.name, Pid, Reason]),
@@ -673,14 +655,14 @@ handle_info({'EXIT', Pid, Reason}, State) when Pid =:= State#state.log ->
     ?E_WARNING("~p: log process ~p exited with ~p",
                [State#state.name, State#state.log, Reason]),
     {stop, Reason, State};
-handle_info(qqq_debugging_only, S) ->
-    ?DBG_GEN("~w: logging_op_serial ~w, logging_op_q ~w, wait_on_dirty_q ~w, dirty_tab, ~w",
-             [S#state.name,
-              S#state.logging_op_serial,
-              S#state.logging_op_q,
-              S#state.wait_on_dirty_q,
-              ets:tab2list(S#state.dirty_tab)]),
-    {noreply, S};
+%% handle_info(qqq_debugging_only, S) ->
+%%     ?DBG_GEN("~w: logging_op_serial ~w, logging_op_q ~w, wait_on_dirty_q ~w, dirty_tab, ~w",
+%%              [S#state.name,
+%%               S#state.logging_op_serial,
+%%               S#state.logging_op_q,
+%%               S#state.wait_on_dirty_q,
+%%               ets:tab2list(S#state.dirty_tab)]),
+%%     {noreply, S};
 handle_info({syncpid_stats, _Name, MSec, ms, Length}, State) ->
     {noreply, State#state{syncsum_count = State#state.syncsum_count + 1,
                           syncsum_msec = State#state.syncsum_msec + MSec,
@@ -696,38 +678,36 @@ handle_info(log_sync_stats, State) ->
             [State#state.name, State#state.syncsum_count, AvgTime, AvgLen]),
     {noreply, State#state{syncsum_count = 0, syncsum_msec = 0,
                           syncsum_len = 0}};
-handle_info(do_init_second_half, State) ->
-    ?E_INFO("do_init_second_half: ~w", [State#state.name]),
+handle_info(do_init_second_half, #state{name=Name}=State) ->
+    ?E_INFO("do_init_second_half: ~w", [Name]),
 
     ok = gmt_hlog_common:full_writeback(),
+    ?E_INFO("Loading metadata records for brick ~w", [Name]),
+    Start = now(),
+    {LoadCount, ErrList} = load_metadata(State),
+    Elapse = timer:now_diff(now(), Start) div 1000,
 
-    MinimumSeqNum = read_checkpoint_num(State#state.log_dir),
-    {_LTODO_x, ErrList} = wal_scan_all(State, MinimumSeqNum),
-    ?DBG_GEN("log ~w _LTODO_x = ~w ErrList = ~w",
-             [State#state.wal_mod, _LTODO_x, ErrList]),
-
-    if ErrList =:= [] ->
-            ok;
-       true ->
-            wal_scan_failed(ErrList, State)
-    end,
     ZeroDiskErrorsP = (ErrList =:= []),
-
-    %% If the commonlog has told us that there are checksum errors,
-    %% purge all records used by those bad log sequence files.
-    %%
-    %% TODO: It's quite possible that most of the file is not corrupt.
-    %%       We're throwing out some of the baby with the bath water when
-    %%       we discard all keys that refer to the bad file(s).  If we're
-    %%       part of a chain with length > 1, things are still OK.
-    %%       But if we're in standalone mode, then there's no one to repair
-    %%       the missing keys, which could make us regret deleting keys
-    %%       as many keys as we are doing here.
-    _ = [begin {Purged, _S} = purge_recs_by_seqnum(SeqNum, true, State),
-               ?E_INFO("~s: purged ~p keys from sequence ~p",
-                       [State#state.name, Purged, SeqNum]),
-               Purged
-         end || SeqNum <- read_external_bad_sequence_file(State#state.name)],
+    if
+        ZeroDiskErrorsP ->
+            ?E_INFO("Finished loading metadata records for brick ~w [~w ms]. "
+                    "key count: ~w, no error",
+                    [Name, Elapse, LoadCount]);
+        true ->
+            ErrorCount = length(ErrList),
+            Message =
+                lists:flatten(
+                  io_lib:format("Could net load ~w metadata records for brick ~w, "
+                                "must recover via chain replication.~n"
+                                "\tloaded key count: ~w~n"
+                                "\terror key count:  ~w~n"
+                                "\terror details:    ~p~n"
+                                "\telapse: ~w ms",
+                                [ErrorCount, Name, LoadCount, ErrorCount,
+                                 ErrList, Elapse])),
+            ?E_CRITICAL(Message, []),
+            gmt_util:set_alarm({load_metadata, Name}, Message, fun() -> ok end)
+    end,
 
     %% For recently bigdata_dir files, sync them all in a big safety blatt.
     %% ... Except that it also seems to have the potential to slam the
@@ -737,16 +717,13 @@ handle_info(do_init_second_half, State) ->
     %% os:cmd("sync"),
 
     %% Set these timers only after the WAL scan is finished.
-    {ok, CheckTimer} = brick_itimer:send_interval(30 * 1000, check_checkpoint),
-    brick_itimer:send_interval(1*1000, qqq_debugging_only),
+    %% brick_itimer:send_interval(1*1000, qqq_debugging_only),
     {ok, ExpiryTRef} = brick_itimer:send_interval(1 * 1000, check_expiry),
 
     ?E_INFO("do_init_second_half: ~p finished", [State#state.name]),
     self() ! {storage_layer_init_finished, State#state.name, ZeroDiskErrorsP},
-    {noreply, State#state{checkpoint_timer = CheckTimer,
-                          expiry_tref = ExpiryTRef,
-                          scavenger_tref = undefined,
-                          check_lastseqnum = MinimumSeqNum}};
+    {noreply, State#state{expiry_tref = ExpiryTRef,
+                          scavenger_tref = undefined}};
 handle_info(_Info, State) ->
     ?E_ERROR("Hey:~s handle_info: Info = ~P", [?MODULE, _Info, 20]),
     {noreply, State}.
@@ -756,12 +733,12 @@ handle_info(_Info, State) ->
 %% Purpose: Shutdown the server
 %% Returns: any (ignored by gen_server)
 %%----------------------------------------------------------------------
-terminate(Reason, State) ->
-    ?E_INFO("Stopping brick server: ~w, reason ~w", [State#state.name, Reason]),
-    catch ets:delete(State#state.ctab),
-    catch ets:delete(State#state.etab),
-    catch ets:delete(State#state.shadowtab),
-    _ = (catch (State#state.wal_mod):stop(State#state.log)),
+terminate(Reason, #state{name=Name, ctab=CTab, etab=ETab,
+                         wal_mod=WalMod, log=Log}) ->
+    ?E_INFO("Stopping brick server: ~w, reason ~w", [Name, Reason]),
+    catch ets:delete(CTab),
+    catch ets:delete(ETab),
+    catch WalMod:stop(Log),
     ok.
 
 %%----------------------------------------------------------------------
@@ -794,16 +771,13 @@ do_status(S) ->
           {n_txn, S#state.n_txn},
           {n_do, S#state.n_do},
           {n_expired, S#state.n_expired},
-          {checkpoint, S#state.check_pid},
           {wait_on_dirty_q, S#state.wait_on_dirty_q}
          ]}.
 
-do_flush_all(State) ->
+do_flush_all(#state{ctab=CTab, etab=ETab}) ->
     ?DBG_GEN("Deleting all table data!", []),
-    ets:delete_all_objects(State#state.ctab),
-    ets:delete_all_objects(State#state.etab),
-    catch ets:delete_all_objects(State#state.shadowtab),
-    do_checkpoint(State, []).
+    ets:delete_all_objects(CTab),
+    ets:delete_all_objects(ETab).
 
 %% @doc Do a 'do', phase 1: Check to see if all keys are local to this brick.
 -spec do_do(do_op_list(), flags_list(), state_r(), check_dirty|false) ->
@@ -1420,8 +1394,8 @@ get_many1(Key, Flags, IncreasingOrderP, DoFlags, State) ->
                             fun(T) when element(1, T) =< SweepZ -> true;
                                (_)                              -> false
                             end, Rs),
-                                                %io:format("DROP: sweep ~p - ~p", [SweepA, SweepZ]),
-                                                %io:format("DROP: ~P", [[KKK || {KKK, _} <- (Rs -- Rs2)], 10]),
+                    %% io:format("DROP: sweep ~p - ~p", [SweepA, SweepZ]),
+                    %% io:format("DROP: ~P", [[KKK || {KKK, _} <- (Rs -- Rs2)], 10]),
                     {{Rs2, true}, NewState};
                 _ ->
                     Result
@@ -1430,75 +1404,60 @@ get_many1(Key, Flags, IncreasingOrderP, DoFlags, State) ->
 -spec get_many1b(key(), flags_list(), boolean(), tuple()) ->
                         {{list(extern_tuple()), boolean()}, tuple()}.
 get_many1b(Key, Flags, IncreasingOrderP, State) ->
-    MaxNum = case proplists:get_value(max_num, Flags, 10) of
-                 N when is_integer(N) -> N;
-                 _                    -> 10
-             end,
-    DoWitnessP = case check_flaglist(witness, Flags) of
-                     {true, true} -> true;
-                     _            -> false
-                 end,
-    DoAllAttrP = case check_flaglist(get_all_attribs, Flags) of
-                     {true, true} -> true;
-                     _            -> false
-                 end,
-    RawStoreTupleP = case check_flaglist(get_many_raw_storetuples, Flags) of
-                         {true, true} -> true;
-                         _            -> false
-                     end,
+    MaxNum =
+        case proplists:get_value(max_num, Flags, 10) of
+            N when is_integer(N) ->
+                N;
+            _ ->
+                10
+        end,
+    DoWitnessP =
+        case check_flaglist(witness, Flags) of
+            {true, true} ->
+                true;
+            _ ->
+                false
+        end,
+    DoAllAttrP =
+        case check_flaglist(get_all_attribs, Flags) of
+            {true, true} ->
+                true;
+            _ ->
+                false
+        end,
+    RawStoreTupleP =
+        case check_flaglist(get_many_raw_storetuples, Flags) of
+            {true, true} ->
+                true;
+            _ ->
+                false
+        end,
     ResultFlavor = {DoWitnessP, DoAllAttrP, RawStoreTupleP},
-    BPref = case proplists:get_value(binary_prefix, Flags) of
-                Prefix when is_binary(Prefix) -> {size(Prefix), Prefix};
-                _                             -> 0
-            end,
-    MaxBytes = case proplists:get_value(max_bytes, Flags) of
-                   N2 when is_integer(N2) -> N2;
-                   _                      -> 2*1024*1024*1024
-               end,
-    Res = if State#state.shadowtab =:= undefined ->
-                  get_many2(ets_next_wrapper(State#state.ctab, Key),
-                            MaxNum, MaxBytes, ResultFlavor, BPref, [], State);
-             BPref =:= 0 ->
-                  get_many_shadow(ets_next_wrapper(State#state.ctab, Key),
-                                  ets_next_wrapper(State#state.shadowtab, Key),
-                                  MaxNum, MaxBytes, ResultFlavor, [], State);
-             true ->
-                  {{Xs, Bool}, NewState} =
-                      get_many_shadow(ets_next_wrapper(State#state.ctab, Key),
-                                      ets_next_wrapper(State#state.shadowtab,
-                                                       Key),
-                                      MaxNum, MaxBytes, ResultFlavor, [],State),
-                  %% Need to filter after-the-fact.
-                  {PfxLen, Pfx} = BPref,
-                  if Xs =:= [] ->
-                          {{Xs, Bool}, NewState};
-                     true ->
-                          Key_0 = element(1, hd(Xs)),
-                          case Key_0 of
-                              <<Pfx:PfxLen/binary, _/binary>> -> %exported!
-                                  {{Xs, Bool}, NewState};
-                              _ ->
-                                  {{drop_prefixes(Xs, Pfx, PfxLen), false},
-                                   NewState}
-                          end
-                  end
-          end,
-    if IncreasingOrderP ->                      % dialyzer: can never succeed
+    BinPrefix =
+        case proplists:get_value(binary_prefix, Flags) of
+            Prefix when is_binary(Prefix) ->
+                {size(Prefix), Prefix};
+            _ ->
+                0
+        end,
+    MaxBytes =
+        case proplists:get_value(max_bytes, Flags) of
+            N2 when is_integer(N2) ->
+                N2;
+            _ ->
+                2 * 1024 * 1024 * 1024
+        end,
+    Res = get_many2(ets_next_wrapper(State#state.ctab, Key),
+                    MaxNum, MaxBytes, ResultFlavor, BinPrefix, [], State),
+
+    if IncreasingOrderP ->        %% dialyzer: can never succeed
             %% ManyList is backward, must reverse it.
             {{ManyList, TorF}, State2} = Res,
             {{lists:reverse(ManyList), TorF}, State2};
        true ->
-            Res                         % Result list is backward, that's OK.
+            %% Result list is backward, that's OK.
+            Res
     end.
-
-drop_prefixes(Xs, Prefix, PrefixLen) ->
-    lists:dropwhile(fun(X) ->
-                            Key = element(1, X),
-                            case Key of
-                                <<Prefix:PrefixLen/binary, _/binary>> -> false;
-                                _                                     -> true
-                            end
-                    end, Xs).
 
 %% @doc Get a list of keys, starting with Key, in increasing order when
 %% our current state is not checkpointing.
@@ -1586,141 +1545,6 @@ make_many_result3(StoreTuple, S) ->
     ValLen = storetuple_vallen(StoreTuple),
     Val = bigdata_dir_get_val(Key, Val0, ValLen, S),
     {Key, TStamp, Val, ExpTime, Flags}.
-
-%% @spec (term(), term(), integer(), integer(), flavor_tuple(), list(), state_r()) ->
-%%       {{list(), true | false}, state_r()}
-%% @doc Get a list of keys, starting with Key, in increasing order when
-%% our current state is in the middle of a checkpoint operation.
-%%
-%% The tuples returned here are in external tuple format.
-%%
-%% Creates a result list for 'get_many' by merging the data
-%% in both the normal S#state.ctab table and deltas in the
-%% S#state.shadowtab table.
-%%
-%% This function is a pain, but I can't think of an easier way to
-%% do it without similar pain.  Each case describes:
-%% <ol>
-%% <li> MaxCount counter drops to zero. </li>
-%% <li> Traversal of both tables has reached the end. </li>
-%% <li> Traversal of the regular table has reached the end, but
-%%      entries remain in the shadowtab.  If the current shadow entry
-%%      is delete, continue, otherwise add the record and continue. </li>
-%% <li> Traversal of the Shadow table has reached the end, but
-%%      entries remain in the regular table.
-%%      Add the record and continue. </li>
-%% <li> Traversal of both tables is in the middle, regular table key
-%%      is less than shadow key.  Add the record and continue. </li>
-%% <li> Traversal of both tables is in the middle, regular table key
-%%      is equal to the shadow key.  Depending on the value of the
-%%      shadow record, either do nothing or add the record, then
-%%      continue. </li>
-%% <li> Traversal of both tables is in the middle, regular table key
-%%      is greater than the shadow key.  Depending on the value of the
-%%      shadow record, either do nothing or add the record, then
-%%      continue. </li>
-%% </ol>
-%%
-%% NOTE: We are *supposed* to return our results in reversed order.
-
-get_many_shadow(_Key, _SKey, MaxNum, MaxBytes, _ResultFlavor, Acc, S)
-  when MaxNum =< 0 ; MaxBytes =< 0 ->
-    %%?DBG_ETSx('1z'),
-    {{Acc, true}, S};
-get_many_shadow('$end_of_table', '$end_of_table', _MaxNum, _MaxBytes,
-                _ResultFlavor, Acc,S) ->
-    %%?DBG_ETSx('2z'),
-    {{Acc, false}, S};
-get_many_shadow('$end_of_table', SKey, MaxNum, MaxBytes, ResultFlavor, Acc, S) ->
-    [Shadow] = ets:lookup(S#state.shadowtab, SKey),
-    case Shadow of
-        {_Key, insert, StoreTuple} ->
-            %%?DBG_ETSx({'3a', '$end_of_table', SKey}),
-            Bytes = storetuple_vallen(StoreTuple),
-            Item = make_many_result(StoreTuple, ResultFlavor, S),
-            get_many_shadow('$end_of_table',
-                            ets:next(S#state.shadowtab, SKey),
-                            MaxNum - 1, MaxBytes - Bytes,
-                            ResultFlavor, [Item|Acc], S);
-        {_Key, delete, _ExpTime} ->
-            %%?DBG_ETSx({'3b', '$end_of_table', SKey}),
-            %% If SKey is a delete, SKey *might* also be present in the
-            %% frozen table ... but we've reached the end of the frozen
-            %% table.  Therefore, the series of events is:
-            %%   1. checkpoint starts
-            %%   2. SKey inserted
-            %%   3. SKey deleted
-            %%   4. This getmany arrives.
-            %% Continue on our merry way, ignoring this deleted item.
-            get_many_shadow('$end_of_table',
-                            ets:next(S#state.shadowtab, SKey),
-                            MaxNum, MaxBytes, ResultFlavor, Acc, S)
-    end;
-get_many_shadow(Key, '$end_of_table', MaxNum, MaxBytes, ResultFlavor, Acc, S) ->
-    [Tuple] = ets:lookup(S#state.ctab, Key),
-    Bytes = storetuple_vallen(Tuple),
-    Item = make_many_result(Tuple, ResultFlavor, S),
-    get_many_shadow(ets:next(S#state.ctab, Key),
-                    '$end_of_table',
-                    MaxNum - 1, MaxBytes - Bytes, ResultFlavor, [Item|Acc], S);
-get_many_shadow(Key, SKey, MaxNum, MaxBytes, ResultFlavor, Acc, S)
-  when Key < SKey ->
-    [Tuple] = ets:lookup(S#state.ctab, Key),
-    Bytes = storetuple_vallen(Tuple),
-    Item = make_many_result(Tuple, ResultFlavor, S),
-    get_many_shadow(ets:next(S#state.ctab, Key),
-                    SKey,
-                    MaxNum - 1, MaxBytes - Bytes, ResultFlavor, [Item|Acc], S);
-get_many_shadow(Key, SKey, MaxNum, MaxBytes, ResultFlavor, Acc, S)
-  when Key =:= SKey ->
-    [Shadow] = ets:lookup(S#state.shadowtab, SKey),
-    case Shadow of
-        {_Key, delete, _Timestamp, _ExpTime} ->
-            get_many_shadow(ets:next(S#state.ctab, Key),
-                            ets:next(S#state.shadowtab, SKey),
-                            MaxNum, MaxBytes, ResultFlavor, Acc, S);
-        {_Key, insert, StoreTuple} ->
-            Bytes = storetuple_vallen(StoreTuple),
-            Item = make_many_result(StoreTuple, ResultFlavor, S),
-            get_many_shadow(ets:next(S#state.ctab, Key),
-                            ets:next(S#state.shadowtab, SKey),
-                            MaxNum - 1, MaxBytes - Bytes,
-                            ResultFlavor, [Item|Acc], S)
-    end;
-get_many_shadow(Key, SKey, MaxNum, MaxBytes, ResultFlavor, Acc, S)
-  when Key > SKey ->
-    [Shadow] = ets:lookup(S#state.shadowtab, SKey),
-    case Shadow of
-        {_Key, insert, StoreTuple} ->
-            Bytes = storetuple_vallen(StoreTuple),
-            Item = make_many_result(StoreTuple, ResultFlavor, S),
-            get_many_shadow(Key,
-                            ets:next(S#state.shadowtab, SKey),
-                            MaxNum - 1, MaxBytes - Bytes,
-                            ResultFlavor, [Item|Acc], S);
-        {_Key, delete, _Timestamp, _ExpTime} ->
-            %% If SKey is a delete, then SKey should also be present
-            %% in the frozen table ... but somehow we skipped the
-            %% case where Key =:= SKey, which ought to be impossible.
-            %%
-            %% throw({get_many_shadow, impossible, Key, SKey})
-
-            %% This is a subtle case.  Naively, we would expect that a
-            %% previous iteration of this func would have caught the
-            %% Key =:= SKey case before we got to this point.  However,
-            %% that is the naive view.
-            %% It is possible that the following sequence of events
-            %% happened:
-            %%  1. Checkpoint started
-            %%  2. Key is inserted into the table, when Key did not
-            %%     already exist.
-            %%  3. Key is deleted from the table.
-            %%  4. We reach this point, while the checkpoint is still
-            %%  in progress.
-            get_many_shadow(Key,
-                            ets:next(S#state.shadowtab, SKey),
-                            MaxNum, MaxBytes, ResultFlavor, Acc, S)
-    end.
 
 delete_key(Key, Timestamp, Flags, State) ->
     case key_exists_p(Key, Flags, State, false) of
@@ -1964,14 +1788,9 @@ my_insert_ignore_logging10(State, Key, StoreTuple) ->
             my_insert_ignore_logging3(State, Key, StoreTuple)
     end.
 
-my_insert_ignore_logging3(State, Key, StoreTuple)
-  when State#state.bypass_shadowtab =:= true;
-       State#state.shadowtab =:= undefined ->
-    exptime_insert(State#state.etab, Key, storetuple_exptime(StoreTuple)),
-    ets:insert(State#state.ctab, StoreTuple);
 my_insert_ignore_logging3(State, Key, StoreTuple) ->
     exptime_insert(State#state.etab, Key, storetuple_exptime(StoreTuple)),
-    ets:insert(State#state.shadowtab, {Key, insert, StoreTuple}).
+    ets:insert(State#state.ctab, StoreTuple).
 
 delete_prior_expiry(S, Key) ->
     case my_lookup(S, Key, false) of
@@ -1999,14 +1818,9 @@ my_delete_ignore_logging(State, Key, Timestamp, ExpTime) ->
     end,
     my_delete_ignore_logging2(State, Key, Timestamp, ExpTime).
 
-my_delete_ignore_logging2(State, Key, _Timestamp, ExpTime)
-  when State#state.bypass_shadowtab =:= true;
-       State#state.shadowtab =:= undefined ->
+my_delete_ignore_logging2(State, Key, _Timestamp, ExpTime) ->
     exptime_delete(State#state.etab, Key, ExpTime),
-    ets:delete(State#state.ctab, Key);
-my_delete_ignore_logging2(State, Key, Timestamp, ExpTime) ->
-    exptime_delete(State#state.etab, Key, ExpTime),
-    ets:insert(State#state.shadowtab, {Key, delete, Timestamp, ExpTime}).
+    ets:delete(State#state.ctab, Key).
 
 %% If MustHaveVal_p is true, it will read the value from bigdata_dir.
 -spec my_lookup(state_r(), key(), MustHaveVal_p::boolean()) -> store_tuple().
@@ -2033,20 +1847,8 @@ my_lookup(State, Key, true) ->
 %% my_lookup(), which is responsible for doing any disk access for the
 %% "real" value of val.
 
-my_lookup2(State, Key) when State#state.shadowtab =:= undefined ->
-    ets:lookup(State#state.ctab, Key);
 my_lookup2(State, Key) ->
-    case ets:lookup(State#state.shadowtab, Key) of
-        [{Key, delete, _Timestamp, _ExpTime}] ->
-            [];
-        [{Key, insert, StoreTuple}] ->
-            [StoreTuple];
-        [] ->
-            ets:lookup(State#state.ctab, Key)
-    end.
-
-my_delete_all_objects(Tab) ->
-    ets:delete_all_objects(Tab).
+    ets:lookup(State#state.ctab, Key).
 
 %% REMINDER: It is the *caller's responsibility* to manage the
 %%           logging_op_serial counter, not log_mods() or log_mods2().
@@ -2061,64 +1863,25 @@ log_mods(S, SyncOverride) ->
             log_mods2(S#state.thisdo_mods, SyncOverride, S)
     end.
 
-load_rec_from_log({insert, StoreTuple}, S) ->
-    load_rec_from_log_common_insert(StoreTuple, S);
-load_rec_from_log({insert_value_into_ram, StoreTuple}, S) ->
-    load_rec_from_log_common_insert(StoreTuple, S);
-load_rec_from_log({delete, Key, Timestamp, ExpTime}, S) ->
-    load_rec_clean_up_etab(Key, S),
-    my_delete_ignore_logging(S, Key, Timestamp, ExpTime);
-load_rec_from_log({delete_noexptime, Key, Timestamp}, S) ->
-    case my_lookup(S, Key, false) of
-        [StoreTuple] ->
-            load_rec_clean_up_etab(Key, S),
-            ExpTime = storetuple_exptime(StoreTuple),
-            my_delete_ignore_logging(S, Key, Timestamp, ExpTime);
-        [] ->
-            ok
-    end;
-load_rec_from_log({insert_constant_value, StoreTuple}, S) ->
-    Key = storetuple_key(StoreTuple),
-    my_insert_ignore_logging(S, Key, StoreTuple);
-load_rec_from_log({insert_existing_value, StoreTuple, _OldKey, _OldTimestamp}, S) ->
-    Key = storetuple_key(StoreTuple),
-    my_insert_ignore_logging(S, Key, StoreTuple);
-load_rec_from_log({delete_all_table_items}, S) ->
-    my_delete_all_objects(S#state.mdtab),
-    my_delete_all_objects(S#state.etab),
-    my_delete_all_objects(S#state.ctab);
-load_rec_from_log({md_insert, Tuple}, S) ->
-    ets:insert(S#state.mdtab, Tuple);
-load_rec_from_log({md_delete, Key}, S) ->
-    ets:delete(S#state.mdtab, Key);
-load_rec_from_log({log_directive, _, _}, _S) ->
-    ok;
-load_rec_from_log({log_noop}, _S) ->
-    ok.
-
 load_rec_from_log_common_insert(StoreTuple, S) ->
     Key = storetuple_key(StoreTuple),
     load_rec_clean_up_etab(Key, S),
     my_insert_ignore_logging(S, Key, StoreTuple).
 
-load_rec_clean_up_etab(Key, S) ->
-    case ets:lookup(S#state.ctab, Key) of
-        [DelST] -> DelExp = storetuple_exptime(DelST),
-                   exptime_delete(S#state.etab, Key, DelExp);
-        _       -> ok
+load_rec_clean_up_etab(Key, #state{ctab=CTab, etab=ETab}) ->
+    case ets:lookup(CTab, Key) of
+        [DelST] ->
+            DelExp = storetuple_exptime(DelST),
+            exptime_delete(ETab, Key, DelExp);
+        _ ->
+            ok
     end.
 
-purge_recs_by_seqnum(SeqNum, CheckpointNotRunning_p, S) ->
+purge_recs_by_seqnum(SeqNum, #state{name=Name, ctab=CTab}=S) ->
     ?E_NOTICE("~s: purging keys with sequence ~p, size ~p",
-              [S#state.name, SeqNum, ets:info(S#state.ctab, size)]),
-    if CheckpointNotRunning_p ->
-            undefined = S#state.shadowtab; % sanity
-       true ->
-            ok
-    end,
-    N1 = purge_rec_from_log(0, ets:first(S#state.ctab), abs(SeqNum), 0, S),
-    N2 = purge_rec_from_shadowtab(abs(SeqNum), S#state.shadowtab, S),
-    {N1 + N2, S}.
+              [Name, SeqNum, ets:info(CTab, size)]),
+    N1 = purge_rec_from_log(0, ets:first(CTab), abs(SeqNum), 0, S),
+    {N1, S}.
 
 purge_rec_from_log(1000000, Key, SeqNum, Count, S) ->
     flush_gen_server_calls(),   % Clear any mailbox backlog
@@ -2140,27 +1903,6 @@ purge_rec_from_log(Iters, Key, SeqNum, Count, S) ->
             purge_rec_from_log(Iters + 1,
                                ets:next(S#state.ctab, Key), SeqNum, Count, S)
     end.
-
-%% TODO: merge purge_rec_from_log() and purge_rec_from_shadowtab()
-
-purge_rec_from_shadowtab(_SeqNum, undefined, _S) ->
-    0;
-purge_rec_from_shadowtab(SeqNum, ShadowTab, S) ->
-    ets:foldl(fun({Key, insert, ST}, Acc) ->
-                      case storetuple_val(ST) of
-                          {STSeqNum, _Off} when abs(STSeqNum) =:= SeqNum ->
-                              Timestamp = brick_server:make_timestamp(),
-                              ExpTime = storetuple_exptime(ST),
-                              my_delete_ignore_logging(S, Key, Timestamp, ExpTime),
-                              ?E_NOTICE("~s: purged a key from shadowtab. key ~p",
-                                        [S#state.name, Key]),
-                              Acc + 1;
-                          _ ->
-                              Acc
-                      end;
-                 (_, Acc) ->
-                      Acc + 1
-              end, 0, ShadowTab).
 
 filter_mods_for_downstream(Thisdo_Mods) ->
     lists:map(fun({insert, ChainStoreTuple, _StoreTuple}) ->
@@ -2211,7 +1953,7 @@ filter_mods_from_upstream(Thisdo_Mods, #state{name=Name}=State) ->
                               CurVal = storetuple_val(CurSt),
                               Key = storetuple_key(ST),
                               Loc = bigdata_dir_store_val(Key, CurVal, State),
-                              ?E_DBG("insert_exsiting_value - sequence_frozen", []),
+                              %% ?E_DBG("insert_exsiting_value - sequence_frozen", []),
                               {insert, ST, storetuple_replace_val(ST, Loc)};
                           false ->
                               [CurST] = my_lookup(State, OldKey, false),
@@ -2223,243 +1965,12 @@ filter_mods_from_upstream(Thisdo_Mods, #state{name=Name}=State) ->
                               Flags = storetuple_flags(ST),
                               NewST = storetuple_make(
                                         Key, TS, CurVal, CurValLen, Exp, Flags),
-                              ?E_DBG("insert_exsiting_value - ok", []),
+                              %% ?E_DBG("insert_exsiting_value - ok", []),
                               {insert_existing_value, NewST, OldKey, OldTimestamp}
                       end;
                  (X) ->
                       X
               end, Thisdo_Mods).
-
-do_checkpoint(S, _Options) when S#state.check_pid =/= undefined ->
-    {sorry, S};
-do_checkpoint(S, Options) ->
-    {ok, NewLogSeq} = (S#state.wal_mod):advance_seqnum(S#state.log, 2),
-    Pid = spawn_link(?MODULE, checkpoint_start,
-                     [S, NewLogSeq - 1, self(), Options]),
-    ShadowTab = ets:new(S#state.shadowtab_name, [ordered_set, protected,
-                                                 named_table]),
-    {ok, S#state{check_pid = Pid, shadowtab = ShadowTab}}.
-
-checkpoint_start(#state{name=Name, wal_mod=WalMod}=S_ro, DoneLogSeq, ParentPid, Options) ->
-    %% _LogProps = WalMod:get_proplist(S_ro#state.log),
-    Dir = WalMod:log_name2data_dir(Name),
-    ServerProps = S_ro#state.options,
-
-    CheckName = ?CHECK_NAME ++ "." ++ atom_to_list(S_ro#state.ctab),
-    CheckFile = Dir ++ "/" ++ CheckName ++ ".tmp",
-    _ = file:delete(CheckFile),
-
-    %% Allow checkpoint requester to alter our behavior, e.g. for
-    %% testing purposes.
-    timer:sleep(proplists:get_value(start_sleep_time, Options, 0)),
-
-    {ok, CheckFH} = file:open(CheckFile, [binary, write]),
-    ok = WalMod:write_log_header(CheckFH),
-    ?E_INFO("Checkpoint: ~w - Dumping to the checkpoint file: ~s", [Name, CheckFile]),
-
-    %% To avoid icky failure scenarios, we'll add a magic
-    %% {delete_all_table_items} tuple, which effectively tells the
-    %% recovery mechanism to ignore any logs that have been read prior
-    %% to this one.
-    DelAll = term_to_binary([{delete_all_table_items}]),
-    {_, Bin1} = WalMod:create_hunk(?LOGTYPE_METADATA, [DelAll], []),
-    ok = file:write(CheckFH, Bin1),
-
-    %% Dump data from the private metadata table.
-    MDs = term_to_binary([{md_insert, T} ||
-                             T <- ets:tab2list(S_ro#state.mdtab)]),
-    {_, Bin2} = WalMod:create_hunk(?LOGTYPE_METADATA, [MDs], []),
-    ok = file:write(CheckFH, Bin2),
-
-    %% Dump all the "normal" data.
-    ThrottleSvr = case proplists:get_value(throttle_bytes, Options) of
-                      undefined ->
-                          cp_throttle;
-                      Num ->
-                          {ok, TPid} = brick_ticket:start_link(undefined, Num),
-                          TPid
-                  end,
-    put(zzz_throttle_pid, ThrottleSvr),
-    dump_items(S_ro#state.ctab, S_ro#state.wal_mod, CheckFH),
-
-    case proplists:get_value(checkpoint_sync_before_close, Options, true) of
-        true -> ok = file:sync(CheckFH);
-        _    -> ok
-    end,
-    timer:sleep(proplists:get_value(checkpoint_sleep_before_close, Options, 0)),
-
-    ok = file:close(CheckFH),
-    {ok, #file_info{size=CheckFileSize}} = file:read_file_info(CheckFile),
-    ?E_INFO("Checkpoint: ~w - Finished dumping to the checkpoint file: ~s (~w bytes)",
-            [Name, CheckFile, CheckFileSize]),
-    LogFile = WalMod:log_file_path(Dir, DoneLogSeq),
-    ok = file:rename(CheckFile, LogFile),
-    ok = save_checkpoint_num(Dir, DoneLogSeq),
-    ?E_INFO("Checkpoint: ~w - Renamed the checkpoint file to local log: ~s",
-            [Name, LogFile]),
-
-    OldSeqs = [X || X <- WalMod:find_current_log_seqnums(Dir),
-                    X < DoneLogSeq],
-    DeleteP = case proplists:get_value(bigdata_dir, ServerProps) of
-                  undefined -> true;
-                  _         -> S_ro#state.wal_mod =/= gmt_hlog_common
-              end,
-    if DeleteP andalso OldSeqs =/= [] ->
-            %%
-            %% Here's a not-perfect solution for a race condition.
-            %% The race condition is between us and the
-            %% gmt_hlog_common writeback process.  It's quite possible
-            %% that the writeback process can try to writeback some
-            %% very-recently-written data for a file that we are about
-            %% to delete here.
-            %%
-            %% Our solution:
-            %%   1. Sleep a few seconds before deleting the files.  That
-            %%      will make it much less likely that gmt_hlog_common will
-            %%      re-create the file sometime later.
-            %%   2. We'll do it in a worker proc so that we can notify our
-            %%      parent now and exit.
-            %%
-            Pid = spawn(fun() ->
-                                %% We have really weird intermittent
-                                %% problems with both QuickCheck and with
-                                %% the regression tests where very
-                                %% occasionally files get deleted when they
-                                %% shouldn't.
-                                link(ParentPid),
-                                timer:sleep(5 * 1000),
-                                lists:foreach(
-                                  fun(SeqNum) ->
-                                          case delete_local_log_file(S_ro, SeqNum) of
-                                              {ok, Path, Size} ->
-                                                  ?E_INFO("Checkpoint: ~w - "
-                                                          "Deleted a local log sequence ~w: ~s "
-                                                          "(~w bytes)",
-                                                          [Name, SeqNum, Path, Size]);
-                                              {error, Err} ->
-                                                  ?E_ERROR("Checkpoint: ~w - "
-                                                           "Error deleting a local log sequence ~w: (~p)",
-                                                           [Name, SeqNum, Err])
-                                          end
-                                  end, OldSeqs),
-                                unlink(ParentPid),
-                                exit(normal)
-                        end),
-            ?E_INFO("Checkpoint: ~w - Spawned a process ~w to delete ~w local log files",
-                    [Name, Pid, length(OldSeqs)]),
-            ok;
-       OldSeqs =/= [] ->
-            ?E_INFO("Checkpoint: ~p - Moving ~p local log files to long-term archive",
-                     [Name, length(OldSeqs)]),
-            lists:foreach(
-              fun(SeqNum) ->
-                      case WalMod:move_seq_to_longterm(S_ro#state.log, SeqNum) of
-                          ok ->
-                              {ok, Path, #file_info{size=Size}} = WalMod:log_file_info(Dir, SeqNum),
-                              ?E_INFO("Checkpoint: ~w - "
-                                      "Moved a local log sequence ~w to ~s (~w bytes)",
-                                      [Name, SeqNum, Path, Size]);
-                          {error, Err} ->
-                              ?E_INFO("Checkpoint: ~w - "
-                                      "Couldn't move a local log sequence ~w to long-term archive: ~p",
-                                      [Name, SeqNum, Err])
-                      end
-              end, OldSeqs),
-            _ = file:delete(WalMod:log_file_path(Dir,S_ro#state.check_lastseqnum)),
-            ok;
-       true ->
-            ok
-    end,
-
-    %% All "bad-sequence" processing is done at brick startup.  (Bad
-    %% file notifications that arrive later either have 0 keys
-    %% affected (i.e. do nothing) or have > 0 keys affected (i.e. flip
-    %% to 'disk_error' state).  Therefore, at this point, ETS refers
-    %% to 0 keys that have known bad pointers.  So it's safe to delete
-    %% now ... though there is a race that's possible with the
-    %% commonLogServer processing a new bad sequence file
-    %% notification.  If that race happens, it's possible to forget
-    %% about that sequence file, but someone we'll re-discover the
-    %% error ourselves at some future time.
-    _ = delete_external_bad_sequence_file(Name),
-
-    if is_pid(ThrottleSvr) ->
-            brick_ticket:stop(ThrottleSvr);
-       true ->
-            ok
-    end,
-    gen_server:cast(ParentPid, {checkpoint_last_seqnum, DoneLogSeq}),
-    ?E_INFO("Checkpoint: ~w - Finished checkpoint process for ~w", [Name, Name]),
-    exit(done).
-
--spec delete_local_log_file(state_r(), seqnum()) ->
-                                   {ok, Path::filepath(), FileSize::non_neg_integer()}
-                                       | {error, term()}.
-delete_local_log_file(#state{wal_mod=WalMod, log_dir=LogDir}, SeqNum) ->
-    case WalMod:log_file_info(LogDir, SeqNum) of
-        {ok, Path, #file_info{size=Size}} ->
-            case file:delete(Path) of
-                ok ->
-                    {ok, Path, Size};
-                {error, _}=Err ->
-                    Err
-            end;
-        {error, _}=Err ->
-                Err
-    end.
-
-dump_items(Tab, WalMod, Log) ->
-    dump_items2(ets:first(Tab), Tab, WalMod, Log, 0, []).
-
-%% @doc Main iterator loop for dumping/writing a table to a disk log.
-%%
-%% Note about separation of ETS and disk storage: Direct use of
-%% ets:lookup() here is OK: we don't need to dump "real" values of val
-%% here.
-
-dump_items2('$end_of_table', _Tab, WalMod, LogFH, _AccNum, Acc) ->
-    {_, Bin} = WalMod:create_hunk(?LOGTYPE_METADATA,
-                                  [term_to_binary(lists:reverse(Acc))], []),
-    ok = file:write(LogFH, Bin),
-    ok;
-dump_items2(Key, Tab, WalMod, LogFH, AccNum, Acc)
-  when AccNum > 200 ->
-    {Bytes, Bin} = WalMod:create_hunk(?LOGTYPE_METADATA,
-                                      [term_to_binary(lists:reverse(Acc))], []),
-    ok = get_bw_ticket(Bytes),
-    ok = file:write(LogFH, Bin),
-    dump_items2(Key, Tab, WalMod, LogFH, 0, []);
-dump_items2(Key, Tab, WalMod, LogFH, AccNum, Acc) ->
-    [ST] = ets:lookup(Tab, Key),
-    %% The insert_value_into_ram flavor is not required here: the
-    %% storetuple is already in the {SeqNum, OffSet} or binary() form
-    %% that we need for a local checkpoint dump.
-    I = {insert, ST},
-    dump_items2(ets:next(Tab, Key), Tab, WalMod, LogFH, AccNum + 1, [I|Acc]).
-
-save_checkpoint_num(Dir, SeqNum) ->
-    FinalPath = Dir ++ "/last-checkpoint",
-    TmpPath = FinalPath ++ ".tmp",
-    {ok, FH} = file:open(TmpPath, [write, binary]), % {sigh}
-    try
-        ok = file:write(FH, [integer_to_list(SeqNum), ""]),
-        ok = file:sync(FH),
-        ok = file:rename(TmpPath, FinalPath)
-    catch X:Y ->
-            ?E_ERROR("Error renaming ~p -> ~p: ~p ~p (~p)",
-                     [TmpPath, FinalPath, X, Y, erlang:get_stacktrace()])
-    after
-        ok = file:close(FH)
-    end.
-
-read_checkpoint_num(Dir) ->
-    try
-        {ok, Bin} = file:read_file(Dir ++ "/last-checkpoint"),
-        {SeqNum, _} = string:to_integer(binary_to_list(Bin)),
-        SeqNum
-    catch _:_ ->
-            1                                       % Get 'em all
-    end.
 
 sync_pid_start(SPA) ->
     process_flag(priority, high),
@@ -2522,82 +2033,6 @@ sync_get_last_serial([{sync_msg, Serial}|T], _LastSerial) ->
     sync_get_last_serial(T, Serial);
 sync_get_last_serial([], LastSerial) ->
     LastSerial.
-
-%% @spec (state_r()) -> state_r()
-
-%% LTODO: unfinished
-do_check_checkpoint(S)
-  when S#state.check_pid =:= undefined ->
-    LogDir = S#state.log_dir,
-    LogFiles = (S#state.wal_mod):find_current_log_files(LogDir),
-    Sum =
-        lists:foldl(fun(File, Acc) ->
-                            %% TODO: Implementation detail leak below.
-                            case file:read_file_info(LogDir ++ "/s/" ++ File) of
-                                {ok, FI} ->
-                                    FI#file_info.size + Acc;
-                                {error, enoent} ->
-                                    %% In the 2-tier CommonLog scheme, this
-                                    %% can happen occasionally, don't log.
-                                    Acc
-                            end
-                    end, 0, LogFiles),
-    SumMB = Sum / (1024 * 1024),
-    MaxMB =
-        case re:run(atom_to_list(S#state.name), "bootstrap_") of
-            nomatch ->
-                {ok, MB} = application:get_env(gdss_brick, brick_check_checkpoint_max_mb),
-                MB;
-            {match, _} ->
-                %% Use a very small value for bootstrap bricks: they
-                %% aren't supposed to be storing very much, and quick
-                %% startup time is essential.
-                40
-        end,
-    if SumMB > MaxMB ->
-            ?E_INFO("table ~p: SumMB ~p > MaxMB ~p",
-                    [S#state.name, SumMB, MaxMB]),
-            {ok, NewS} = do_checkpoint(S, S#state.options),
-            NewS;
-       true ->
-            S
-    end;
-do_check_checkpoint(S) ->
-    %% Do not perform checkpoint until my_repair_state = ok.
-    S.
-
-fold_shadow_into_ctab(S) ->
-    %% To reuse my_insert_ignore_logging() and
-    %% my_delete_ignore_logging(), set a special magic flag
-    fold_shadow_into_ctab(ets:first(S#state.shadowtab),
-                          S#state{bypass_shadowtab = true}).
-
-%% @doc Main iterator loop for folding table modifications recorded in
-%% the shadowtab table back into the main table.
-%%
-%% Note about separation of ETS and disk storage:
-%% Direct use of ets:lookup() here is OK: we don't need to copy "real"
-%% values of val here.
-%% <b>However</b>, we do need to move each shadow val disk file to its
-%% proper location.
-
-fold_shadow_into_ctab('$end_of_table', S) ->
-    ets:delete(S#state.shadowtab),
-    S#state{shadowtab = undefined, bypass_shadowtab = false};
-fold_shadow_into_ctab(Key, S) ->
-    [Shadow] = ets:lookup(S#state.shadowtab, Key),
-    case Shadow of
-        {Key, insert, StoreTuple} ->
-            my_insert_ignore_logging(S, Key, StoreTuple),
-            fold_shadow_into_ctab(ets:next(S#state.shadowtab, Key), S);
-        {Key, delete, Timestamp, ExpTime} ->
-            my_delete_ignore_logging(S, Key, Timestamp, ExpTime),
-            fold_shadow_into_ctab(ets:next(S#state.shadowtab, Key), S);
-        Err ->
-            ?E_WARNING("fold_shadow: Bad term for ~p: ~p", [Key, Err]),
-            timer:sleep(1000),
-            exit({fold, Key, Err})
-    end.
 
 map_mods_into_ets([{insert, StoreTuple} | Tail], S) ->
     Key = storetuple_key(StoreTuple),
@@ -2715,7 +2150,6 @@ add_mods_to_dirty_tab([{insert_existing_value, StoreTuple, _OldKey, _OldTimestam
     ets:insert(S#state.dirty_tab, {Key, insert, StoreTuple}),
     add_mods_to_dirty_tab(Tail, S);
 add_mods_to_dirty_tab([{insert, StoreTuple, _BigDataTuple}|Tail], S) ->
-    %% Lazy, reuse...
     add_mods_to_dirty_tab([{insert, StoreTuple}|Tail], S);
 add_mods_to_dirty_tab([{delete, Key, _Timestamp, _ExpTime} | Tail], S) ->
     ?DBG_ETS("add_to_dirty ~w: ~w", [S#state.name, Key]),
@@ -2733,7 +2167,6 @@ clear_dirty_tab([{insert, StoreTuple}|Tail], S) ->
     ets:delete(S#state.dirty_tab, Key),
     clear_dirty_tab(Tail, S);
 clear_dirty_tab([{insert, _ChainStoreTuple, StoreTuple}|Tail], S) ->
-    %% Lazy, reuse....
     clear_dirty_tab([{insert, StoreTuple}|Tail], S);
 clear_dirty_tab([{insert_value_into_ram, StoreTuple}|Tail], S) ->
     %% Lazy, reuse....
@@ -3110,7 +2543,6 @@ sequence_file_is_bad(SeqNum, Offset, S)
                                 S#state.name, SeqNum, Offset);
 sequence_file_is_bad(SeqNum, Offset, S)
   when S#state.wal_mod =:= gmt_hlog_local ->
-    append_external_bad_sequence_file(S#state.name, SeqNum),
     gmt_hlog_common:sequence_file_is_bad(SeqNum, Offset).
 
 sequence_rename(OldPath1, OldPath2, NewPath) ->
@@ -3135,26 +2567,6 @@ write_bad_sequence_hunk(WalMod, Log, Name, SeqNum, Offset) ->
             ?E_ERROR("sequence_file_is_bad: ~p ~p -> ~p ~p (~p)",
                      [SeqNum, Offset, X, Y, erlang:get_stacktrace()])
     end.
-
--spec append_external_bad_sequence_file(atom(),integer()) -> ok.
-append_external_bad_sequence_file(Name, SeqNum) ->
-    {ok, FH} = file:open(external_bad_sequence_path(Name), [append]),
-    io:format(FH, "~p.", [abs(SeqNum)]),
-    ok = file:close(FH).
-
-delete_external_bad_sequence_file(Name) ->
-    file:delete(external_bad_sequence_path(Name)).
-
-read_external_bad_sequence_file(Name) ->
-    case file:consult(external_bad_sequence_path(Name)) of
-        {ok, L} ->
-            lists:usort([abs(X) || X <- L]);
-        {error, enoent} ->
-            []
-    end.
-
-external_bad_sequence_path(Name) ->
-    gmt_hlog:log_name2data_dir(Name) ++ "/bad-sequence".
 
 -spec sequence_file_is_bad_common(nonempty_string(), atom(), pid(), atom(),integer(),integer()) -> ok.
 sequence_file_is_bad_common(LogDir, WalMod, _Log, Name, SeqNum, Offset) ->
@@ -3187,61 +2599,41 @@ sequence_file_is_bad_common(LogDir, WalMod, _Log, Name, SeqNum, Offset) ->
 %%          '$gen_cast' messages.  For use only within the context of
 %%          gen_server's init() callback function!
 
-wal_scan_all(S, MinimumSeqNum) ->
-    put(wal_scan_cast_count, 0),
-    F = fun(H, FH, Acc) when H#hunk_summ.type =:= ?LOGTYPE_METADATA ->
-                %% This function may run for hours or perhaps even days.
-                flush_gen_server_calls(),       % Clear any mailbox backlog
-                flush_gen_cast_calls(S),        % Clear any mailbox backlog
+-spec load_metadata(state_r()) -> {non_neg_integer(), [tuple()]}.
+load_metadata(#state{name=BrickName}=State) ->
+    %% put(wal_scan_cast_count, 0),
+    CommonLogServer = gmt_hlog_common:hlog_pid(?GMT_HLOG_COMMON_LOG_NAME),
+    MetadataDB = gmt_hlog:get_metadata_db(CommonLogServer, BrickName),
 
-                [_] = H#hunk_summ.c_len,        % sanity
-                []  = H#hunk_summ.u_len,        % sanity
+    %% @TODO: LevelDB might need a repair before opened.
+    FirstMDBKey = leveldb:first(MetadataDB),
+    load_metadata1(BrickName, MetadataDB, FirstMDBKey, State, {0, []}).
 
-                CB = (S#state.wal_mod):read_hunk_member_ll(FH, H, md5, 1),
-                %% LTODO: Don't crash if there's a failure.
-                %% Hibari: TODO: Be robust here. If the checksum does not match,
-                %%         then we have a problem to solve. If we're not the
-                %%         only in the chain, we can punt. If we are the
-                %%         only/best of the chain, then we have a data loss
-                %%         problem that we need to report, somehow.
-                true = (S#state.wal_mod):md5_checksum_ok_p(H#hunk_summ{c_blobs = [CB]}),
-                wal_load_recs_from_log(binary_to_term(CB), S),
-                Acc + 1;
-           (H, _FH, Acc) when H#hunk_summ.type =:= ?LOGTYPE_BLOB ->
-                Acc;
-           (H, FH, Acc) when H#hunk_summ.type =:= ?LOGTYPE_BAD_SEQUENCE ->
-                [_] = H#hunk_summ.c_len,        % sanity
-                []  = H#hunk_summ.u_len,        % sanity
-                CB = (S#state.wal_mod):read_hunk_member_ll(FH, H, md5, 1),
-                case (S#state.wal_mod):md5_checksum_ok_p(H#hunk_summ{c_blobs = [CB]}) of
-                    true ->
-                        {SeqNum, Offset} = binary_to_term(CB),
-                        wal_purge_recs_by_seqnum(SeqNum, Offset, S),
-                        Acc + 1;
-                    false ->
-                        %% Hibari: TODO: How do we escalate the bad news??
-                        ?E_ERROR("Bad checksum on hunk type ~p at ~p ~p",
-                                 [H#hunk_summ.type, H#hunk_summ.seq,
-                                  H#hunk_summ.off]),
-                        Acc
+load_metadata1(_BrickName, _MetadataDB, '$end_of_table', _State, {Count, Errors}) ->
+    {Count, lists:reverse(Errors)};
+load_metadata1(BrickName, MetadataDB, MDBKey, State, {Count, Errors}=PrevResult) ->
+    %% %% This function may run for hours or perhaps even days.
+    %% flush_gen_server_calls(),       % Clear any mailbox backlog
+    %% flush_gen_cast_calls(S),        % Clear any mailbox backlog
+    Result =
+        try sext:decode(MDBKey) of
+            {_Key, _ReversedTimestamp} ->
+                case leveldb:get(MetadataDB, MDBKey) of
+                    Bin when is_binary(Bin) ->
+                        StoreTuple = binary_to_term(Bin),
+                        load_rec_from_log_common_insert(StoreTuple, State),
+                        {Count + 1, Errors};
+                    Err ->
+                        {Count, [{MDBKey, Err}|Errors]}
                 end;
-           (H, _FH, Acc) ->
-                ?E_ERROR("Unknown hunk type at ~p ~p: ~p",
-                         [H#hunk_summ.seq, H#hunk_summ.off, H#hunk_summ.type]),
-                Acc
-        end,
-    Ffilter = fun(N) -> N >= MinimumSeqNum end,
-    Res = (S#state.wal_mod):fold(shortterm, S#state.log_dir, F, Ffilter, 0),
-    %% erase(wal_scan_cast_count),
-    Res.
-
-wal_load_recs_from_log([H], S) ->
-    load_rec_from_log(H, S);
-wal_load_recs_from_log([H|T], S) ->
-    load_rec_from_log(H, S),
-    wal_load_recs_from_log(T, S);
-wal_load_recs_from_log([], _S) ->
-    ok.
+            Command when is_atom(Command) ->
+                PrevResult
+        catch
+            _:_=Err ->
+                {Count, [{MDBKey, Err}|Errors]}
+    end,
+    NextMDBKey = leveldb:next(MetadataDB, MDBKey),
+    load_metadata1(BrickName, MetadataDB, NextMDBKey, State, Result).
 
 -spec wal_write_metadata_term(term(), state_r()) ->
                                      {ok, seqnum(), offset()} | {hunk_too_big, len()} | no_return().
@@ -3252,41 +2644,25 @@ wal_write_metadata_term(Term, #state{wal_mod=WalMod, log=HLogPid, name=Name}) ->
 wal_sync(Pid, WalMod) when is_pid(Pid) ->
     WalMod:sync(Pid).
 
-wal_purge_recs_by_seqnum(SeqNum, Offset, S) ->
-    ?E_ERROR("A bad log sequence file, ~p number ~p, has been detected "
-             "(error at offset ~p).", [S#state.name, SeqNum, Offset]),
-    {NumRecs, _NewS} = purge_recs_by_seqnum(SeqNum, true, S),
-    ?E_ERROR("Log sequence file ~p ~p contained ~p keys which are now lost.",
-             [S#state.name, SeqNum, NumRecs]),
-    gmt_util:set_alarm({data_lost, {S#state.name, seq, SeqNum, keys, NumRecs}},
-                       "Number of keys lost = " ++ integer_to_list(NumRecs) ++
-                           ", must recover via chain replication.",
-                       fun() -> ok end),
-    NumRecs.
-
-wal_scan_failed(ErrList, S) ->
-    ?E_WARNING("WAL scan by brick ~p had errors: ~p",[S#state.name, ErrList]),
-    _Msg = lists:flatten(
-             io_lib:format("Number of keys lost = unknown, must recover "
-                           "via chain replication.  Error detail = ~p.",
-                           [ErrList])),
-    %% gmt_util:set_alarm({wal_scan, S#state.name}, _Msg, fun() -> ok end),
-    ok.
-
 flush_gen_server_calls() ->
-    receive {'$gen_call', _, _} -> flush_gen_server_calls()
-    after 0                     -> ok
+    receive {'$gen_call', _, _} ->
+            flush_gen_server_calls()
+    after 0 ->
+            ok
     end.
 
-flush_gen_cast_calls(S) ->
+flush_gen_cast_calls(#state{name=Name}=S) ->
     receive {'$gen_cast', Msg} ->
-            Count = case get(wal_scan_cast_count) of undefined -> 0;
-                        N ->         N
+            Count = case get(wal_scan_cast_count) of
+                        undefined ->
+                            0;
+                        N ->
+                            N
                     end,
-            if Count < 10 ->
-                    ?E_INFO("~p: flushing $gen_cast message: ~P",
-                            [S#state.name, Msg, 9]);
-               true ->
+            if
+                Count < 10 ->
+                    ?E_INFO("~p: flushing $gen_cast message: ~P", [Name, Msg, 9]);
+                true ->
                     ok
             end,
             put(wal_scan_cast_count, Count + 1),
@@ -3344,7 +2720,7 @@ bcb_squidflash_primer(KsRaws, ResubmitFun,
           end).
 
 squidflash_doit(KsRaws, ResubmitFun, FakeS) ->
-    ?E_DBG("squidflash_doit ~p", [KsRaws]),
+    %% ?E_DBG("squidflash_doit ~p", [KsRaws]),
     Me = self(),
     KRV_Refs = [{X, make_ref()} || X <- KsRaws],
     [catch gmt_parallel_limit:enqueue(
@@ -3363,7 +2739,8 @@ squidflash_doit(KsRaws, ResubmitFun, FakeS) ->
      end
      || {_, Ref} <- KRV_Refs],
 
-    %% Resubmit the original operations to brick_ets:handle_call or handle_cast.
+    %% Call ResubmitFun to resubmit the original request back to
+    %% brick_ets:handle_call/3 or handle_cast/2.
     ResubmitFun(),
     exit(normal).
 
@@ -3601,8 +2978,8 @@ really_cheap_exclusion(ExclAtom, Fwait, Fgo) ->
               end
       end, 0).
 
-get_bw_ticket(Bytes) ->
-    brick_ticket:get(get(zzz_throttle_pid), Bytes).
+%% get_bw_ticket(Bytes) ->
+%%     brick_ticket:get(get(zzz_throttle_pid), Bytes).
 
 -spec file_input_fun(term(),term()) -> fun((atom())->end_of_input|{error,term()}).
 file_input_fun(Log, Cont) ->
@@ -3738,7 +3115,7 @@ bcb_keys_for_squidflash_priming(DoList, DoFlags, State) ->
     SF_resubmit = proplists:get_value(squidflash_resubmit, DoFlags) =:= true, %% true or undefined
     case SF_resubmit of
         true ->
-            ?E_DBG("squidflash_resubmit", []),
+            %% ?E_DBG("squidflash_resubmit", []),
             [];
         false ->
             lists:foldl(
@@ -4129,7 +3506,7 @@ bcb_status(S) when is_record(S, state) ->
 %% @doc Purge all records involving log sequence number SeqNum.
 
 bcb_common_log_sequence_file_is_bad(SeqNum, S) when is_record(S, state) ->
-    purge_recs_by_seqnum(SeqNum, false, S).
+    purge_recs_by_seqnum(SeqNum, S).
 
 
 %% %% On my machine at home:

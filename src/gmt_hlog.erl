@@ -903,11 +903,34 @@ do_get_or_open_metadata_db(LocalBrick, #state{metadata_db_registory=Reg}=State) 
 
             %% @TODO Create a function to return the metadata DB path.
             MDBPath = filename:join(MDBDir, "leveldb"),
+
+            _RepairResult = do_repair_metadata_db(LocalBrick, State),
+            ?E_DBG("Called do_repair_metadata_db. result: ~w", [_RepairResult]),
             MetadataDB = leveldb:open_db(MDBPath, [create_if_missing]),
             ?ELOG_INFO("Opened metadata DB: ~s", [MDBPath]),
             NewReg = orddict:store(LocalBrick, MetadataDB, Reg),
             NewState = State#state{metadata_db_registory=NewReg},
             {MetadataDB, NewState}
+    end.
+
+-spec do_repair_metadata_db(brickname(), state()) -> ok | skipped | {error, term()}.
+do_repair_metadata_db(LocalBrick, #state{metadata_db_registory=Reg}) ->
+    MDBDir = log_name2metadata_dir(LocalBrick),
+    MDBPath = filename:join(MDBDir, "leveldb"),
+    case orddict:find(LocalBrick, Reg) of
+        {ok, _MetadataDB} ->
+            skipped;
+        error ->
+            catch file:make_dir(MDBDir),
+            try leveldb:repair_db(MDBPath, []) of
+                true ->
+                    ok;
+                Error ->
+                    {error, Error}
+            catch
+                _:_=Error ->
+                    {error, Error}
+            end
     end.
 
 -spec do_close_all_metadata_db(state()) -> ok.

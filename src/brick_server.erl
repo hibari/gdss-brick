@@ -401,8 +401,7 @@
          migration_clear_sweep/2, migration_clear_sweep/3]).
 
 %% Admin task API
--export([status/2, status/3, state/2, flush_all/2, checkpoint/2, checkpoint/3,
-         checkpoint_bricks/1, checkpoint_bricks_and_wait/1,
+-export([status/2, status/3, state/2, flush_all/2,
          sync_down_the_chain/3, sync_down_the_chain/4,
          set_do_sync/2, set_do_logging/2, start_scavenger/3]).
 
@@ -481,7 +480,6 @@
 -type status_reply() :: {ok, prop_list()}.
 -type state_reply() :: impl_state_r().
 -type flushall_reply() :: sorry | ok.
--type checkpoint_reply() :: sorry | ok.
 -type rolestandalone_reply() :: {ok, state_r()} | {error, term(), term()}.
 -type roleundefined_reply() :: {ok, state_r()}.
 -type rolehead_reply() :: ok | {error, term(), term()}.
@@ -1003,53 +1001,6 @@ state(ServerName, Node) when not is_list(Node) ->
 flush_all(ServerName, Node) when not is_list(Node) ->
     gen_server:call({ServerName, Node}, {flush_all}, foo_timeout()).
 
-%% @spec (brick_name(), node_name())
-%%    -> zzz_checkpoint_reply()
-%% @equiv checkpoint(ServerName, Node, [])
-%% @doc Start a checkpoint operation to flush all terms to disk (and
-%%      delete old transaction logs).
-
--spec checkpoint(brick_name(), node_name()) -> checkpoint_reply().
-checkpoint(ServerName, Node) ->
-    checkpoint(ServerName, Node, []).
-
-%% @spec (brick_name(), node_name(), prop_list())
-%%    -> zzz_checkpoint_reply()
-%% @doc Start a checkpoint operation to flush all terms to disk (and
-%%      delete old transaction logs).
-%%
-%% Valid options:
-%% <ul>
-%% <li> <tt>{checkpoint_sleep_before_close, MSec}</tt> (default = 0) ...
-%%      Sleep before closing checkpoint file. </li>
-%% <li> <tt>{checkpoint_sync_before_close, Boolean}</tt> (default = true) ...
-%%      Use fsync before closing checkpoint file. </li>
-%% <li> <tt>{start_sleep_time, MilliSeconds}</tt> ... (default = 0) ...
-%%      Start checkpoint after sleeping for MilliSeconds. </li>
-%% <li> <tt>silent</tt> (default = false) ... Do not write LOG_INFO messages
-%%      to the app log. </li>
-%% <li> <tt>{throttle_bytes, N}</tt> (default = use common `cp_throttle' proc) ...
-%%      override the throttle value of central.conf's
-%%      "brick_check_checkpoint_throttle_bytes" config knob and create
-%%      a separate throttle process for use by this checkpoint only. </li>
-%% </ul>
-
--spec checkpoint(brick_name(), node_name(), prop_list()) -> checkpoint_reply().
-checkpoint(ServerName, Node, Options) when not is_list(Node) ->
-    gen_server:call({ServerName, Node}, {checkpoint, Options}, 300*1000).
-
-checkpoint_bricks(Node) when is_atom(Node) ->
-    checkpoint_bricks([{Br, Node} || Br <- brick_shepherd:list_bricks(Node)]);
-checkpoint_bricks(BrickList) when is_list(BrickList) ->
-    [brick_server:checkpoint(Br, Nd) || {Br, Nd} <- BrickList].
-
-checkpoint_bricks_and_wait(Node) when is_atom(Node) ->
-    checkpoint_bricks_and_wait(
-      [{Br, Node} || Br <- brick_shepherd:list_bricks(Node)]);
-checkpoint_bricks_and_wait(BrickList) when is_list (BrickList) ->
-    _ = checkpoint_bricks(BrickList),
-    poll_checkpointing_bricks(BrickList).
-
 %% @spec (brick_name(), node_name(), prop_list())
 %%    -> zzz_syncdown_reply()
 %% @equiv sync_down_the_chain(ServerName, Node, Options, DefaultTimeout)
@@ -1488,12 +1439,6 @@ handle_call(Msg, From, State)
        element(1, Msg) =:= start_scavenger ->
     ?DBG_GEN("handle_call ~w ~w", [State#state.name, Msg]),
     handle_call_via_impl(Msg, From, State);
-handle_call({checkpoint, _} = Msg, From, State) ->
-    if (State#state.chainstate)#chain_r.my_repair_state =:= ok ->
-            handle_call_via_impl(Msg, From, State);
-       true ->
-            {reply, sorry, State}
-    end;
 handle_call({status} = _Msg, _From, State) ->
     ImplStatus = get_implementation_status(State),
     {Reply, NewState} = do_status(State, ImplStatus),
@@ -2024,7 +1969,7 @@ handle_cast({ch_repair_ack, Serial, BrickName, Node,
                                                      last_ack = now()}}}
             end
     end;
-handle_cast({ch_repair_finished, Brick, Node, Checkpoint_p, NumKeys}=RepairMsg,
+handle_cast({ch_repair_finished, Brick, Node, NumKeys}=RepairMsg,
             State) ->
     CS = State#state.chainstate,
     ?DBG_REPAIR("~w ~w", [State#state.name, RepairMsg]),
@@ -2047,12 +1992,8 @@ handle_cast({ch_repair_finished, Brick, Node, Checkpoint_p, NumKeys}=RepairMsg,
             {Deletes, ImplState2} =
                 ImplMod:bcb_delete_remaining_keys(LastKey, ImplState),
             {MyNumKeys, _} = get_implementation_ets_info(State),
-            if Checkpoint_p =:= true ->
-                    ?E_ERROR("INFO: ~p: Chain repair finished, upstream brick "
-                             "is checkpointing, upstream keys = ~p, "
-                             "my keys = ~p",
-                             [State#state.name, NumKeys, MyNumKeys]);
-               MyNumKeys =/= NumKeys ->
+            if
+                MyNumKeys =/= NumKeys ->
                     ?E_ERROR("INFO ~p: Repair keys difference, "
                              "probably due to uncommitted updates: "
                              "upstream keys = ~p, my keys = ~p",
@@ -2061,7 +2002,7 @@ handle_cast({ch_repair_finished, Brick, Node, Checkpoint_p, NumKeys}=RepairMsg,
                     %% exactly on both upstream & downstream bricks.
                     %% TODO: Try to calculate exact counts.
                     ok;
-               true ->
+                true ->
                     ?E_INFO("~p: ~p keys after repair",
                             [State#state.name, MyNumKeys])
             end,
@@ -3895,20 +3836,10 @@ send_next_repair2(S) ->
                         [S#state.name, MySerial, CS#chain_r.up_serial]),
 
                 FinalSerial = R#repair_r.last_repair_serial,
-                ImplStatus = get_implementation_status(S),
-                Cp_p = case proplists:get_value(checkpoint, ImplStatus) of
-                           undefined -> false;
-                           _         -> true
-                       %% TODO: If we are indeed checkpointing, then the
-                       %% 100% proper thing to do is to calculate the total
-                       %% number of keys that we've got.  Unfortunately, the
-                       %% shadowtab's mechanism doesn't allow us to do that
-                       %% without a lot of work.
-                       end,
                 {NumKeys, _} = get_implementation_ets_info(S),
                 gen_server:cast(CS#chain_r.downstream,
                                 {ch_repair_finished, S#state.name, node(),
-                                 Cp_p, NumKeys}),
+                                 NumKeys}),
                 R#repair_r{key = ?BRICK__GET_MANY_LAST,
                            last_repair_serial = Serial,
                            final_repair_serial = FinalSerial,
@@ -5413,27 +5344,6 @@ regexp_replace(Subject, RE, Replacement) ->
 make_expiry_regname(A) when is_atom(A) ->
     list_to_atom(atom_to_list(A) ++ "_expiry").
 
-poll_checkpointing_bricks(BrickList) ->
-    %% There is no big value in doing this in parallel: we'll still
-    %% have to wait for the slowest brick.  The only thing parallelism
-    %% would do is perhaps avoid waiting for a 2nd checkpoint that
-    %% starts after the first one has finished.  {shrug}
-    lists:foreach(
-      fun({Br, Nd}) ->
-              gmt_loop:do_while(
-                fun(_) ->
-                        {ok, Ps} = brick_server:status(Br, Nd),
-                        Is = proplists:get_value(implementation, Ps),
-                        Cp = proplists:get_value(checkpoint, Is),
-                        if is_pid(Cp) ->
-                                timer:sleep(100),
-                                {true, acc_is_not_used};
-                           true ->
-                                {false, acc_is_not_used}
-                        end
-                end, acc_is_not_used)
-      end, BrickList).
-
 throttle_brick(ThrottleBrick, RepairingP) ->
     ETS = brick_server:throttle_tab_name(ThrottleBrick),
     case RepairingP of true  -> ets:insert(ETS, {repair_throttle_key, now()});
@@ -5663,7 +5573,6 @@ foo_timeout() ->
 %% @type todo_list() = list(todo()). A "to do" list.
 %% @type timeout() = integer() | infinity.
 %% @type zzz_add_reply() = term().  TODO.
-%% @type zzz_checkpoint_reply() = term().  TODO.
 %% @type zzz_delete_reply() = term().  TODO.
 %% @type zzz_do_reply() = term().  TODO.
 %% @type zzz_flushall_reply() = term().  TODO.
