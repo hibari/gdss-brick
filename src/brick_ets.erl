@@ -2199,12 +2199,10 @@ clear_dirty_tab(NotList, _S) when not is_list(NotList) ->
 retry_dirty_key_ops(S) ->
     case queue:is_empty(S#state.wait_on_dirty_q) of
         true ->
-            ?DBG_OP("retry_dirty_key_ops ~w [queue_empty]", [S#state.name]),
             {S, []};
         false ->
             F = fun(#dirty_q{from = From, do_op = DoOp}, {InterimS, ToDos}) ->
-                        ?DBG_OP("retry_dirty_key_ops ~w: ~w", [S#state.name, DoOp]),
-                        case handle_call(DoOp, From, InterimS) of
+                        case bcb_handle_do(DoOp, From, InterimS) of
                             %% case_clause: {up1, list(), reply()} ...
                             %% CHAIN TODO: See comment "ISSUE001".
                             {up1, TDs, OrigReply} ->
