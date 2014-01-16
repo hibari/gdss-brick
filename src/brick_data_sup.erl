@@ -84,13 +84,18 @@ init([]) ->
                              [brick_primer_limit, PrimerRate]},
          permanent, 2000, worker, [gmt_parallel_limit]},
 
+    BrickMetrics =
+        {brick_metrics, {brick_metrics, start_link, []},
+         permanent, 2000, worker, [brick_metrics]},
+
     {ok, {{rest_for_one, 3, 60}, [
         %% It's important that all bricks restart if the CommonLog crashes.
-                                 CommonLog,
-                                 BrickBrickSup,
-                                 BrickShepherd,
-                                 BrickMboxMon,
-                                 BrickPrimerThrottle
+                                  CommonLog,
+                                  BrickBrickSup,
+                                  BrickShepherd,
+                                  BrickMboxMon,
+                                  BrickPrimerThrottle,
+                                  BrickMetrics
                                 ]}}.
 
 %%====================================================================

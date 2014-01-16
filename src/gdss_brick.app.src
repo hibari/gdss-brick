@@ -37,6 +37,7 @@
              , brick_ticket
              , brick_hlog_scavenger
              , gmt_hlog, gmt_hlog_local, gmt_hlog_common
+             , brick_metrics
             ]},
   {env, [{brick_default_data_dir, "."}
          , {brick_default_data_dir, "."}

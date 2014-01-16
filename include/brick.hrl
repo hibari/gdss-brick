@@ -22,8 +22,19 @@
 
 -include("gmt_hlog.hrl").
 
+-type metric() :: do_ok_latencies
+                | do_ok_length
+                | do_error_latencies
+                | do_error_length
+                | wal_sync_latencies
+                | wal_sync_requests
+                | logging_op_latencies
+                | squidflash_priming_latencies.
+
+-type timed_begin() :: term().
+
 -record(log_q, {
-          time,                                     % erlang:time() QQQ debugging only
+          time :: brick_metrics:timed_begin(),
           logging_serial = 0,                       % logging_op_serial
           thisdo_mods = [],                         % ops for this do
           doflags,                                  % DoFlags for this do

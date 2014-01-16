@@ -398,14 +398,6 @@
           scavenger_pid :: 'undefined' | pid(),   % undefined | pid()
           scavenger_tref :: reference(),          % tref()
 
-          %% @TODO: gdss-brick >> GH9 - Refactor #state record in brick_ets
-          %% Do we really need the following syncsum_* fields? If so, move them
-          %% to the process dictionary
-          syncsum_count = 0 :: non_neg_integer(), % DEBUG?? syncsum stats
-          syncsum_msec = 0 :: non_neg_integer(),
-          syncsum_len = 0 :: integer(),
-          syncsum_tref :: reference(),
-
           do_expiry_fun :: fun(),                 % fun
           wal_mod :: atom(),                      % atom()
           max_log_size = 0 :: non_neg_integer()   % max log size
@@ -571,18 +563,6 @@ handle_call({flush_all}, _From, State) ->
 handle_call({dump_state}, _From, State) ->
     L = ets:tab2list(State#state.ctab),
     {reply, {length(L), L, State}, State};
-handle_call({sync_stats, Seconds}, _From, State) ->
-    catch brick_itimer:cancel(State#state.syncsum_tref),
-    {ok, TRef} = if
-                     Seconds > 0 ->
-                         brick_itimer:send_interval(Seconds*1000, log_sync_stats);
-                     true ->
-                         {ok, undefined}
-                 end,
-    {reply, Seconds, State#state{syncsum_count=0,
-                                 syncsum_msec=0,
-                                 syncsum_len=0,
-                                 syncsum_tref=TRef}};
 handle_call({set_do_sync, NewValue}, _From, State) ->
     {reply, State#state.do_sync, State#state{do_sync = NewValue}};
 handle_call({set_do_logging, NewValue}, _From, State) ->
@@ -616,10 +596,12 @@ handle_info({sync_done, Pid, LastLogSerial}, State)
     ?DBG_TLOG("sync_done ~w, lastlog_serial ~w, logging_op_serial ~w, logging_op_q ~w",
               [State#state.name, LastLogSerial, State#state.logging_op_serial, State#state.logging_op_q]),
     {LQI_List, State2} = pull_items_out_of_logging_queue(LastLogSerial, State),
-    _ = [ok = map_mods_into_ets(DoOpList, State2) ||
-            #log_q{thisdo_mods = DoOpList} <- LQI_List],
-    _ = [ok = clear_dirty_tab(DoOpList, State2) ||
-            #log_q{thisdo_mods = DoOpList} <- LQI_List],
+    [ok = map_mods_into_ets(DoOpList, State2) ||
+        #log_q{thisdo_mods = DoOpList} <- LQI_List],
+    [ok = clear_dirty_tab(DoOpList, State2) ||
+        #log_q{thisdo_mods = DoOpList} <- LQI_List],
+    [brick_metrics:histogram_timed_notify(Begin) ||
+        #log_q{time=Begin} <- LQI_List],
     ToDos = [{chain_send_downstream, LQI#log_q.logging_serial,
               LQI#log_q.doflags, LQI#log_q.from, LQI#log_q.reply,
               LQI#log_q.thisdo_mods}
@@ -663,29 +645,14 @@ handle_info({'EXIT', Pid, Reason}, State) when Pid =:= State#state.log ->
 %%               S#state.wait_on_dirty_q,
 %%               ets:tab2list(S#state.dirty_tab)]),
 %%     {noreply, S};
-handle_info({syncpid_stats, _Name, MSec, ms, Length}, State) ->
-    {noreply, State#state{syncsum_count = State#state.syncsum_count + 1,
-                          syncsum_msec = State#state.syncsum_msec + MSec,
-                          syncsum_len = State#state.syncsum_len + Length}};
-handle_info(log_sync_stats, State) ->
-    AvgTime = if State#state.syncsum_count =:= 0 -> 0;
-                 true -> State#state.syncsum_msec / State#state.syncsum_count
-              end,
-    AvgLen = if State#state.syncsum_count =:= 0 -> 0;
-                true -> State#state.syncsum_len / State#state.syncsum_count
-             end,
-    ?E_INFO("sync summary: ~p: ~p syncs ~p msec avg ~p len avg",
-            [State#state.name, State#state.syncsum_count, AvgTime, AvgLen]),
-    {noreply, State#state{syncsum_count = 0, syncsum_msec = 0,
-                          syncsum_len = 0}};
 handle_info(do_init_second_half, #state{name=Name}=State) ->
     ?E_INFO("do_init_second_half: ~w", [Name]),
 
     ok = gmt_hlog_common:full_writeback(),
     ?E_INFO("Loading metadata records for brick ~w", [Name]),
-    Start = now(),
+    Start = os:timestamp(),
     {LoadCount, ErrList} = load_metadata(State),
-    Elapse = timer:now_diff(now(), Start) div 1000,
+    Elapse = timer:now_diff(os:timestamp(), Start) div 1000,
 
     ZeroDiskErrorsP = (ErrList =:= []),
     if
@@ -1984,21 +1951,18 @@ sync_pid_loop(SPA) ->
     %% tunable, values lower than 5 start hurting on my laptop 10-15%
     %% but larger than 5 seem to help very little (and add latency in
     %% extremely low load situations).
-    case collect_sync_requests([], SPA, 5) of
+    Timeout = 5,
+    %% Timeout = 50,
+    case collect_sync_requests([], SPA, Timeout) of
         [] ->
             ok;
         SyncRequests ->
             LastSerial = sync_get_last_serial(SyncRequests),
-            ?DBG_GEN("SPA ~w requesting sync last serial = ~w",
-                     [SPA#syncpid_arg.name, LastSerial]),
-            Start = now(),                      %qqq debug
+            Start = brick_metrics:histogram_timed_begin(wal_sync_latencies),
             {ok, _X, _Y} = wal_sync(SPA#syncpid_arg.wal_pid,
                                     SPA#syncpid_arg.wal_mod),
-            DiffMS = timer:now_diff(now(), Start) div 1000, %qqq debug
-            SPA#syncpid_arg.parent_pid !
-                {syncpid_stats, SPA#syncpid_arg.name, DiffMS, ms, length(SyncRequests)},
-            ?DBG_GEN("SPA ~p sync_done at ~w, ~w, my last serial = ~w",
-                     [SPA#syncpid_arg.name, _X, _Y, LastSerial]),
+            brick_metrics:histogram_timed_notify(Start),
+            brick_metrics:notify({wal_sync_requests, length(SyncRequests)}),
             SPA#syncpid_arg.parent_pid ! {sync_done, self(), LastSerial},
             ok
     end,
@@ -2718,7 +2682,7 @@ bcb_squidflash_primer(KsRaws, ResubmitFun,
           end).
 
 squidflash_doit(KsRaws, ResubmitFun, FakeS) ->
-    %% ?E_DBG("squidflash_doit ~p", [KsRaws]),
+    Start = brick_metrics:histogram_timed_begin(squidflash_priming_latencies),
     Me = self(),
     KRV_Refs = [{X, make_ref()} || X <- KsRaws],
     [catch gmt_parallel_limit:enqueue(
@@ -2740,6 +2704,7 @@ squidflash_doit(KsRaws, ResubmitFun, FakeS) ->
     %% Call ResubmitFun to resubmit the original request back to
     %% brick_ets:handle_call/3 or handle_cast/2.
     ResubmitFun(),
+    brick_metrics:histogram_timed_notify(Start),
     exit(normal).
 
 squidflash_prime1(Key, RawVal, ValLen, ReplyPid, FakeS) ->
@@ -3072,10 +3037,13 @@ bcb_handle_do({do, _SentAt, DoOpList, DoFlags}=DoOp, From, State) ->
                             LoggingSerial = NewState3#state.logging_op_serial,
                             SyncMsg = {sync_msg, LoggingSerial},
                             NewState3#state.sync_pid ! SyncMsg,
-                            LQI = #log_q{logging_serial=LoggingSerial,
-                                         thisdo_mods=Thisdo_Mods,
-                                         doflags=DoFlags,
-                                         from=From, reply=Reply},
+                            LQI = #log_q{
+                                     time=brick_metrics:histogram_timed_begin(logging_op_latencies),
+                                     logging_serial=LoggingSerial,
+                                     thisdo_mods=Thisdo_Mods,
+                                     doflags=DoFlags,
+                                     from=From, reply=Reply
+                                    },
                             NewQ = queue:in(LQI, NewState3#state.logging_op_q),
                             N_do = NewState3#state.n_do,
                             %% {wait, _} means we've got modifications and we should

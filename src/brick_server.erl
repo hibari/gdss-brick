@@ -1708,7 +1708,7 @@ handle_call_do({do, SentAt, DoList, DoFlags0} = _Msg, From, State) ->
                                         end,
                             if SleepTime > 0 ->
                                     ?DBG_CHAIN("~p: forward to ~w after ~w: ~w: ~w",
-                                               [now(), Server, SleepTime, State#state.name, _Msg]);
+                                               [os:timestamp(), Server, SleepTime, State#state.name, _Msg]);
                                true -> ok
                             end,
                             ?DBG_CHAIN("fwd ~p ~p hops ~w ~w", [State#state.name, Server, Hops, DoList]),
