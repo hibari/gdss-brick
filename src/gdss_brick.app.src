@@ -21,23 +21,29 @@
 
 {application, gdss_brick,
  [
-  {description, "Gemini Distributed Storage Service"},
+  %% NOTE: GDSS stands for Gemini Distributed Storage Service, which is
+  %%       the predecessor of Hibari
+  {description, "Hibari Brick Server"},
   {vsn, "0.3.0"},
   {registered, []},
   {applications, [kernel, stdlib, sasl, crypto]},
   {mod, {brick, []}},
-  {modules, [brick, brick_sup
-             , brick_pingee, brick_cinfo
-             , brick_brick_sup, brick_data_sup
-             , brick_mboxmon
-             , brick_hash, brick_mon_sup
-             , brick_server, brick_shepherd
-             , brick_ets
-             , brick_itimer
-             , brick_ticket
-             , brick_hlog_scavenger
-             , gmt_hlog, gmt_hlog_local, gmt_hlog_common
-             , brick_metrics
+  {modules, [brick, brick_sup,
+             brick_pingee, brick_cinfo,
+             brick_brick_sup, brick_data_sup,
+             brick_mboxmon,
+             brick_hash, brick_mon_sup,
+             brick_server, brick_shepherd,
+             brick_ets,
+             brick_metadata_store, brick_metadata_store_leveldb,
+             brick_blob_store, brick_blob_store_hlog,
+             brick_hlog_hunk,
+             brick_hlog_wal, brick_hlog_writeback,
+             brick_hlog_scavenger,
+             gmt_hlog, gmt_hlog_local, gmt_hlog_common,
+             brick_metrics,
+             brick_itimer,
+             brick_ticket
             ]},
   {env, [{brick_default_data_dir, "."}
          , {brick_default_data_dir, "."}

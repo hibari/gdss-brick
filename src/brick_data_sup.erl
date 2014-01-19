@@ -62,6 +62,11 @@ init([]) ->
 
     {ok, MaxMB} = application:get_env(gdss_brick, brick_max_log_size_mb),
     {ok, MinMB} = application:get_env(gdss_brick, brick_min_log_size_mb),
+    WALArgs = [[{file_len_max, MaxMB * 1024*1024},
+                {file_len_min, MinMB * 1024*1024}]],
+    WAL = {hibari_wal_server, {brick_hlog_wal, start_link, WALArgs},
+           permanent, 2000, worker, [brick_hlog_wal]},
+
     CommonLogArgs = [[{common_log_name, ?GMT_HLOG_COMMON_LOG_NAME},
                       {file_len_max, MaxMB * 1024*1024},
                       {file_len_min, MinMB * 1024*1024}]],
@@ -90,6 +95,7 @@ init([]) ->
 
     {ok, {{rest_for_one, 3, 60}, [
         %% It's important that all bricks restart if the CommonLog crashes.
+                                  WAL,
                                   CommonLog,
                                   BrickBrickSup,
                                   BrickShepherd,

@@ -76,14 +76,15 @@ init([]) ->
     %% Spin up folsom
     folsom:start(),
 
+    %% @TODO: Add cache hit ratio for squidflash_priming
     Metrics = [%% do_ok_latencies,
                %% do_ok_length,
                %% do_error_latencies,
                %% do_error_length,
-               wal_sync_latencies,
-               wal_sync_requests,
+               squidflash_priming_latencies,
                logging_op_latencies,
-               squidflash_priming_latencies
+               wal_sync_latencies,
+               wal_sync_requests
               ],
 
     %% Setup a histogram and counter for each operation -- we only track latencies on
@@ -123,10 +124,10 @@ process_stats() ->
     %% {DoOkLenMedian, DoOkLenP95} = get_statistics(do_ok_length, false),
     %% {DoErrMedian, DoErrP95} = get_statistics(do_error_latencies, true),
     %% {DoErrLenMedian, DoErrLenP95} = get_statistics(do_error_length, false),
+    {SqFlashMedian, SqFlashP95} = get_statistics(squidflash_priming_latencies, true),
+    {LoggingOpMedian, LoggingOpP95} = get_statistics(logging_op_latencies, true),
     {WalSyncMedian, WalSyncP95} = get_statistics(wal_sync_latencies, true),
     {WalSyncReqsMedian, WalSyncReqsP95} = get_statistics(wal_sync_requests, false),
-    {LoggingOpMedian, LoggingOpP95} = get_statistics(logging_op_latencies, true),
-    {SqFlashMedian, SqFlashP95} = get_statistics(squidflash_priming_latencies, true),
 
     ?E_INFO("statistics report~n"
             %% "\tdo ok - ~w, ~w, len ~w, ~w~n"

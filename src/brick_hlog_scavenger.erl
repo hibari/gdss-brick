@@ -190,10 +190,8 @@ handle_info(start_scavenger, State) ->
     {ok, ScavengerTRef} = schedule_next_scavenger(),
     {noreply, State#state{scavenger_tref=ScavengerTRef}};
 handle_info({'DOWN', _Ref, _, _, _}, State) ->
-    {noreply, State};
-handle_info(_Info, State) ->
-    ?E_ERROR("~p got msg ~p", [self(), _Info]),
     {noreply, State}.
+
 
 %%--------------------------------------------------------------------
 %% @private
