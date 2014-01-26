@@ -31,7 +31,7 @@
 %% API for Brick Server
 -export([start_link/2,
          read_value/1,
-         write_value/3
+         write_value/2
         ]).
 
 %% API for Write-back Module
@@ -49,9 +49,9 @@
         ]).
 
 %% DEBUG
--export([%% test_start_link/0,
-         test1/1,
-         test2/1
+-export([test_start_link/0,
+         test1/0,
+         test2/0
         ]).
 
 
@@ -145,7 +145,8 @@
 
 %% -spec start_link() ->
 start_link(BrickName, Options) ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, [BrickName, Options], []).
+    RegName = blob_store,
+    gen_server:start_link({local, RegName}, ?MODULE, [BrickName, Options], []).
 
 -spec read_value(storage_location_hlog()) -> val().
 read_value(#w{wal_seqnum=WalSeqNum, wal_hunk_pos=WalPos,
@@ -173,11 +174,10 @@ read_value(#p{seqnum=SeqNum, hunk_pos=HunkPos,
             Err
     end.
 
-%% @doc NOTE: We do not store the Key.
--spec write_value(pid(), key(), val()) -> {ok, storage_location_hlog()} | {error, term()}.
-write_value(_Pid, _Key, <<>>) ->
+-spec write_value(pid(), val()) -> {ok, storage_location_hlog()} | {error, term()}.
+write_value(_Pid, <<>>) ->
     {ok, no_blob};
-write_value(Pid, _Key, Value) ->
+write_value(Pid, Value) ->
     gen_server:call(Pid, {write_value, Value}, ?TIMEOUT).
 
 -spec writeback_to_stable_storage(pid(), wal_entry()) -> ok | {error, term()}.
@@ -257,19 +257,13 @@ open_private_log_for_read(_SeqNum) ->
 
 %% -define(BLOBSTORE1, table_ch1_b1_blob_store).
 
-%% test_start_link() ->
-%%     {ok, Pid} = start_link(table1_ch1_b1, []),
-%%     register(?BLOBSTORE1, Pid).
+test_start_link() ->
+    {ok, _Pid} = start_link(table1_ch1_b1, []).
 
-%% test1() ->
-%%     write_value(?BLOBSTORE1, <<"key1">>, <<>>).
+test1() ->
+    write_value(blob_store, <<>>).
 
-%% test2() ->
-%%     write_value(?BLOBSTORE1, <<"key2">>, <<"value2">>).
+test2() ->
+    write_value(blob_store, <<"value1">>).
 
-test1(Pid) ->
-    write_value(Pid, <<"key1">>, <<>>).
-
-test2(Pid) ->
-    write_value(Pid, <<"key2">>, <<"value2">>).
 

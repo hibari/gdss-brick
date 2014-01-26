@@ -56,4 +56,6 @@
          }).
 -type hunk() :: #hunk{}.
 
+-type callback_ticket() :: reference().
+
 -endif. % -ifndef(brick_hlog_hrl).

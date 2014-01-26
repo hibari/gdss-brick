@@ -32,8 +32,8 @@
 
 -export([start_link/1,
          write_hunk/1,
-         write_hunk_group_commit/1,
-         register_group_commit/0,
+         write_hunk_group_commit/2,
+         request_group_commit/1,
          open_wal_for_read/1]).
 
 %% gen_server callbacks
@@ -73,7 +73,6 @@
 
 -type set(_A) :: term().
 
--type callback_ticket() :: reference().
 %% -type commit_notification() :: {wal_sync, callback_ticket(), ok}
 %%                              | {wal_sync, callback_ticket(), {error, term()}}.
 
@@ -105,25 +104,26 @@ start_link(PropList) ->
     gen_server:start_link(?MODULE, PropList, []).
 
 -spec write_hunk(hunk_iodata())
-                -> {ok, seqnum(), offset()} | {hunk_too_big, len()}.
+                -> {ok, seqnum(), offset()} | {hunk_too_big, len()} | {error, term()}.
 write_hunk(HunkBytes) when is_binary(HunkBytes) ->
     gen_server:call(wal_server(), {write_hunk, HunkBytes}, ?TIMEOUT);
 write_hunk(HunkBytes) when is_list(HunkBytes) ->
     gen_server:call(wal_server(), {write_hunk, list_to_binary(HunkBytes)}, ?TIMEOUT).
 
--spec write_hunk_group_commit(hunk_iodata())
+-spec write_hunk_group_commit(hunk_iodata(), pid())
                 -> {ok, seqnum(), offset(), callback_ticket()}
-                       | {hunk_too_big, len()}.
-write_hunk_group_commit(HunkBytes) when is_binary(HunkBytes) ->
+                       | {hunk_too_big, len()}
+                       | {error, term()}.
+write_hunk_group_commit(HunkBytes, Caller) when is_binary(HunkBytes) ->
     gen_server:call(wal_server(),
-                    {write_hunk_group_commit, HunkBytes}, ?TIMEOUT);
-write_hunk_group_commit(HunkBytes) when is_list(HunkBytes) ->
+                    {write_hunk_group_commit, HunkBytes, Caller}, ?TIMEOUT);
+write_hunk_group_commit(HunkBytes, Caller) when is_list(HunkBytes) ->
     gen_server:call(wal_server(),
-                    {write_hunk_group_commit, list_to_binary(HunkBytes)}, ?TIMEOUT).
+                    {write_hunk_group_commit, list_to_binary(HunkBytes), Caller}, ?TIMEOUT).
 
--spec register_group_commit() -> callback_ticket().
-register_group_commit() ->
-    gen_server:call(wal_server(), register_group_commit_callback, ?TIMEOUT).
+-spec request_group_commit(pid()) -> callback_ticket().
+request_group_commit(Requester) ->
+    gen_server:call(wal_server(), {request_group_commit, Requester}, ?TIMEOUT).
 
 -spec open_wal_for_read(seqnum()) -> {ok, file:fd()} | {error, term()} | not_available.
 open_wal_for_read(SeqNum) ->
@@ -146,7 +146,11 @@ init(PropList) ->
     LenMax = proplists:get_value(file_len_max, PropList, 64 * 1024 * 1024),
     LenMin = proplists:get_value(file_len_min, PropList, LenMax),
 
+    %% @TODO: Find the correct seq num.
     CurSeq = 1,
+    %% @TODO: REMOVEME
+    file:delete(wal_path(Dir, CurSeq)),
+
     {CurFH, CurPos} = create_wal(Dir, CurSeq),
 
     {ok, #state{wal_dir=Dir,
@@ -184,19 +188,20 @@ handle_call({write_hunk, Hunks}, _From, #state{wal_dir=Dir}=State) ->
             end,
             {reply, {ok, Seq, Pos}, State1}
     end;
-handle_call({write_hunk_group_commit, Hunks},
-            {Pid, _Tag}=_From, #state{wal_dir=Dir, sync_timer=SyncTimer}=State) ->
+handle_call({write_hunk_group_commit, Hunks, Caller},
+            _From, #state{wal_dir=Dir, sync_timer=SyncTimer}=State) ->
     %% if
     %%     H_Len > FileLenMax ->
     %%     {{hunk_too_big, H_Len}, S};
 
     Start = os:timestamp(),
+    {CommitTicket, State1} = do_register_group_commit(Caller, State),
     %% @TODO Accumulate hunk overhead
-    case do_write_hunk(Hunks, State) of
-        {sync_in_progress, Seq, Pos, State1} ->
+    case do_write_hunk(Hunks, State1) of
+        {sync_in_progress, Seq, Pos, State2} ->
             %% @TODO: Record metrics
             _Elapse = timer:now_diff(os:timestamp(), Start),
-            {CommitTicket, State2} = do_register_group_commit(Pid, State1),
+            %% {CommitTicket, State2} = do_register_group_commit(Caller, State1),
             %% @TODO: Refactoring
             case SyncTimer of
                 undefined ->
@@ -205,7 +210,7 @@ handle_call({write_hunk_group_commit, Hunks},
                 _ ->
                     {reply, {ok, Seq, Pos, CommitTicket}, State2}
             end;
-        {done, Seq, Pos, State1} ->
+        {done, Seq, Pos, State2} ->
             %% @TODO: Record metrics
             Elapse = timer:now_diff(os:timestamp(), Start),
             if
@@ -215,7 +220,7 @@ handle_call({write_hunk_group_commit, Hunks},
                 true ->
                     ok
             end,
-            {CommitTicket, State2} = do_register_group_commit(Pid, State1),
+            %% {CommitTicket, State2} = do_register_group_commit(Caller, State1),
             %% @TODO: Refactoring
             case SyncTimer of
                 undefined ->
@@ -225,9 +230,9 @@ handle_call({write_hunk_group_commit, Hunks},
                     {reply, {ok, Seq, Pos, CommitTicket}, State2}
             end
     end;
-handle_call(register_group_commit, {Pid, _Tag}=_From,
+handle_call({request_group_commit, Requester}, _From,
             #state{sync_timer=SyncTimer}=State) ->
-    {CommitTicket, State1} = do_register_group_commit(Pid, State),
+    {CommitTicket, State1} = do_register_group_commit(Requester, State),
     %% @TODO: Refactoring
     case SyncTimer of
         undefined ->
@@ -524,10 +529,11 @@ test2() ->
     {HunkBytes, _Size, _Overhead, _BlobIndex} =
         brick_hlog_hunk:create_hunk_iolist(
           #hunk{type=metadata, brick_name=Brick, blobs=Blobs}),
+    Caller = self(),
 
     Tickets = lists:foldl(
                 fun(_, Acc) ->
-                        {_, _, Ticket} = write_hunk_group_commit(HunkBytes),
+                        {_, _, _, Ticket} = write_hunk_group_commit(HunkBytes, Caller),
                         case gb_sets:is_member(Ticket, Acc) of
                             true ->
                                 Acc;

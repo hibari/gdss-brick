@@ -24,7 +24,7 @@
 %% API for Brick Server
 -export([start_link/3,
          read_value/2,
-         write_value/3
+         write_value/2
         ]).
 
 %% API for Write-back Module
@@ -66,9 +66,9 @@ read_value(Location, #?MODULE{impl_mod=ImplMod}) ->
     ImplMod:read_value(Location).
 
 %% Called by brick_ets:bigdata_dir_store_val(Key, Val, State)
--spec write_value(key(), val(), impl()) -> storage_location().
-write_value(Key, Value, #?MODULE{impl_mod=ImplMod, pid=Pid}) ->
-    ImplMod:write_value(Pid, Key, Value).
+-spec write_value(val(), impl()) -> storage_location().
+write_value(Value, #?MODULE{impl_mod=ImplMod, pid=Pid}) ->
+    ImplMod:write_value(Pid, Value).
 
 %% Called by the WAL write-back process.
 -spec writeback_to_stable_storage(wal_entry(), impl()) -> ok | {error, term()}.
