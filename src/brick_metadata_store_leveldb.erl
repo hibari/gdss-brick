@@ -61,8 +61,9 @@
 -record(state, {
           name                         :: atom(),
           brick_name                   :: brickname(),
-          brick_pid                    :: pid()  %% or reg name?
+          leveldb                      :: leveldb:db()
          }).
+-type state() :: #state{}.
 
 -define(TIMEOUT, 60 * 1000).
 -define(HUNK, brick_hlog_hunk).
@@ -73,12 +74,20 @@
 %% API
 %% ====================================================================
 
-%% -spec start_link() ->
+-spec start_link(brickname(), [term()])
+                -> {ok, pid()} | ignore | {error, term()}.
 start_link(BrickName, Options) ->
-    RegName = metadata_store,
-    gen_server:start_link({local, RegName}, ?MODULE, [BrickName, Options], []).
+    RegName = reg_name(BrickName),
+    case gen_server:start_link({local, RegName}, ?MODULE, [BrickName, Options], []) of
+        {ok, _Pid}=Res ->
+            ?E_INFO("Metadata store ~w started.", [RegName]),
+            Res;
+        ErrOrIgnore ->
+            ErrOrIgnore
+    end.
 
 %% -spec read_metadata(pid(), key(), impl()) -> storetuple().
+
 
 %% Called by brick_ets:write_metadata_term(Term, #state{md_store})
 -spec write_metadata(pid(), [brick_ets:store_tuple()])
@@ -107,8 +116,8 @@ writeback_to_stable_storage(_Pid, _WalEntry) ->
 init([BrickName, _Options]) ->
     process_flag(trap_exit, true),
     %% process_flag(priority, high),
-
-    {ok, #state{brick_name=BrickName}}.
+    {ok, MetadataDB} = open_metadata_db(BrickName),
+    {ok, #state{brick_name=BrickName, leveldb=MetadataDB}}.
 
 handle_call({write_metadata, MetadataList}, _From,
             #state{brick_name=BrickName}=State) ->
@@ -141,7 +150,8 @@ handle_cast(_, State) ->
 handle_info(_, State) ->
     {noreply, State}.
 
-terminate(_Reason, _State) ->
+terminate(_Reason, State) ->
+    catch close_metadata_db(State),
     ok.
 
 code_change(_OldVsn, State, _Extra) ->
@@ -152,7 +162,58 @@ code_change(_OldVsn, State, _Extra) ->
 %% Internal functions
 %% ====================================================================
 
+-spec reg_name(brickname()) -> atom().
+reg_name(BrickName) ->
+    list_to_atom("hibari_md_store_" ++ atom_to_list(BrickName)).
 
+-spec metadata_dir(brickname()) -> dirname().
+metadata_dir(BrickName) ->
+    %% @TODO: Get the data_dir from #state{}.
+    {ok, FileDir} = application:get_env(gdss_brick, brick_default_data_dir),
+    filename:join([FileDir, "metadata2." ++ atom_to_list(BrickName)]).
+
+-spec open_metadata_db(brickname()) -> ok | {error, term()}.
+open_metadata_db(BrickName) ->
+    MDBDir = metadata_dir(BrickName),
+    catch file:make_dir(MDBDir),
+
+    %% @TODO Create a function to return the metadata DB path.
+    MDBPath = filename:join(MDBDir, "leveldb"),
+
+    _RepairResult = repair_metadata_db(BrickName),
+    ?E_DBG("Called repair_metadata_db. result: ~w", [_RepairResult]),
+    MetadataDB = leveldb:open_db(MDBPath, [create_if_missing]),
+    ?ELOG_INFO("Opened metadata DB: ~s", [MDBPath]),
+    {ok, MetadataDB}.
+
+-spec repair_metadata_db(brickname()) -> ok | {error, term()}.
+repair_metadata_db(BrickName) ->
+    MDBDir = metadata_dir(BrickName),
+    MDBPath = filename:join(MDBDir, "leveldb"),
+    catch file:make_dir(MDBDir),
+    try leveldb:repair_db(MDBPath, []) of
+        true ->
+            ok;
+        Error ->
+            {error, Error}
+    catch
+        _:_=Error ->
+            {error, Error}
+    end.
+
+-spec close_metadata_db(state()) -> ok.
+close_metadata_db(#state{brick_name=BrickName, leveldb=MetadataDB}) ->
+    %% @TODO Create a function to return the metadata DB path.
+    MDBPath = filename:join(metadata_dir(BrickName), "leveldb"),
+    try leveldb:close_db(MetadataDB) of
+        true ->
+            ?ELOG_INFO("Closed metadata DB: ~s", [MDBPath]),
+            ok
+    catch _:_=Error ->
+            ?ELOG_WARNING("Failed to close metadata DB: ~s (Error: ~p)",
+                          [MDBPath, Error]),
+            ok
+    end.
 
 
 %% DEBUG (@TODO: eunit / quickcheck cases)
@@ -171,4 +232,3 @@ test2() ->
     StoreTuple2 = {<<"key12">>, brick_server:make_timestamp(), <<"val12">>},
     MetadataList = [StoreTuple1, StoreTuple2],
     write_metadata_group_commit(metadata_store, MetadataList).
-

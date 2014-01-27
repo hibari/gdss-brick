@@ -61,7 +61,6 @@
 %% types and records
 %% ====================================================================
 
--define(WAL_SERVER_REG_NAME, hibari_wal_server).
 -define(SYNC_DELAY_MILLS, 5).
 -define(TIMEOUT, 60 * 1000).
 
@@ -77,7 +76,6 @@
 %%                              | {wal_sync, callback_ticket(), {error, term()}}.
 
 -record(state, {
-          name                          :: atom(),
           wal_dir                       :: dirname(),
           file_len_max                  :: len(),                    % WAL file size max
           file_len_min                  :: len(),                    % WAL file size min
@@ -101,7 +99,7 @@
 
 -spec start_link([prop()]) -> {ok, pid()} | {error, term()} | ignore.
 start_link(PropList) ->
-    gen_server:start_link(?MODULE, PropList, []).
+    gen_server:start_link({local, ?WAL_SERVER_REG_NAME}, ?MODULE, PropList, []).
 
 -spec write_hunk(hunk_iodata())
                 -> {ok, seqnum(), offset()} | {hunk_too_big, len()} | {error, term()}.
@@ -137,9 +135,6 @@ open_wal_for_read(SeqNum) ->
 init(PropList) ->
     process_flag(priority, high),
 
-    Name = ?WAL_SERVER_REG_NAME,
-    register(Name, self()),  %% @TODO: CHECKME. Does not the supervisor do this for me?
-
     Dir = "data/wal_hlog",
     catch file:make_dir(Dir),
 
@@ -154,7 +149,6 @@ init(PropList) ->
     {CurFH, CurPos} = create_wal(Dir, CurSeq),
 
     {ok, #state{wal_dir=Dir,
-                name=Name,
                 file_len_max=LenMax,
                 file_len_min=LenMin,
                 cur_seq=CurSeq,
@@ -338,13 +332,13 @@ do_register_group_commit(Pid, #state{callback_ticket=Ticket,
 do_sync_wal(#state{sync_proc=undefined,
                    callback_ticket=Ticket, sync_listeners=Listeners,
                    hunk_count_in_group_commit=Count,
-                   name=Name, wal_dir=Dir, cur_seq=CurSeq}=State) ->
+                   wal_dir=Dir, cur_seq=CurSeq}=State) ->
     case gb_sets:is_empty(Listeners) of
         true ->
             State;
         false ->
             ListenerList = gb_sets:to_list(Listeners),
-            Pid_Ref = spawn_sync_wal(Ticket, ListenerList, Count, Name, Dir, CurSeq),
+            Pid_Ref = spawn_sync_wal(Ticket, ListenerList, Count, Dir, CurSeq),
             State#state{sync_proc=Pid_Ref, callback_ticket=make_ref(),
                         sync_listeners=gb_sets:new(),
                         hunk_count_in_group_commit=0}
@@ -353,8 +347,8 @@ do_sync_wal(State) ->
     State.       %% Do nothing because another sync process might be still running.
 
 -spec spawn_sync_wal(callback_ticket(), [pid()], non_neg_integer(),
-                     atom(), dirname(), seqnum()) -> {pid(), reference()}.
-spawn_sync_wal(Ticket, ListenerList, Count, Name, Dir, CurSeq) ->
+                     dirname(), seqnum()) -> {pid(), reference()}.
+spawn_sync_wal(Ticket, ListenerList, Count, Dir, CurSeq) ->
     spawn_monitor(
       fun() ->
               Start = os:timestamp(),
@@ -382,8 +376,8 @@ spawn_sync_wal(Ticket, ListenerList, Count, Name, Dir, CurSeq) ->
                   %% NOTE: Elapse does not include the time for sending notifications.
                   if Elapse > 1 ->
                           %% if Elapse > 200000 ->
-                          ?ELOG_INFO("~s sync was ~p msec for ~p writes",
-                                     [Name, Elapse div 1000, Count]);
+                          ?ELOG_INFO("sync was ~p msec for ~p writes",
+                                     [Elapse div 1000, Count]);
                      true ->
                           ok
                   end

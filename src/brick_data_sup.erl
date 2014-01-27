@@ -22,6 +22,7 @@
 -module(brick_data_sup).
 
 -include("gmt_hlog.hrl").
+-include("brick_hlog.hrl").
 
 -behaviour(supervisor).
 
@@ -60,12 +61,19 @@ init([]) ->
     %% Child_spec = [Name, {M, F, A},
     %%               Restart, Shutdown_time, Type, Modules_used]
 
+    BrickMetadataStore =
+        {?METADATA_STORE_REG_NAME,
+         {brick_metadata_store, start_link, [brick_metadata_store_leveldb, []]},
+         permanent, 2000, worker, [brick_metadata_store]},
+
     {ok, MaxMB} = application:get_env(gdss_brick, brick_max_log_size_mb),
     {ok, MinMB} = application:get_env(gdss_brick, brick_min_log_size_mb),
     WALArgs = [[{file_len_max, MaxMB * 1024*1024},
                 {file_len_min, MinMB * 1024*1024}]],
-    WAL = {hibari_wal_server, {brick_hlog_wal, start_link, WALArgs},
-           permanent, 2000, worker, [brick_hlog_wal]},
+    WAL =
+        {?WAL_SERVER_REG_NAME,
+         {brick_hlog_wal, start_link, WALArgs},
+         permanent, 2000, worker, [brick_hlog_wal]},
 
     CommonLogArgs = [[{common_log_name, ?GMT_HLOG_COMMON_LOG_NAME},
                       {file_len_max, MaxMB * 1024*1024},
@@ -95,6 +103,7 @@ init([]) ->
 
     {ok, {{rest_for_one, 3, 60}, [
         %% It's important that all bricks restart if the CommonLog crashes.
+                                  BrickMetadataStore,
                                   WAL,
                                   CommonLog,
                                   BrickBrickSup,

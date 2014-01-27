@@ -20,8 +20,16 @@
 -ifndef(brick_hlog_hrl).
 -define(brick_hlog_hrl, true).
 
--type hunk_bytes() :: binary().
+%% Reg Names
 
+-define(WAL_SERVER_REG_NAME,       hibari_wal_server).
+-define(METADATA_STORE_REG_NAME,   hibari_metadata_store_registory).
+-define(BRICK_BLOB_STORE_REG_NAME, hibari_blob_store_registory).
+
+
+%% Types
+
+-type hunk_bytes() :: binary().
 
 %% Need fixed-length blob types for better space utilization?
 %% Parhaps smaller blob (< 16 bytes or so) should be embedded into
