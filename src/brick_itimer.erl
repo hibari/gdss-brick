@@ -43,10 +43,16 @@
 %% Internal export
 -export([start_interval_loop/1, interval_loop/1]).
 
+-ifdef(namespaced_dict_and_queue).
+-type hibari_dict() :: dict:dict().
+-else.
+-type hibari_dict() :: dict().
+-endif.
+
 -define(SERVER, ?MODULE).
 
 -record(state, {
-          interval_d=dict:new() :: dict() % key: interval size, val: pid
+          interval_d=dict:new() :: hibari_dict() % key: interval size, val: pid
          }).
 
 %%%===================================================================
