@@ -532,7 +532,7 @@
                                                                                % downstream
                , down_acked = 0              :: integer()                      % Serial # for last ack'ed item
                                                                                % by downstream.
-               , down_unacked                :: queue()                        % queue() of un-acked
+               , down_unacked                :: hibari_queue()                 % queue() of un-acked
                                                                                %   ch_log_replay messages
                , last_ack = undefined        :: brick_bp:nowtime() | undefined % now() time of last ack by
                                                                                % downstream.
@@ -597,7 +597,7 @@
              , impl_state               :: tuple()                   % state record of implementation module
              %% Chain replication stuff.
              , chainstate               :: #chain_r{}                % Chain state
-             , logging_op_q             :: queue()                   % Queue of logged ops for
+             , logging_op_q             :: hibari_queue()            % Queue of logged ops for
                                                                      % replay when log sync is done.
              , globalhash = undefined   :: #g_hash_r{} | undefined   % Global hash state
              , sweepstate               :: #sweep_r{} | undefined    % Migration sweep state

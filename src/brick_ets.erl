@@ -371,8 +371,8 @@
           n_expired = 0 :: non_neg_integer(),
 
           %% CHAIN TODO: Do these 2 items really belong here??
-          logging_op_serial = 42 :: non_neg_integer(), % Serial # of logging op
-          logging_op_q = queue:new() :: queue(),  % Queue of logged ops for
+          logging_op_serial = 42 :: non_neg_integer(),  % Serial # of logging op
+          logging_op_q = queue:new() :: hibari_queue(), % Queue of logged ops for
                                                   % replay when log sync is done.
           %% n_log_replay = 0,
           log :: pid(),                           % disk_log for data mod cmds
@@ -391,7 +391,7 @@
           mdtab :: table_name(),                  % Private metadata table
           sync_pid :: pid(),                      % Pid of log sync process
           dirty_tab :: table_name(),              % ETS table: dirty key search
-          wait_on_dirty_q :: queue(),             % Queue of ops waiting on
+          wait_on_dirty_q :: hibari_queue(),      % Queue of ops waiting on
                                                   % dirty keys
           read_only_p = false :: boolean(),       % Mirror of upper-level's var.
           expiry_tref :: reference(),             % Timer ref for expiry events
