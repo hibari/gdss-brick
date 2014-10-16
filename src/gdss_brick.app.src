@@ -46,7 +46,6 @@
              brick_ticket
             ]},
   {env, [{brick_default_data_dir, "."}
-         , {brick_default_data_dir, "."}
          , {brick_dirty_buffer_wait, 60}
          , {brick_do_op_too_old_timeout, 3000}
          , {brick_expiration_processor, "[]."}
