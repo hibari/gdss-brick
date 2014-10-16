@@ -85,7 +85,7 @@
 
 -type do_mod() :: brick_ets:do_mod().
 -type store_tuple() :: brick_ets:store_tuple().
--type write_batch() :: leveldb:batch_write().
+-type write_batch() :: h2leveldb:batch_write().
 
 -type from() :: {pid(), term()}.
 
@@ -795,14 +795,14 @@ write_back_to_stable_storege1(BrickName,
     end,
     write_back_to_stable_storege1(BrickName, RemainingMetaDataTuples, State, Errors).
 
--spec write_back_to_metadata_db(leveldb:db(), brickname(), [do_mod()], boolean()) -> ok.
+-spec write_back_to_metadata_db(h2leveldb:db(), brickname(), [do_mod()], boolean()) -> ok.
 write_back_to_metadata_db(MetadataDB, _BrickName, DoMods, IsLastBatch) ->
-    Batch = lists:foldl(fun add_metadata_db_op/2, leveldb:new_write_batch(), DoMods),
-    IsEmptyBatch = leveldb:is_empty_batch(Batch),
+    Batch = lists:foldl(fun add_metadata_db_op/2, h2leveldb:new_write_batch(), DoMods),
+    IsEmptyBatch = h2leveldb:is_empty_batch(Batch),
     case {IsLastBatch, IsEmptyBatch} of
         {true, true} ->
             %% Write something to sync.
-            Batch1 = [leveldb:mk_put(sext:encode(control_sync), <<"sync">>)],
+            Batch1 = [h2leveldb:make_put(sext:encode(control_sync), <<"sync">>)],
             WriteOptions = [sync];
         {true, false} ->
             Batch1 = Batch,
@@ -814,32 +814,32 @@ write_back_to_metadata_db(MetadataDB, _BrickName, DoMods, IsLastBatch) ->
             Batch1 = Batch,
             WriteOptions = []
     end,
-    true = leveldb:write(MetadataDB, Batch1, WriteOptions),
+    ok = h2leveldb:write(MetadataDB, Batch1, WriteOptions),
     ok.
 
 -spec add_metadata_db_op(do_mod(), write_batch()) -> write_batch().
 add_metadata_db_op({insert, StoreTuple}, Batch) ->
-    leveldb:add_put(metadata_db_key(StoreTuple), term_to_binary(StoreTuple), Batch);
+    h2leveldb:add_put(metadata_db_key(StoreTuple), term_to_binary(StoreTuple), Batch);
 add_metadata_db_op({insert_value_into_ram, StoreTuple}, Batch) ->
-    leveldb:add_put(metadata_db_key(StoreTuple), term_to_binary(StoreTuple), Batch);
+    h2leveldb:add_put(metadata_db_key(StoreTuple), term_to_binary(StoreTuple), Batch);
 add_metadata_db_op({insert_constant_value, StoreTuple}, Batch) ->
-    leveldb:add_put(metadata_db_key(StoreTuple), term_to_binary(StoreTuple), Batch);
+    h2leveldb:add_put(metadata_db_key(StoreTuple), term_to_binary(StoreTuple), Batch);
 add_metadata_db_op({insert_existing_value, StoreTuple, _OldKey, _OldTimestamp}, Batch) ->
-    leveldb:add_put(metadata_db_key(StoreTuple), term_to_binary(StoreTuple), Batch);
+    h2leveldb:add_put(metadata_db_key(StoreTuple), term_to_binary(StoreTuple), Batch);
 add_metadata_db_op({delete, _Key, 0, _ExpTime}=Op, _Batch) ->
     error({timestamp_is_zero, Op});
 add_metadata_db_op({delete, Key, _Timestamp, _ExpTime}, Batch) ->
 %%     DeleteMarker = make_delete_marker(Key, Timestamp),
 %%     leveldb:add_put(metadata_db_key(Key, Timestamp),
 %%                     term_to_binary(DeleteMarker), Batch);
-    leveldb:add_delete(metadata_db_key(Key, 0), Batch);
+    h2leveldb:add_delete(metadata_db_key(Key, 0), Batch);
 add_metadata_db_op({delete_noexptime, _Key, 0}=Op, _Batch) ->
     error({timestamp_is_zero, Op});
 add_metadata_db_op({delete_noexptime, Key, _Timestamp}, Batch) ->
 %%     DeleteMarker = make_delete_marker(Key, Timestamp),
 %%     leveldb:add_put(metadata_db_key(Key, Timestamp),
 %%                     term_to_binary(DeleteMarker), Batch);
-    leveldb:add_delete(metadata_db_key(Key, 0), Batch);
+    h2leveldb:add_delete(metadata_db_key(Key, 0), Batch);
 add_metadata_db_op({delete_all_table_items}=Op, _Batch) ->
     error({writeback_not_implemented, Op});
 add_metadata_db_op({md_insert, _Tuple}=Op, _Batch) ->
@@ -922,23 +922,25 @@ metadata_db_key(Key, _Timestamp) ->
 %%            100,
 %%            [{md5,<<65,63,13,176,42,0,17,128,57,86,28,146,8,108,154,0>>}]}
 
-%% @TODO Move the tool to a separate module.
+%% @TODO Move the tool to a separate module and make it a remote tool.
+%% (Hibari will crash if this is executed it its VM and throws an exception.)
 
 tool_list_md(BrickName, Limit) when is_atom(BrickName), is_integer(Limit), Limit > 0 ->
     HLog = gmt_hlog:log_name2reg_name(?GMT_HLOG_COMMON_LOG_NAME),
     DB = gmt_hlog:get_metadata_db(HLog, BrickName),
-    FirstKey = leveldb:first(DB, []),
-    tool_list_md1(DB, FirstKey, 1, Limit).
+    FirstKey = h2leveldb:first_key(DB, []),
+    tool_list_md1(DB, FirstKey, 0, Limit).
 
-tool_list_md1(_DB, _Key, Count, Limit) when Count > Limit ->
+tool_list_md1(_DB, Reply, Count, Limit) when Reply =:= end_of_table; Count >= Limit ->
+    io:format("============================~nMetadata Count: ~w (Limit: ~w)~n~n",
+              [Count, Limit]),
     ok;
-tool_list_md1(_DB, '$end_of_table', _Count, _Limit) ->
-    ok;
-tool_list_md1(DB, Key, Count, Limit) ->
-    Metadata = binary_to_term(leveldb:get(DB, Key, [])),
+tool_list_md1(DB, {ok, Key}, Count, Limit) ->
+    {ok, Metadata} = h2leveldb:get(DB, Key, []),
+    ParsedMetadata = binary_to_term(Metadata),
     io:format("~w: --------------------~nMDKey: ~w~nMetadata: ~p~n",
-              [Count, Key, Metadata]),
-    tool_list_md1(DB, leveldb:next(DB, Key, []), Count + 1, Limit).
+              [Count + 1, Key, ParsedMetadata]),
+    tool_list_md1(DB, h2leveldb:next_key(DB, Key, []), Count + 1, Limit).
 
 %% -- WIP End ----------------------------------------------------
 

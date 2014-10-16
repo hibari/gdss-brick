@@ -2566,26 +2566,24 @@ load_metadata(#state{name=BrickName}=State) ->
     %% put(wal_scan_cast_count, 0),
     CommonLogServer = gmt_hlog_common:hlog_pid(?GMT_HLOG_COMMON_LOG_NAME),
     MetadataDB = gmt_hlog:get_metadata_db(CommonLogServer, BrickName),
-
-    %% @TODO: LevelDB might need a repair before opened.
-    FirstMDBKey = leveldb:first(MetadataDB),
+    FirstMDBKey = h2leveldb:first_key(MetadataDB),
     load_metadata1(BrickName, MetadataDB, FirstMDBKey, State, {0, []}).
 
-load_metadata1(_BrickName, _MetadataDB, '$end_of_table', _State, {Count, Errors}) ->
+load_metadata1(_BrickName, _MetadataDB, end_of_table, _State, {Count, Errors}) ->
     {Count, lists:reverse(Errors)};
-load_metadata1(BrickName, MetadataDB, MDBKey, State, {Count, Errors}=PrevResult) ->
+load_metadata1(BrickName, MetadataDB, {ok, MDBKey}, State, {Count, Errors}=PrevResult) ->
     %% %% This function may run for hours or perhaps even days.
     %% flush_gen_server_calls(),       % Clear any mailbox backlog
     %% flush_gen_cast_calls(S),        % Clear any mailbox backlog
     Result =
         try sext:decode(MDBKey) of
             {_Key, _ReversedTimestamp} ->
-                case leveldb:get(MetadataDB, MDBKey) of
-                    Bin when is_binary(Bin) ->
+                case h2leveldb:get(MetadataDB, MDBKey) of
+                    {ok, Bin} when is_binary(Bin) ->
                         StoreTuple = binary_to_term(Bin),
                         load_rec_from_log_common_insert(StoreTuple, State),
                         {Count + 1, Errors};
-                    Err ->
+                    {error, Err} ->
                         {Count, [{MDBKey, Err}|Errors]}
                 end;
             Command when is_atom(Command) ->
@@ -2594,7 +2592,7 @@ load_metadata1(BrickName, MetadataDB, MDBKey, State, {Count, Errors}=PrevResult)
             _:_=Err ->
                 {Count, [{MDBKey, Err}|Errors]}
     end,
-    NextMDBKey = leveldb:next(MetadataDB, MDBKey),
+    NextMDBKey = h2leveldb:next_key(MetadataDB, MDBKey),
     load_metadata1(BrickName, MetadataDB, NextMDBKey, State, Result).
 
 -spec wal_write_metadata_term(term(), state_r()) ->

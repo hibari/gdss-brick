@@ -61,6 +61,10 @@ init([]) ->
     %% Child_spec = [Name, {M, F, A},
     %%               Restart, Shutdown_time, Type, Modules_used]
 
+    H2LevelDB =
+        {h2leveldb, {h2leveldb, start_link, [[]]},
+         permanent, 2000, worker, [h2leveldb]},
+
     BrickMetadataStore =
         {?METADATA_STORE_REG_NAME,
          {brick_metadata_store, start_link, [brick_metadata_store_leveldb, []]},
@@ -90,8 +94,8 @@ init([]) ->
     BrickMboxMon =
         {brick_mboxmon, {brick_mboxmon, start_link, []},
          permanent, 2000, worker, [brick_mboxmon]},
-    {ok, PrimerRate} = application:get_env(gdss_brick, brick_max_primers),
 
+    {ok, PrimerRate} = application:get_env(gdss_brick, brick_max_primers),
     BrickPrimerThrottle =
         {brick_primer_limit, {gmt_parallel_limit, start_link,
                              [brick_primer_limit, PrimerRate]},
@@ -103,6 +107,7 @@ init([]) ->
 
     {ok, {{rest_for_one, 3, 60}, [
         %% It's important that all bricks restart if the CommonLog crashes.
+                                  H2LevelDB,
                                   BrickMetadataStore,
                                   WAL,
                                   CommonLog,

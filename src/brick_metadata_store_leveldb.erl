@@ -61,7 +61,7 @@
 -record(state, {
           name                         :: atom(),
           brick_name                   :: brickname(),
-          leveldb                      :: leveldb:db()
+          leveldb                      :: h2leveldb:db()
          }).
 -type state() :: #state{}.
 
@@ -191,27 +191,23 @@ repair_metadata_db(BrickName) ->
     MDBDir = metadata_dir(BrickName),
     MDBPath = filename:join(MDBDir, "leveldb"),
     catch file:make_dir(MDBDir),
-    try leveldb:repair_db(MDBPath, []) of
-        true ->
-            ok;
-        Error ->
-            {error, Error}
-    catch
-        _:_=Error ->
-            {error, Error}
-    end.
+    h2leveldb:repair_db(MDBPath).
 
 -spec close_metadata_db(state()) -> ok.
-close_metadata_db(#state{brick_name=BrickName, leveldb=MetadataDB}) ->
+close_metadata_db(#state{brick_name=BrickName}) ->
     %% @TODO Create a function to return the metadata DB path.
     MDBPath = filename:join(metadata_dir(BrickName), "leveldb"),
-    try leveldb:close_db(MetadataDB) of
-        true ->
+    try leveldb:close_db(MDBPath) of
+        ok ->
             ?ELOG_INFO("Closed metadata DB: ~s", [MDBPath]),
-            ok
-    catch _:_=Error ->
+            ok;
+        {error, _}=Error ->
             ?ELOG_WARNING("Failed to close metadata DB: ~s (Error: ~p)",
                           [MDBPath, Error]),
+            ok
+    catch _:_=Error1 ->
+            ?ELOG_WARNING("Failed to close metadata DB: ~s (Error: ~p)",
+                          [MDBPath, Error1]),
             ok
     end.
 

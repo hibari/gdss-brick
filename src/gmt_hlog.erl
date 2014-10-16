@@ -469,7 +469,7 @@ read_bigblob_hunk_blob(Dir, SeqNum, Offset, CheckMD5_p, ValLen) ->
           end,
     read_hunk_summary(Dir, SeqNum, Offset, ValLen, Fun).
 
--spec get_metadata_db(atom() | pid(), brickname()) -> leveldb:db().
+-spec get_metadata_db(atom() | pid(), brickname()) -> h2leveldb:db().
 get_metadata_db(Server, BrickName) ->
     gen_server:call(Server, {get_metadata_db, BrickName}).
 
@@ -892,7 +892,7 @@ do_advance_seqnum(Incr, From, #state{syncer_pid = SyncPid,
 do_advance_seqnum(Incr, From, #state{syncer_advance_reqs = Rs} = S) ->
     S#state{syncer_advance_reqs = [{Incr, From}|Rs]}.
 
--spec do_get_or_open_metadata_db(brickname(), state()) -> {leveldb:db(), state()}.
+-spec do_get_or_open_metadata_db(brickname(), state()) -> {h2leveldb:db(), state()}.
 do_get_or_open_metadata_db(LocalBrick, #state{metadata_db_registory=Reg}=State) ->
     case orddict:find(LocalBrick, Reg) of
         {ok, MetadataDB} ->
@@ -906,7 +906,7 @@ do_get_or_open_metadata_db(LocalBrick, #state{metadata_db_registory=Reg}=State) 
 
             _RepairResult = do_repair_metadata_db(LocalBrick, State),
             ?E_DBG("Called do_repair_metadata_db. result: ~w", [_RepairResult]),
-            MetadataDB = leveldb:open_db(MDBPath, [create_if_missing]),
+            {ok, MetadataDB} = h2leveldb:get_db(MDBPath),
             ?ELOG_INFO("Opened metadata DB: ~s", [MDBPath]),
             NewReg = orddict:store(LocalBrick, MetadataDB, Reg),
             NewState = State#state{metadata_db_registory=NewReg},
@@ -922,11 +922,8 @@ do_repair_metadata_db(LocalBrick, #state{metadata_db_registory=Reg}) ->
             skipped;
         error ->
             catch file:make_dir(MDBDir),
-            try leveldb:repair_db(MDBPath, []) of
-                true ->
-                    ok;
-                Error ->
-                    {error, Error}
+            try
+                h2leveldb:repair_db(MDBPath)
             catch
                 _:_=Error ->
                     {error, Error}
@@ -936,16 +933,19 @@ do_repair_metadata_db(LocalBrick, #state{metadata_db_registory=Reg}) ->
 -spec do_close_all_metadata_db(state()) -> ok.
 do_close_all_metadata_db(#state{metadata_db_registory=Reg}) ->
     CloseMDB =
-        fun({LocalBrick, MetadataDB}) ->
+        fun({LocalBrick, _MetadataDB}) ->
                 %% @TODO Create a function to return the metadata DB path.
                 MDBPath = filename:join(log_name2metadata_dir(LocalBrick),
                                         "leveldb"),
-                try leveldb:close_db(MetadataDB) of
-                    true ->
-                        ?ELOG_INFO("Closed metadata DB: ~s", [MDBPath])
-                catch _:_=Error ->
+                try h2leveldb:close_db(MDBPath) of
+                    ok ->
+                        ?ELOG_INFO("Closed metadata DB: ~s", [MDBPath]);
+                    {error, _}=Error ->
                         ?ELOG_WARNING("Failed to close metadata DB: ~s (Error: ~p)",
                                       [MDBPath, Error])
+                catch _:_=Error1 ->
+                        ?ELOG_WARNING("Failed to close metadata DB: ~s (Error: ~p)",
+                                      [MDBPath, Error1])
                 end
         end,
     lists:foreach(CloseMDB, orddict:to_list(Reg)).

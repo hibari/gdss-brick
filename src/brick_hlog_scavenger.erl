@@ -946,7 +946,7 @@ schedule_next_scavenger() ->
     %%               true ->
     %%                    StartSecs + (86400 - NowSecs)
     %%            end,
-    WaitSecs = 2 * 60,
+    WaitSecs = 30 * 60,
     ?E_INFO("Scheduling next scavenger ~p seconds from now.", [WaitSecs]),
     timer:send_after(WaitSecs * 1000, start_scavenger).
 
