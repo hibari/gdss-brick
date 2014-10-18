@@ -81,16 +81,25 @@
          }).
 -type wal() :: #w{}.
 
-%% @TODO: Record changed, check this again.
-%%
 %% NOTE: (R16B03, 64 bit)
-%% > Wal = #w{wal_seqnum=100, wal_hunk_pos=1000000,
-%%            private_seqnum=100, private_hunk_pos=1000000,
-%%            val_len=200}.
+%%
+%% > Wal = #w{wal_seqnum=1000, wal_hunk_pos=1000000000,
+%%            private_seqnum=1000, private_hunk_pos=1000000000,
+%%            val_offset=50, val_len=200}.
 %% > erts_debug:size(Wal) * erlang:system_info(wordsize).
-%% 56
-%% byte_size(term_to_binary(Wal)).
-%% 23
+%% 64
+%% > byte_size(term_to_binary(Wal)).
+%% 31
+%%
+%%
+%% Hibari v0.1.x
+%%
+%% > Wal = {1000, 1000000000}.
+%% {1000,1000000000}
+%% > erts_debug:size(Wal) * erlang:system_info(wordsize).
+%% 24
+%% > byte_size(term_to_binary(Wal)).
+%% 13
 %%
 
 
@@ -112,8 +121,8 @@
 -type private_hlog() :: #p{}.
 
 %% NOTE: (R16B03, 64 bit)
-%% > Priv = #p{seqnum=100, hunk_pos=1000000,
-%%             val_offset=500, val_len=200}.
+%% > Priv = #p{seqnum=1000, hunk_pos=1000000000,
+%%             val_offset=50, val_len=200}.
 %% > erts_debug:size(Priv) * erlang:system_info(wordsize).
 %% 48
 %% byte_size(term_to_binary(Priv)).
@@ -180,9 +189,9 @@ write_value(_Pid, <<>>) ->
 write_value(Pid, Value) ->
     gen_server:call(Pid, {write_value, Value}, ?TIMEOUT).
 
--spec writeback_to_stable_storage(pid(), wal_entry()) -> ok | {error, term()}.
-writeback_to_stable_storage(_Pid, _WalEntry) ->
-    %% gen_server:call(Pid, {writeback_value, WalEntry}).
+-spec writeback_to_stable_storage(pid(), [wal_entry()]) -> ok | {error, term()}.
+writeback_to_stable_storage(_Pid, _WalEntries) ->
+    %% gen_server:call(Pid, {writeback_value, WalEntries}).
     ok.
 
 -spec sync(pid()) -> ok.

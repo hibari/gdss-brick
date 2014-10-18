@@ -36,6 +36,7 @@
 %% types and records
 %% ====================================================================
 
+%% @TODO: Use registered name rather than pid. pid will change when a process crashes.
 -record(?MODULE, {impl_mod :: module(), pid :: pid()}).
 
 -type impl() :: #?MODULE{}.
@@ -71,9 +72,9 @@ write_value(Value, #?MODULE{impl_mod=ImplMod, pid=Pid}) ->
     ImplMod:write_value(Pid, Value).
 
 %% Called by the WAL write-back process.
--spec writeback_to_stable_storage(wal_entry(), impl()) -> ok | {error, term()}.
-writeback_to_stable_storage(WalEntry, #?MODULE{impl_mod=ImplMod, pid=Pid}) ->
-    ImplMod:writeback_to_stable_storage(Pid, WalEntry).
+-spec writeback_to_stable_storage([wal_entry()], impl()) -> ok | {error, term()}.
+writeback_to_stable_storage(WalEntries, #?MODULE{impl_mod=ImplMod, pid=Pid}) ->
+    ImplMod:writeback_to_stable_storage(Pid, WalEntries).
 
 -spec sync(impl()) -> ok | {error, term()}.
 sync(#?MODULE{impl_mod=ImplMod, pid=Pid}) ->
