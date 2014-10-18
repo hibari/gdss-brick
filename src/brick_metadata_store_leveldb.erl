@@ -59,7 +59,6 @@
 -type wal_entry() :: term().
 
 -record(state, {
-          name                         :: atom(),
           brick_name                   :: brickname(),
           leveldb                      :: h2leveldb:db()
          }).
@@ -82,8 +81,8 @@ start_link(BrickName, Options) ->
         {ok, _Pid}=Res ->
             ?E_INFO("Metadata store ~w started.", [RegName]),
             Res;
-        ErrOrIgnore ->
-            ErrOrIgnore
+        ErrorOrIgnore ->
+            ErrorOrIgnore
     end.
 
 %% -spec read_metadata(pid(), key(), impl()) -> storetuple().
@@ -103,9 +102,9 @@ write_metadata_group_commit(Pid, MetadataList) ->
     Caller = self(),
     gen_server:call(Pid, {write_metadata_group_commit, MetadataList, Caller}, ?TIMEOUT).
 
--spec writeback_to_stable_storage(pid(), wal_entry()) -> ok | {error, term()}.
-writeback_to_stable_storage(_Pid, _WalEntry) ->
-    %% gen_server:call(Pid, {writeback_value, WalEntry}).
+-spec writeback_to_stable_storage(pid(), [wal_entry()]) -> ok | {error, term()}.
+writeback_to_stable_storage(_Pid, _WalEntries) ->
+    %% gen_server:call(Pid, {writeback_value, WalEntries}).
     ok.
 
 
