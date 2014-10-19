@@ -154,21 +154,24 @@
 
 %% -spec start_link() ->
 start_link(BrickName, Options) ->
-    RegName = blob_store,
+    RegName = list_to_atom(atom_to_list(BrickName) ++ "_blob_store"),
     gen_server:start_link({local, RegName}, ?MODULE, [BrickName, Options], []).
 
--spec read_value(storage_location_hlog()) -> val().
+-spec read_value(storage_location_hlog()) ->
+                        {ok, val()} | eof | {error, term()}.
 read_value(#w{wal_seqnum=WalSeqNum, wal_hunk_pos=WalPos,
               private_seqnum=PrivateSeqNum, private_hunk_pos=PrivatePos,
               val_offset=ValOffset, val_len=ValLen}) ->
     case ?WAL:open_wal_for_read(WalSeqNum) of
         {ok, FH} ->
+            %% ?E_DBG("WAL opened for read. SeqNum: ~w, FH: ~p", [WalSeqNum, FH]),
             ?HUNK:read_blob_directly(FH, WalPos, ValOffset, ValLen);
         {error, _}=Err ->
             Err;
         not_available ->
             case open_private_log_for_read(PrivateSeqNum) of
                 {ok, FH} ->
+                    %% ?E_DBG("Private log opened for read. SeqNum: ~w, FH: ~p", [PrivateSeqNum, FH]),
                     ?HUNK:read_blob_directly(FH, PrivatePos, ValOffset, ValLen);
                 {error, _}=Err ->
                     Err
@@ -258,7 +261,7 @@ code_change(_OldVsn, State, _Extra) ->
 %% ====================================================================
 
 open_private_log_for_read(_SeqNum) ->
-    {ok, dummy_file_handle}.
+    error(not_implemented).
 
 
 

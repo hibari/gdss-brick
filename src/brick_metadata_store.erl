@@ -94,12 +94,10 @@ start_link(ImplMod, Options) ->
     gen_server:start_link({local, ?METADATA_STORE_REG_NAME},
                           ?MODULE, [ImplMod, Options], []).
 
-%% Called by brick_ets:read_metadata_term(...)
 -spec read_metadata(key(), impl()) -> brick_ets:store_tuple().
 read_metadata(Key, #?MODULE{impl_mod=ImplMod}) ->
     ImplMod:read_metadata(Key).
 
-%% Called by brick_ets:write_metadata_term(Term, #state{md_store})
 -spec write_metadata([brick_ets:store_tuple()], impl())
                     -> ok | {hunk_too_big, len()} | {error, term()}.
 write_metadata(MetadataList, #?MODULE{impl_mod=ImplMod, pid=Pid}) ->

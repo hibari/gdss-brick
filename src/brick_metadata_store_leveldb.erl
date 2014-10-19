@@ -181,7 +181,7 @@ open_metadata_db(BrickName) ->
 
     _RepairResult = repair_metadata_db(BrickName),
     ?E_DBG("Called repair_metadata_db. result: ~w", [_RepairResult]),
-    MetadataDB = leveldb:open_db(MDBPath, [create_if_missing]),
+    MetadataDB = h2leveldb:get_db(MDBPath),
     ?ELOG_INFO("Opened metadata DB: ~s", [MDBPath]),
     {ok, MetadataDB}.
 
@@ -196,7 +196,7 @@ repair_metadata_db(BrickName) ->
 close_metadata_db(#state{brick_name=BrickName}) ->
     %% @TODO Create a function to return the metadata DB path.
     MDBPath = filename:join(metadata_dir(BrickName), "leveldb"),
-    try leveldb:close_db(MDBPath) of
+    try h2leveldb:close_db(MDBPath) of
         ok ->
             ?ELOG_INFO("Closed metadata DB: ~s", [MDBPath]),
             ok;

@@ -56,7 +56,7 @@
 start_link(BrickName, Options, ImplMod) ->
     case ImplMod:start_link(BrickName, Options) of
         {ok, Pid} ->
-            #?MODULE{impl_mod=ImplMod, pid=Pid};
+            {ok, #?MODULE{impl_mod=ImplMod, pid=Pid}};
         Err ->
             Err
     end.
@@ -67,7 +67,7 @@ read_value(Location, #?MODULE{impl_mod=ImplMod}) ->
     ImplMod:read_value(Location).
 
 %% Called by brick_ets:bigdata_dir_store_val(Key, Val, State)
--spec write_value(val(), impl()) -> storage_location().
+-spec write_value(val(), impl()) -> {ok, storage_location()} | {error, term()}.
 write_value(Value, #?MODULE{impl_mod=ImplMod, pid=Pid}) ->
     ImplMod:write_value(Pid, Value).
 

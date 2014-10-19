@@ -61,7 +61,8 @@
 %% types and records
 %% ====================================================================
 
--define(SYNC_DELAY_MILLS, 5).
+%% -define(SYNC_DELAY_MILLS, 5).
+-define(SYNC_DELAY_MILLS, 20).
 -define(TIMEOUT, 60 * 1000).
 
 -type prop() :: {name, servername()}
@@ -125,7 +126,8 @@ request_group_commit(Requester) ->
 
 -spec open_wal_for_read(seqnum()) -> {ok, file:fd()} | {error, term()} | not_available.
 open_wal_for_read(SeqNum) ->
-    gen_server:call(wal_server(), {open_wal_for_read, SeqNum}, ?TIMEOUT).
+    Dir = gen_server:call(wal_server(), {open_wal_for_read, SeqNum}, ?TIMEOUT),
+    do_open_wal_for_read(Dir, SeqNum).
 
 
 %% ====================================================================
@@ -148,6 +150,10 @@ init(PropList) ->
 
     {CurFH, CurPos} = create_wal(Dir, CurSeq),
 
+    ?E_INFO("WAL server started. current_seq: ~w, "
+            "file_len_min: ~w bytes, file_len_max: ~w bytes",
+            [CurSeq, LenMin, LenMax]),
+
     {ok, #state{wal_dir=Dir,
                 file_len_max=LenMax,
                 file_len_min=LenMin,
@@ -169,7 +175,7 @@ handle_call({write_hunk, Hunks}, _From, #state{wal_dir=Dir}=State) ->
         {sync_in_progress, Seq, Pos, State1} ->
             _Elapse = timer:now_diff(os:timestamp(), Start),
             %% @TODO: Record metrics
-            {reply, {Seq, Pos}, State1};
+            {reply, {ok, Seq, Pos}, State1};
         {done, Seq, Pos, State1} ->
             Elapse = timer:now_diff(os:timestamp(), Start),
             %% @TODO: Record metrics
@@ -235,12 +241,9 @@ handle_call({request_group_commit, Requester}, _From,
         _ ->
             {reply, CommitTicket, State1}
     end;
-handle_call({open_wal_for_read, SeqNum}, _From, State) ->
-    case do_open_wal_for_read(SeqNum) of
-        _ -> %% @TODO
-            ok
-    end,
-    {reply, {}, State}.
+handle_call({open_wal_for_read, _SeqNum}, _From, #state{wal_dir=Dir}=State) ->
+    %% Res = do_open_wal_for_read(Dir, SeqNum),
+    {reply, Dir, State}.
 %% handle_call(get_current_seqnum, _From, #state{cur_seq=CurSeq}=State) ->
 %%     {reply, CurSeq, State};
 %% handle_call(get_current_seqnum_and_position, _From,
@@ -424,10 +427,18 @@ do_advance_seqnum(Incr, #state{sync_proc=undefined, write_backlog=[],
 do_advance_seqnum(_Incr, #state{sync_proc={Pid, Ref}}) ->
     error({do_advance_seqnum, {sync_proc, Pid, Ref}}).
 
--spec do_open_wal_for_read(seqnum()) -> {ok, file:fd()} | {error, term()} | not_available.
-do_open_wal_for_read(_SeqNum) ->
+-spec do_open_wal_for_read(dirname(), seqnum()) -> {ok, file:fd()} | {error, term()} | not_available.
+do_open_wal_for_read(Dir, SeqNum) when is_integer(SeqNum), SeqNum =/= 0 ->
     %% @TODO: read ahead?
-    not_available. %% @TODO
+    Path = wal_path(Dir, SeqNum),
+    case file:open(Path, [binary, raw, read]) of
+        {ok, _}=Res ->
+            Res;
+        Res ->
+            %% @TODO (new hlog): Handle not_available case
+            ?E_CRITICAL("Couldn't open log file ~s for read by ~w", [Path, Res]),
+            Res
+    end.
 
 -spec create_wal(dirname(), seqnum()) ->
                                  {file:fd(), Size::non_neg_integer()} | no_return().

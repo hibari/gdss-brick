@@ -109,10 +109,10 @@
 
 -export([create_hunk_iolist/1,
          parse_hunks/1,
-         parse_hunk_iodata/1
+         parse_hunk_iodata/1,
          %% read_hunk/2,
          %% read_hunk/3,
-         %% read_blob_directly/4
+         read_blob_directly/4
         ]).
 
 %% DEBUG
@@ -245,6 +245,10 @@ parse_hunk_iodata(_) ->
 %%             Err
 %%     end.
 
+-spec read_blob_directly(file:fd(), non_neg_integer(), non_neg_integer(), non_neg_integer()) ->
+                                {ok, binary()} | eof | {error, term()}.
+read_blob_directly(FH, HunkOffset, BlobOffset, BlobSize) ->
+    file:pread(FH, HunkOffset + BlobOffset, BlobSize).
 
 
 %% ====================================================================
