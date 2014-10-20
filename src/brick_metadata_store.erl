@@ -33,7 +33,8 @@
 %% API for Brick Server
 -export([read_metadata/2,
          write_metadata/2,
-         write_metadata_group_commit/2
+         write_metadata_group_commit/2,
+         request_group_commit/1
         ]).
 
 %% API for Write-back Module
@@ -114,6 +115,10 @@ write_metadata_group_commit(MetadataList, #?MODULE{impl_mod=ImplMod, pid=Pid}) -
 -spec writeback_to_stable_storage([wal_entry()], impl()) -> ok | {error, term()}.
 writeback_to_stable_storage(WalEntries, #?MODULE{impl_mod=ImplMod, pid=Pid}) ->
     ImplMod:writeback_to_stable_storage(Pid, WalEntries).
+
+-spec request_group_commit(impl()) -> callback_ticket().
+request_group_commit(#?MODULE{impl_mod=ImplMod, pid=Pid}) ->
+    ImplMod:request_group_commit(Pid).
 
 
 %% ====================================================================

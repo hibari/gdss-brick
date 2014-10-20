@@ -72,6 +72,7 @@ init([]) ->
 
     {ok, MaxMB} = application:get_env(gdss_brick, brick_max_log_size_mb),
     {ok, MinMB} = application:get_env(gdss_brick, brick_min_log_size_mb),
+
     WALArgs = [[{file_len_max, MaxMB * 1024*1024},
                 {file_len_min, MinMB * 1024*1024}]],
     WAL =
@@ -79,12 +80,6 @@ init([]) ->
          {brick_hlog_wal, start_link, WALArgs},
          permanent, 2000, worker, [brick_hlog_wal]},
 
-    CommonLogArgs = [[{common_log_name, ?GMT_HLOG_COMMON_LOG_NAME},
-                      {file_len_max, MaxMB * 1024*1024},
-                      {file_len_min, MinMB * 1024*1024}]],
-    CommonLog =
-        {common_log, {gmt_hlog_common, start_link, CommonLogArgs},
-         permanent, 2000, worker, [gmt_hlog_common]},
     BrickBrickSup =
         {brick_brick_sup, {brick_brick_sup, start_link, []},
          permanent, 2000, supervisor, [brick_brick_sup]},
@@ -110,7 +105,6 @@ init([]) ->
                                   H2LevelDB,
                                   BrickMetadataStore,
                                   WAL,
-                                  CommonLog,
                                   BrickBrickSup,
                                   BrickShepherd,
                                   BrickMboxMon,

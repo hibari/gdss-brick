@@ -72,12 +72,12 @@
 %% efficient in space.
 
 -record(w, {
-          wal_seqnum       :: seqnum(),
-          wal_hunk_pos     :: offset(),   %% position of the hunk in WAL
-          private_seqnum   :: seqnum(),
-          private_hunk_pos :: offset(),   %% position of the hunk in private log
-          val_offset       :: offset(),   %% offset of the value from hunk_pos
-          val_len          :: len()
+          wal_seqnum        :: seqnum(),
+          wal_hunk_pos      :: offset(),   %% position of the hunk in WAL
+          private_seqnum    :: seqnum(),
+          private_hunk_pos  :: offset(),   %% position of the hunk in private log
+          val_offset        :: offset(),   %% offset of the value from hunk_pos
+          val_len           :: len()
          }).
 -type wal() :: #w{}.
 
@@ -137,10 +137,13 @@
           brick_name                   :: brickname(),
           brick_pid                    :: pid(), %% or reg name?
           log_dir                      :: file:directory(),
-          seqnum                       :: seqnum(),
-          position                     :: offset(),
+          head_seqnum                  :: seqnum(),
+          head_position                :: offset(),
+          writeback_seqnum             :: seqnum(),
+          writeback_position           :: offset(),
           cur_seqnum_hunk_overhead=0   :: non_neg_integer(),
-          hunk_overhead=dict:new()     :: dict(seqnum(), non_neg_integer())
+          hunk_overhead=dict:new()     :: dict(seqnum(), non_neg_integer()),
+          writeback_pid                :: pid()
          }).
 
 -define(TIMEOUT, 60 * 1000).
@@ -165,14 +168,22 @@ read_value(#w{wal_seqnum=WalSeqNum, wal_hunk_pos=WalPos,
     case ?WAL:open_wal_for_read(WalSeqNum) of
         {ok, FH} ->
             %% ?E_DBG("WAL opened for read. SeqNum: ~w, FH: ~p", [WalSeqNum, FH]),
-            ?HUNK:read_blob_directly(FH, WalPos, ValOffset, ValLen);
+            try
+                ?HUNK:read_blob_directly(FH, WalPos, ValOffset, ValLen)
+            after
+                catch file:close(FH)
+            end;
         {error, _}=Err ->
             Err;
         not_available ->
             case open_private_log_for_read(PrivateSeqNum) of
                 {ok, FH} ->
                     %% ?E_DBG("Private log opened for read. SeqNum: ~w, FH: ~p", [PrivateSeqNum, FH]),
-                    ?HUNK:read_blob_directly(FH, PrivatePos, ValOffset, ValLen);
+                    try
+                        ?HUNK:read_blob_directly(FH, PrivatePos, ValOffset, ValLen)
+                    after
+                        catch file:close(FH)
+                    end;
                 {error, _}=Err ->
                     Err
             end
@@ -181,7 +192,11 @@ read_value(#p{seqnum=SeqNum, hunk_pos=HunkPos,
               val_offset=ValOffset, val_len=ValLen}) ->
     case open_private_log_for_read(SeqNum) of
         {ok, FH} ->
-            ?HUNK:read_blob_directly(FH, HunkPos, ValOffset, ValLen);
+            try
+                ?HUNK:read_blob_directly(FH, HunkPos, ValOffset, ValLen)
+            after
+                catch file:close(FH)
+            end;
         {error, _}=Err ->
             Err
     end.
@@ -192,10 +207,21 @@ write_value(_Pid, <<>>) ->
 write_value(Pid, Value) ->
     gen_server:call(Pid, {write_value, Value}, ?TIMEOUT).
 
+%% @TODO CHECKME: Is wal_entry() actually an hunk()?
 -spec writeback_to_stable_storage(pid(), [wal_entry()]) -> ok | {error, term()}.
-writeback_to_stable_storage(_Pid, _WalEntries) ->
-    %% gen_server:call(Pid, {writeback_value, WalEntries}).
-    ok.
+writeback_to_stable_storage(Pid, WALEntries) ->
+    case gen_server:call(Pid, begin_writeback) of
+        {error, _}=Err1 ->
+            Err1;
+        {ok, WBSeqNum, WBPos} ->
+            case catch writeback_value(WALEntries, undefined, WBSeqNum, WBPos, 0) of
+                {ok, NextWBSeqNum, NextWBPos, _SuccessCount} ->
+                    ok;
+                {error, Err2, NextWBSeqNum, NextWBPos, _SuccessCount} ->
+                    {error, Err2}
+            end,
+            gen_server:call(Pid, {end_writeback, NextWBSeqNum, NextWBPos})
+    end.
 
 -spec sync(pid()) -> ok.
 sync(_Pid) ->
@@ -212,29 +238,39 @@ init([BrickName, _Options]) ->
 
     CurSeq = 1,
     CurPos = 0,
+    WBSeq  = 1,
+    WBPos  = 0,
 
     {ok, #state{brick_name=BrickName,
-                seqnum=CurSeq,
-                position=CurPos
-               }}.
+                head_seqnum=CurSeq,
+                head_position=CurPos,
+                writeback_seqnum=WBSeq,
+                writeback_position=WBPos}}.
 
 handle_call({write_value, Value}, _From,
-            #state{brick_name=BrickName, seqnum=SeqNum, position=Position,
+            #state{brick_name=BrickName, head_seqnum=SeqNum, head_position=Position,
                    cur_seqnum_hunk_overhead=HunkOverhead}=State)
   when is_binary(Value) ->
-    {HunkIOList, HunkSize, Overhead, [ValOffset]} =
-        ?HUNK:create_hunk_iolist(#hunk{type=blob_wal, flags=[],
-                                       brick_name=BrickName, blobs=[Value]}),
     %% @TODO: Advance seq num if necessary
     %% if
+    SeqNum2 = SeqNum,
+    Position2 = Position,
 
-    case ?WAL:write_hunk(HunkIOList) of
+    %% @TODO: Maybe store the key as well
+    WALBlobs = [Value, term_to_binary({SeqNum2, Position2})],
+    Flags = [],
+    {WALHunkIOList, _, _, [WALValOffset, _]} =
+        ?HUNK:create_hunk_iolist(#hunk{type=blob_wal, flags=Flags,
+                                       brick_name=BrickName, blobs=WALBlobs}),
+
+    case ?WAL:write_hunk(WALHunkIOList) of
         {ok, WALSeqNum, WALPosition} ->
+            ValLen = byte_size(Value),
+            {_, RawSize, PaddingSize, Overhead} = ?HUNK:calc_hunk_size(Flags, 0, 1, ValLen),
             StoreLoc = #w{wal_seqnum=WALSeqNum, wal_hunk_pos=WALPosition,
-                          private_seqnum=SeqNum, private_hunk_pos=Position,
-                          val_offset=ValOffset, val_len=byte_size(Value)
-                         },
-            State1 = State#state{seqnum=SeqNum, position=Position + HunkSize,
+                          private_seqnum=SeqNum2, private_hunk_pos=Position2,
+                          val_offset=WALValOffset, val_len=ValLen},
+            State1 = State#state{head_seqnum=SeqNum2, head_position=Position2 + RawSize + PaddingSize,
                                  cur_seqnum_hunk_overhead=HunkOverhead + Overhead},
             {reply, {ok, StoreLoc}, State1};
         Err ->
@@ -263,6 +299,62 @@ code_change(_OldVsn, State, _Extra) ->
 open_private_log_for_read(_SeqNum) ->
     error(not_implemented).
 
+open_private_log_for_append(_WBSeqNum, _WBPos) ->
+    error(not_implemented).
+
+write_value_to_private_log(_FH, _WBSeqNum, _WBPos, _Flags, _Value) ->
+    error(not_implemented).
+
+writeback_value([], FH, CurrentWBSeqNum, CurrentWBPos, SuccessCount) ->
+    catch file:close(FH),
+    {ok, CurrentWBSeqNum, CurrentWBPos, SuccessCount};
+writeback_value([#hunk{flags=Flags, blobs=[Value, LocationBin]} | WALEntries],
+                FH, CurrentWBSeqNum, CurrentWBPos, SuccessCount) ->
+    {WBSeqNum, WBPos} = binary_to_term(LocationBin),
+    if
+        FH =:= undefined; WBSeqNum =/= CurrentWBSeqNum ->
+            if
+                FH =/= undefined ->
+                    catch file:close(FH);
+                true ->
+                    ok
+            end,
+            case open_private_log_for_append(WBSeqNum, WBPos) of
+                {ok, FH1} ->
+                    ok,
+                    ErrorResponse = undefined;
+                {error, bad_position=Err1} ->
+                    FH1 = undefined,
+                    ErrorResponse = {error, Err1, CurrentWBSeqNum, CurrentWBPos, SuccessCount}
+            end;
+        true ->
+            if
+                WBSeqNum =:= CurrentWBSeqNum, WBPos =:= CurrentWBPos ->
+                    FH1 = FH,
+                    ErrorResponse = undefined;
+                true ->
+                    catch file:close(FH),
+                    FH1 = undefined,
+                    ErrorResponse = {error, bad_position, CurrentWBSeqNum, CurrentWBPos, SuccessCount}
+            end
+    end,
+
+    if
+        ErrorResponse =/= undefined ->
+            ErrorResponse;
+        true ->
+            try write_value_to_private_log(FH1, WBSeqNum, WBPos, Flags, Value) of
+                {ok, NextWBSeqNum, NextWBPos} ->
+                    writeback_value(WALEntries, FH1, NextWBSeqNum, NextWBPos, SuccessCount + 1);
+                {error, Err2} ->
+                    catch file:close(FH1),
+                    {error, Err2, CurrentWBSeqNum, CurrentWBPos, SuccessCount}
+            catch
+                _:_ = Err3 ->
+                    catch file:close(FH1),
+                    {error, Err3, CurrentWBSeqNum, CurrentWBPos, SuccessCount}
+            end
+    end.
 
 
 %% DEBUG

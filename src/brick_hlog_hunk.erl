@@ -64,7 +64,10 @@
 %%
 %% Hunk Layout - Body for metadata; many blobs in one hunk
 %% - Body (variable length)
-%%   * Blobs (binary)
+%%   * Blob1 (binary)
+%%   * Blob2 (binary)
+%%   * ...
+%%   * BlobN (binary)
 %% - Footer (variable length)
 %%   * Footer Magic Number (2 bytes)                    <<16#07, 16#E3>>  %% no meaning
 %%   * Blob Checksum (md5) (16 bytes) (optional)
@@ -72,14 +75,17 @@
 %%   * Blob Index (4 bytes * NumberOfBlobs, ubint)
 %%   * Padding                                          Total hunk size is aligned to 8 bytes
 %%
-%% Hunk Layout - Body for blob_wal; one blob in one hunk
+%% Hunk Layout - Body for blob_wal; many blobs in one hunk
 %% - Body (variable length)
-%%   * Blob (binary)
+%%   * Blob1 (binary)
+%%   * Blob2 (binary)
+%%   * ...
+%%   * BlobN (binary)
 %% - Footer (variable length)
 %%   * Footer Magic Number (2 bytes)                    <<16#07, 16#E3>>  %% no meaning
 %%   * Blob Checksum (md5) (16 bytes) (optional)
 %%   * BrickName (binary)
-%%   * Blob Index (4 bytes * 1, ubint)
+%%   * Blob Index (4 bytes * NumberOfBlobs, ubint)
 %%   * Padding                                          Total hunk size is aligned to 8 bytes
 %%
 %% Hunk Layout - Body for blob_single; one blob in one hunk
@@ -93,7 +99,10 @@
 %%
 %% Hunk Layout - Body for blob_multi; many blobs in one hunk
 %% - Body (variable length)
-%%   * Blobs (binary)
+%%   * Blob1 (binary)
+%%   * Blob2 (binary)
+%%   * ...
+%%   * BlobN (binary)
 %% - Footer (variable length)
 %%   * Footer Magic Number (2 bytes)                    <<16#07, 16#E3>>  %% no meaning
 %%   * Blob Checksum (md5) (16 bytes) (optional)
@@ -107,7 +116,8 @@
 %% -include("brick.hrl").      % for ?E_ macros
 -include("brick_hlog.hrl").
 
--export([create_hunk_iolist/1,
+-export([calc_hunk_size/4,
+         create_hunk_iolist/1,
          parse_hunks/1,
          parse_hunk_iodata/1,
          %% read_hunk/2,
@@ -160,6 +170,29 @@
 %% API
 %% ====================================================================
 
+-spec calc_hunk_size(hunk_type(), [hunk_flag()], non_neg_integer(), non_neg_integer())
+                    -> {FooterSize::non_neg_integer(),
+                        RawSize::non_neg_integer(),
+                        PaddingSize::non_neg_integer(),
+                        Overhead::non_neg_integer()}.
+calc_hunk_size(Flags, BrickNameSize, NumberOfBlobs, TotalBlobSize) ->
+    MD5Size =
+        case has_md5(Flags) of
+            true ->
+                16;
+            false ->
+                0
+        end,
+    FooterSize =
+        ?HUNK_MIN_FOOTER_SIZE
+        + MD5Size
+        + BrickNameSize
+        + NumberOfBlobs * 4,
+    RawSize = ?HUNK_HEADER_SIZE + TotalBlobSize + FooterSize,
+    PaddingSize = ?HUNK_ALIGNMENT - RawSize rem ?HUNK_ALIGNMENT,
+    Overhead = RawSize + PaddingSize - TotalBlobSize,
+    {FooterSize, RawSize, PaddingSize, Overhead}.
+
 -spec create_hunk_iolist(hunk())
                         -> {Hunk::iodata(),
                             HunkSize::non_neg_integer(), Overhead::non_neg_integer(),
@@ -167,7 +200,7 @@
 create_hunk_iolist(#hunk{type=metadata, brick_name=BrickName}=Hunk)
   when BrickName =/= undefined ->
     create_hunk_iolist1(Hunk);
-create_hunk_iolist(#hunk{type=blob_wal, brick_name=BrickName, blobs=[_Blob]}=Hunk)
+create_hunk_iolist(#hunk{type=blob_wal, brick_name=BrickName}=Hunk)
   when BrickName =/= undefined ->
     create_hunk_iolist1(Hunk);
 create_hunk_iolist(#hunk{type=blob_single, brick_name=undefined, blobs=[_Blob]}=Hunk) ->
@@ -255,29 +288,6 @@ read_blob_directly(FH, HunkOffset, BlobOffset, BlobSize) ->
 %% Internal functions
 %% ====================================================================
 
--spec calc_hunk_size(hunk_type(), [hunk_flag()], non_neg_integer(), non_neg_integer())
-                    -> {FooterSize::non_neg_integer(),
-                        RawSize::non_neg_integer(),
-                        PaddingSize::non_neg_integer(),
-                        Overhead::non_neg_integer()}.
-calc_hunk_size(Flags, BrickNameSize, NumberOfBlobs, TotalBlobSize) ->
-    MD5Size =
-        case has_md5(Flags) of
-            true ->
-                16;
-            false ->
-                0
-        end,
-    FooterSize =
-        ?HUNK_MIN_FOOTER_SIZE
-        + MD5Size
-        + BrickNameSize
-        + NumberOfBlobs * 4,
-    RawSize = ?HUNK_HEADER_SIZE + TotalBlobSize + FooterSize,
-    PaddingSize = ?HUNK_ALIGNMENT - RawSize rem ?HUNK_ALIGNMENT,
-    Overhead = RawSize + PaddingSize - TotalBlobSize,
-    {FooterSize, RawSize, PaddingSize, Overhead}.
-
 -spec create_hunk_iolist1(hunk())
                          -> {Hunk::iodata(),
                              HunkSize::non_neg_integer(), Overhead::non_neg_integer(),
@@ -313,7 +323,9 @@ create_hunk_footer(Type, Flags, EncodedBrickName, Blobs, BlobIndex, PaddingSize)
         ++ [<<0:PaddingSize/unit:8>>].
 
 -spec create_blob_index([binary()])
-                       -> {[non_neg_integer()], non_neg_integer(), non_neg_integer()}.
+                       -> {BlobIndex::[non_neg_integer()],
+                           NumberOfBlobs::non_neg_integer(),
+                           TotalBlobSize::non_neg_integer()}.
 create_blob_index(Blobs) ->
     NumberOfBlobs = length(Blobs),
     Sizes = [ byte_size(Blob) || Blob <- Blobs ],
@@ -374,7 +386,7 @@ parse_hunk_footer(metadata, false, BrickNameSize, _NumberOfBlobs,
         _ ->
             {error, invalid_format}
     end;
-parse_hunk_footer(blob_wal, HasMd5, BrickNameSize, 1, <<?HUNK_FOOTER_MAGIC, Bin/binary>>) ->
+parse_hunk_footer(blob_wal, HasMd5, BrickNameSize, _, <<?HUNK_FOOTER_MAGIC, Bin/binary>>) ->
     case {HasMd5, Bin} of
         {true, <<Md5:16/binary, BrickName:BrickNameSize/binary>>} ->
             {ok, Md5, decode_brick_name(BrickName), <<>>};

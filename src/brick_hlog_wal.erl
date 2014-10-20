@@ -354,7 +354,8 @@ do_sync_wal(State) ->
 spawn_sync_wal(Ticket, ListenerList, Count, Dir, CurSeq) ->
     spawn_monitor(
       fun() ->
-              Start = os:timestamp(),
+              Start1 = brick_metrics:histogram_timed_begin(wal_sync_latencies),
+              Start2 = os:timestamp(),
               Path = "././" ++ Dir,  %% @TODO: FIXME
               %% use 'append' mode because 'write' mode will truncate the file.
               {ok, FH} = open_wal(Path, CurSeq, [append]),
@@ -368,7 +369,9 @@ spawn_sync_wal(Ticket, ListenerList, Count, Dir, CurSeq) ->
                           ok
                   end,
                   Res = file:sync(FH),
-                  Elapse = timer:now_diff(os:timestamp(), Start),
+                  Elapse = timer:now_diff(os:timestamp(), Start2),
+                  brick_metrics:histogram_timed_notify(Start1),
+                  brick_metrics:notify({wal_sync_requests, length(ListenerList)}),
 
                   %% Notify the listners.
                   Notification = {wal_sync, Ticket, Res},
@@ -377,8 +380,7 @@ spawn_sync_wal(Ticket, ListenerList, Count, Dir, CurSeq) ->
                                 end, ListenerList),
 
                   %% NOTE: Elapse does not include the time for sending notifications.
-                  if Elapse > 1 ->
-                          %% if Elapse > 200000 ->
+                  if Elapse > 200000 ->   %% 200 ms
                           ?ELOG_INFO("sync was ~p msec for ~p writes",
                                      [Elapse div 1000, Count]);
                      true ->

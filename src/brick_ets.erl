@@ -88,6 +88,7 @@
 
 %% Brick callbacks
 -export([bcb_handle_do/3,
+         bcb_handle_info/2,
          bcb_force_flush/1,
          bcb_async_flush_log_serial/2,
          bcb_keys_for_squidflash_priming/2,
@@ -126,10 +127,6 @@
 -export([externtuple_to_storetuple/1,
          storetuple_key/1,
          storetuple_ts/1
-        ]).
-
-%% Internal exports
--export([sync_pid_loop/1
         ]).
 
 %% For gmt_hlog_common's scavenger support.
@@ -180,15 +177,6 @@
 %%%    micro-transaction, where race conditions are possible. See
 %%%    Section 2.3.14.6, "The dirty keys table".
 %%%
-%%% #state.shadowtab, the shadow table:
-%%%    (Hibari 3.0 or newer do not have this table anymore.)
-%%%    During checkpoints, the contents table is frozen while the
-%%%    checkpoint process dumps its contents. All updates made while
-%%%    the checkpoint is running (insert or delete) are stored in this
-%%%    table. When the checkpoint is finished, the contents of this
-%%%    table are applied to the contents table, and then the shadow
-%%%    table is deleted.
-%%%
 %%% #state.etab, the expiry table:
 %%%    If a key has a non-zero expiry time associated with it (an
 %%%    integer in UNIX time_t form), then the expiry time appears in
@@ -214,8 +202,7 @@
 %%%   6.            brick_server:handle_call_do/3
 %%%   7.              brick_server:preprocess_fold/4  (ssf: server side fun)
 %%%   8.                {ok, ...} -> brick_server:handle_call_via_impl({do, _, _, _}=Msg, _, _)
-%%%   9.                  brick_ets:handle_call({do, ...}, ...)  (NOTE: Not gen_server)
-%%%  10.                    brick_ets:do_do/6
+%%%  10.                    brick_ets:bcb_handle_do/6
 %%%  11.                      brick_ets:do_do1b/7 (This may call squidflash_primer/3,
 %%%                                                and may return {noreply_now, state()})
 %%%  12.                        brick_ets:do_do2/3
@@ -229,40 +216,38 @@
 %%%                                     -> processes all DoList and builds up #state.thisdo_mod.)
 %%%       (return to #9 handle_call)
 %%%  17.                    brick_ets:log_mods/2
-%%%  18.                      brick_ets:log_mods2/3
-%%%  19.                        brick_ets:log_mods2_b/3
-%%%  20.                          brick_ets:wal_write_metadata_term/3
-%%%  21.                            gmt_log_local:write_hunk/7
-%%%  22.  (return to #9 handle_call)
+%%%  18.                      brick_ets:write_metadata_term/4 (with IsHeadBrick=true)
+%%%  19.                        brick_metadata_*:write_metadata/1
+%%%  20.  (return to #9 handle_call)
 
-%%%  23a.                   {goahead, state_r()} ->
+%%%  21a.                   {goahead, state_r()} ->
 %%%                           brick_ets:map_mods_into_ets/2
-%%%  24a.                       brick_ets:my_insert_ignore_logging/3 or my_delete_ignore_logging/4
-%%%  25a. (e.g. my_insert_ig..)   brick_ets:delete_prior_expirf/2
-%%%  26a.                         brick_ets:my_insert_ignore_logging10/3
-%%%  27a.                           brick_ets:my_insert_ignore_logging3/3
-%%%  28a.                             brick_ets:exptime_insert/3
-%%%  29a.                             ets:insert/2 (ctab)
-%%%  30a.                     (return reply for propagating to next brick in the chain)
+%%%  22a.                       brick_ets:my_insert_ignore_logging/3 or my_delete_ignore_logging/4
+%%%  23a. (e.g. my_insert_ig..)   brick_ets:delete_prior_expirf/2
+%%%  24a.                         brick_ets:my_insert_ignore_logging10/3
+%%%  25a.                           brick_ets:my_insert_ignore_logging3/3
+%%%  26a.                             brick_ets:exptime_insert/3
+%%%  27a.                             ets:insert/2 (ctab)
+%%%  28a.                     (return reply for propagating to next brick in the chain)
 
-%%%  23b.                   {wait, state_r()} ->
-%%%  24b.                     brick_ets:add_mods_to_dirty_tab/2
-%%%  25b.                       ets:insert/2  (dirty_tab)
-%%%  26b.                     quene:in/2  (#state.logging.op_q)
-%%%  27b.                     (later, handle_info({sync_done, ...}, ...) will be called,
+%%%  21b.                   {wait, brick_hlog_wal:callback_ticket(), state_r()} ->
+%%%  22b.                     brick_ets:add_mods_to_dirty_tab/2
+%%%  23b.                       ets:insert/2  (dirty_tab)
+%%%  24b.                     Add #log_q{} to #state.logging.op_q
+%%%  25b.                     (later, bcb_handle_info({wal_sync, ...}, ...) will be called,
 %%%                           then, do map_mods_into_ets/2 and clear_dirty_tab/2
 
-%%%  31. (return to #8 handle_call_via_impl)
-%%%  32a.                  {up1, ToDos, OrigReturn} ->
-%%%  33a.                    brick_server:do_chain_todos_iff_empty_log_q/2
-%%%  34a.                      lists:foldl/3,
-%%%  35a.                        brick_server:do_a_chain_todo_iff_empty_log_q/2
-%%%  36a.                          brick_server:chain_send_downstream_iff_empty_log_q/6
-%%%  37a.                            brick_server:chain_send_downstream/7
-%%%  38a.                    brick_server:calc_original_return/2
+%%%  29. (return to #8 handle_call_via_impl)
+%%%  30a.                  {up1, ToDos, OrigReturn} ->
+%%%  31a.                    brick_server:do_chain_todos_iff_empty_log_q/2
+%%%  32a.                      lists:foldl/3,
+%%%  33a.                        brick_server:do_a_chain_todo_iff_empty_log_q/2
+%%%  34a.                          brick_server:chain_send_downstream_iff_empty_log_q/6
+%%%  35a.                            brick_server:chain_send_downstream/7
+%%%  36a.                    brick_server:calc_original_return/2
 
-%%%  32b.                  OrigReturn ->
-%%%  33b.                    brick_server:calc_original_return/2
+%%%  30b.                  OrigReturn ->
+%%%  31b.                    brick_server:calc_original_return/2
 
 
 %%% Request path (write: middle and tail bricks)
@@ -273,16 +258,15 @@
 %%%   4.     brick_ets:bcb_log_mods/3
 %%%   5.       brick_ets:filter_mods_from_upstream/2
 %%%   6.         brick_ets:bigdata_dir_store_val/3
-%%%   8.         brick_ets:log_mod2/3
-%%%   9.           brick_ets:wal_write_metadata_term/3
-%%%  10.             gmt_log_local:write_hunk/7
-%%%  11a.   {goahed, _, _} ->
-%%%  12a.     brick_ets:bcb_map_mods_to_storage/2
+%%%   8.         brick_ets:write_metadata_term/4 (with IsHeadBrick=false)
+%%%   9.           brick_metadata_*:write_metadata/2
+%%%  10a.   {goahed, _, _} ->
+%%%  11a.     brick_ets:bcb_map_mods_to_storage/2
 
 %%%    a.     brick_server:chain_send_downstream/6
 
-%%%  11b.   {wait, _, _} ->
-%%%  12b.     brick_ets:bcb_async_flush_log_serial/2
+%%%  10b.   {wait, _, _} ->
+%%%  11b.     brick_ets:bcb_async_flush_log_serial/2
 
 %%%    b.     brick_ets:bcb_add_mods_to_dirty_tab/2
 
@@ -354,8 +338,8 @@
           start_time :: {non_neg_integer(), non_neg_integer(), non_neg_integer()},
           do_logging = true :: boolean(),
           do_sync = true :: boolean(),
-          log_dir :: string(),
-          bigdata_dir :: string(),
+          %% log_dir :: string(),
+          %% bigdata_dir :: string(),
 
           %% @TODO: gdss-brick >> GH9 - Refactor #state record in brick_ets
           %% The following operation counters can be moved to the process dictionary.
@@ -372,11 +356,13 @@
 
           %% CHAIN TODO: Do these 2 items really belong here??
           logging_op_serial = 42 :: non_neg_integer(),  % Serial # of logging op
-          logging_op_q = queue:new() :: hibari_queue(), % Queue of logged ops for
-                                                  % replay when log sync is done.
-          %% n_log_replay = 0,
-          log :: pid(),                           % disk_log for data mod cmds
+          %% Queue of logged ops for replay when log sync is done.
+          %% type: gb_trees(term(), hibari_queue(#log_q{}))
+          logging_op_q = gb_trees:empty() :: term(),
 
+          %% n_log_replay = 0,
+          md_store :: term(),   %% @TODO: Need a type?
+          blob_store :: term(), %% @TODO: Need a type?
 
           %% @TODO: gdss-brick >> GH9 - Refactor #state record in brick_ets
           %% e.g. thisdo_mods and wait_on_dirty_q will be updated multiple times
@@ -389,7 +375,6 @@
           ctab :: table_name(),                   % ETS table for cache
           etab :: table_name(),                   % Expiry index table
           mdtab :: table_name(),                  % Private metadata table
-          sync_pid :: pid(),                      % Pid of log sync process
           dirty_tab :: table_name(),              % ETS table: dirty key search
           wait_on_dirty_q :: hibari_queue(),      % Queue of ops waiting on
                                                   % dirty keys
@@ -399,18 +384,10 @@
           scavenger_tref :: reference(),          % tref()
 
           do_expiry_fun :: fun(),                 % fun
-          wal_mod :: atom(),                      % atom()
           max_log_size = 0 :: non_neg_integer()   % max log size
          }).
 -type state_r() :: #state{}.
 
-
--record(syncpid_arg, {
-          parent_pid :: pid(),                  % Pid of syncpid's parent brick
-          wal_pid :: pid(),                     % Pid of wal server.
-          wal_mod :: atom(),
-          name :: atom()                        % Name of brick
-         }).
 
 -include("brick_specs.hrl").
 -include("gmt_hlog.hrl").
@@ -454,13 +431,13 @@ init([ServerName, Options]) ->
     process_flag(trap_exit, true),
     ?E_INFO("Initializing brick server: ~w~n\t~p", [ServerName, Options]),
 
+    %% WalMod = proplists:get_value(wal_log_module, Options, gmt_hlog_local),
+    %% MdStoreModule = brick_metadata_store_leveldb,
+    BlobStoreModule = brick_blob_store_hlog,
+
     %% Avoid race conditions where a quick restart of the brick
-    %% catches up with the not-yet-finished death of the previous log
-    %% proc.
-    %% io:format("USING gmt_hlog, old-school...."), timer:sleep(1000),
-    %% WalMod = proplists:get_value(wal_log_module, Options, gmt_hlog),
-    WalMod = proplists:get_value(wal_log_module, Options, gmt_hlog_local),
-    catch exit(whereis(WalMod:log_name2reg_name(ServerName)), kill),
+    %% catches up with the not-yet-finished death of the previous log proc.
+    %% catch exit(whereis(WalMod:log_name2reg_name(ServerName)), kill),
 
     DoLogging = proplists:get_value(do_logging, Options, true),
     DoSync = proplists:get_value(do_sync, Options, true),
@@ -472,15 +449,15 @@ init([ServerName, Options]) ->
             Max ->
                 Max * 1024 * 1024
         end,
-    MinLogSize =
-        case proplists:get_value(min_log_size, Options) of
-            undefined ->
-                {ok, Min} = application:get_env(gdss_brick, brick_min_log_size_mb),
-                Min * 1024 * 1024;
-            Min ->
-                Min * 1024 * 1024
-        end,
-    BigDataDir = proplists:get_value(bigdata_dir, Options),
+    %% MinLogSize =
+    %%     case proplists:get_value(min_log_size, Options) of
+    %%         undefined ->
+    %%             {ok, Min} = application:get_env(gdss_brick, brick_min_log_size_mb),
+    %%             Min * 1024 * 1024;
+    %%         Min ->
+    %%             Min * 1024 * 1024
+    %%     end,
+    %% BigDataDir = proplists:get_value(bigdata_dir, Options),
 
     TabName = list_to_atom(atom_to_list(ServerName) ++ "_store"),
     CTab = ets:new(TabName, [ordered_set, protected, named_table]),
@@ -489,18 +466,12 @@ init([ServerName, Options]) ->
     MDTabName = list_to_atom(atom_to_list(ServerName) ++ "_md"),
     MDTab = ets:new(MDTabName, [ordered_set, protected, named_table]),
 
-    {ok, LogPid} = WalMod:start_link([{name, ServerName},
-                                      {file_len_max, MaxLogSize},
-                                      {file_len_min, MinLogSize}]),
+    {ok, MdStore} = brick_metadata_store:get_metadata_store(ServerName),
+    {ok, BlobStore} = brick_blob_store:start_link(ServerName, [], BlobStoreModule),
 
     DirtyTabName = list_to_atom(atom_to_list(ServerName) ++ "_dirty"),
     DirtyTab = ets:new(DirtyTabName, [ordered_set, protected, named_table]),
     WaitOnDirty = queue:new(),
-
-    SyncPidArg = #syncpid_arg{parent_pid = self(), wal_pid = LogPid,
-                              wal_mod = WalMod, name = ServerName},
-    SyncPid = spawn_link(fun() -> sync_pid_start(SyncPidArg) end),
-    LogOpQ = queue:new(),
 
     DefaultExpFun = fun delete_keys_immediately/2,
     DoExpFun =
@@ -520,24 +491,20 @@ init([ServerName, Options]) ->
     %%     brick name: X
     %%     log's directory name: hlog.X
     %%     log's registered name: X_hlog
-    LogDir = WalMod:log_name2data_dir(ServerName),
+    %% LogDir = WalMod:log_name2data_dir(ServerName),
     State0 = #state{name=ServerName,
                     options=Options,
                     start_time=now(),
                     do_logging=DoLogging,
                     do_sync=DoSync,
-                    log_dir=LogDir,
-                    bigdata_dir=BigDataDir,
-                    log=LogPid,
+                    md_store=MdStore,
+                    blob_store=BlobStore,
                     ctab=CTab,
                     etab=ETab,
                     mdtab=MDTab,
-                    sync_pid=SyncPid,
                     dirty_tab=DirtyTab,
                     wait_on_dirty_q=WaitOnDirty,
-                    logging_op_q=LogOpQ,
                     do_expiry_fun=DoExpFun,
-                    wal_mod=WalMod,
                     max_log_size=MaxLogSize - 32 % TODO: remove fudge factor!
                    },
     self() ! do_init_second_half,
@@ -591,28 +558,6 @@ handle_cast(Msg, State) ->
 %%          {noreply, State, Timeout} |
 %%          {stop, Reason, State}            (terminate/2 is called)
 %%----------------------------------------------------------------------
-handle_info({sync_done, Pid, LastLogSerial}, State)
-  when Pid =:= State#state.sync_pid ->
-    ?DBG_TLOG("sync_done ~w, lastlog_serial ~w, logging_op_serial ~w, logging_op_q ~w",
-              [State#state.name, LastLogSerial, State#state.logging_op_serial, State#state.logging_op_q]),
-    {LQI_List, State2} = pull_items_out_of_logging_queue(LastLogSerial, State),
-    [ok = map_mods_into_ets(DoOpList, State2) ||
-        #log_q{thisdo_mods = DoOpList} <- LQI_List],
-    [ok = clear_dirty_tab(DoOpList, State2) ||
-        #log_q{thisdo_mods = DoOpList} <- LQI_List],
-    [brick_metrics:histogram_timed_notify(Begin) ||
-        #log_q{time=Begin} <- LQI_List],
-    ToDos = [{chain_send_downstream, LQI#log_q.logging_serial,
-              LQI#log_q.doflags, LQI#log_q.from, LQI#log_q.reply,
-              LQI#log_q.thisdo_mods}
-             || LQI <- LQI_List],
-    %% CHAIN TODO: ISSUE001: Does the ToDos list (above) contain mods
-    %%             for the dirty keys?  Or is the attempt below to
-    %%             resubmit the dirty keys truly independent??
-    %% put(issue001, ToDos), ... looks like they're independent, whew!
-    {State3, ToDos2} = retry_dirty_key_ops(State2),
-    ?DBG_TLOG("sync_done_dirty_q ~w, ~w", [State#state.name, State#state.wait_on_dirty_q]),
-    {up1_sync_done, LastLogSerial, ToDos ++ ToDos2, State3};
 handle_info(check_expiry, State) ->
     case whereis(brick_server:make_expiry_regname(State#state.name)) of
         undefined ->
@@ -620,10 +565,6 @@ handle_info(check_expiry, State) ->
         _ ->
             {noreply, State}
     end;
-handle_info({'EXIT', Pid, Reason}, State) when Pid =:= State#state.sync_pid ->
-    ?ELOG_ERROR("~s: sync pid ~p died ~p",
-                [State#state.name, Pid, Reason]),
-    {stop, normal, State};
 handle_info({'EXIT', Pid, Done}, State)
   when Pid =:= State#state.scavenger_pid andalso
        (Done =:= done orelse element(3, Done) =:= done) -> % smart_exceptions
@@ -633,66 +574,12 @@ handle_info({'EXIT', Pid, Reason}, State)
     ?E_WARNING("~p: scavenger ~p exited with ~p",
                [State#state.name, State#state.scavenger_pid, Reason]),
     {noreply, State#state{scavenger_pid = undefined}};
-handle_info({'EXIT', Pid, Reason}, State) when Pid =:= State#state.log ->
-    ?E_WARNING("~p: log process ~p exited with ~p",
-               [State#state.name, State#state.log, Reason]),
-    {stop, Reason, State};
-%% handle_info(qqq_debugging_only, S) ->
-%%     ?DBG_GEN("~w: logging_op_serial ~w, logging_op_q ~w, wait_on_dirty_q ~w, dirty_tab, ~w",
-%%              [S#state.name,
-%%               S#state.logging_op_serial,
-%%               S#state.logging_op_q,
-%%               S#state.wait_on_dirty_q,
-%%               ets:tab2list(S#state.dirty_tab)]),
-%%     {noreply, S};
-handle_info(do_init_second_half, #state{name=Name}=State) ->
-    ?E_INFO("do_init_second_half: ~w", [Name]),
-
-    ok = gmt_hlog_common:full_writeback(),
-    ?E_INFO("Loading metadata records for brick ~w", [Name]),
-    Start = os:timestamp(),
-    {LoadCount, ErrList} = load_metadata(State),
-    Elapse = timer:now_diff(os:timestamp(), Start) div 1000,
-
-    ZeroDiskErrorsP = (ErrList =:= []),
-    if
-        ZeroDiskErrorsP ->
-            ?E_INFO("Finished loading metadata records for brick ~w [~w ms]. "
-                    "key count: ~w, no error",
-                    [Name, Elapse, LoadCount]);
-        true ->
-            ErrorCount = length(ErrList),
-            Message =
-                lists:flatten(
-                  io_lib:format("Could net load ~w metadata records for brick ~w, "
-                                "must recover via chain replication.~n"
-                                "\tloaded key count: ~w~n"
-                                "\terror key count:  ~w~n"
-                                "\terror details:    ~p~n"
-                                "\telapse: ~w ms",
-                                [ErrorCount, Name, LoadCount, ErrorCount,
-                                 ErrList, Elapse])),
-            ?E_CRITICAL(Message, []),
-            gmt_util:set_alarm({load_metadata, Name}, Message, fun() -> ok end)
-    end,
-
-    %% For recently bigdata_dir files, sync them all in a big safety blatt.
-    %% ... Except that it also seems to have the potential to slam the
-    %% ... disk system really, really hard, which can (in turn) create
-    %% ... extremely bad timeout conditions.  {sigh}  So, for now,
-    %% ... comment out the sync.
-    %% os:cmd("sync"),
-
-    %% Set these timers only after the WAL scan is finished.
-    %% brick_itimer:send_interval(1*1000, qqq_debugging_only),
-    {ok, ExpiryTRef} = brick_itimer:send_interval(1 * 1000, check_expiry),
-
-    ?E_INFO("do_init_second_half: ~p finished", [State#state.name]),
-    self() ! {storage_layer_init_finished, State#state.name, ZeroDiskErrorsP},
-    {noreply, State#state{expiry_tref = ExpiryTRef,
-                          scavenger_tref = undefined}};
+%% handle_info({'EXIT', Pid, Reason}, State) when Pid =:= State#state.log ->
+%%     ?E_WARNING("~p: log process ~p exited with ~p",
+%%                [State#state.name, State#state.log, Reason]),
+%%     {stop, Reason, State};
 handle_info(_Info, State) ->
-    ?E_ERROR("Hey:~s handle_info: Info = ~P", [?MODULE, _Info, 20]),
+    ?E_ERROR("Unhandled handle_info message: ~P (~p)", [_Info, 20, ?MODULE]),
     {noreply, State}.
 
 %%----------------------------------------------------------------------
@@ -701,11 +588,13 @@ handle_info(_Info, State) ->
 %% Returns: any (ignored by gen_server)
 %%----------------------------------------------------------------------
 terminate(Reason, #state{name=Name, ctab=CTab, etab=ETab,
-                         wal_mod=WalMod, log=Log}) ->
+                         md_store=_MdStorePid, blob_store=_BlobStorePid}) ->
     ?E_INFO("Stopping brick server: ~w, reason ~w", [Name, Reason]),
     catch ets:delete(CTab),
     catch ets:delete(ETab),
-    catch WalMod:stop(Log),
+    %% @TODO (new hlog) Temporary disabled.
+    %% catch brick_metadata_store:stop(MdStorePid),
+    %% catch brick_blob_store:stop(BlobStorePid),
     ok.
 
 %%----------------------------------------------------------------------
@@ -1493,10 +1382,6 @@ make_many_result(StoreTuple, {false, true, false}, S) ->
 make_many_result(StoreTuple, {_DoWitness, _DoAllAttr, true}, _S) ->
     StoreTuple.
 
-make_many_result2(StoreTuple, S) when S#state.bigdata_dir =:= undefined ->
-    {Key, TStamp, Val0, _ExpTime, _Flags} = storetuple_to_externtuple(
-                                              StoreTuple, S),
-    {Key, TStamp, Val0};
 make_many_result2(StoreTuple, S) ->
     {Key, TStamp, Val0, _ExpTime, _Flags} = storetuple_to_externtuple(
                                             StoreTuple, S),
@@ -1504,8 +1389,6 @@ make_many_result2(StoreTuple, S) ->
     Val = bigdata_dir_get_val(Key, Val0, ValLen, S),
     {Key, TStamp, Val}.
 
-make_many_result3(StoreTuple, S) when S#state.bigdata_dir =:= undefined ->
-    storetuple_to_externtuple(StoreTuple, S);
 make_many_result3(StoreTuple, S) ->
     {Key, TStamp, Val0, ExpTime, Flags} = storetuple_to_externtuple(
                                             StoreTuple, S),
@@ -1609,12 +1492,8 @@ storetuple_to_externtuple({Key, TStamp, Value, ValueLen, ExpTime}, S)
 storetuple_to_externtuple({Key, TStamp, Value, ValueLen, ExpTime, Flags}, S) ->
     {Key, TStamp, Value, ExpTime, make_extern_flags(Value, ValueLen, Flags, S)}.
 
-make_extern_flags(Value, ValueLen, Flags, S) ->
-    if is_binary(Value), S#state.bigdata_dir =/= undefined ->
-            [{val_len, ValueLen}, value_in_ram|Flags];
-       true ->
-            [{val_len, ValueLen}|Flags]
-    end.
+make_extern_flags(_Value, ValueLen, Flags, _S) ->
+    [{val_len, ValueLen}|Flags].
 
 externtuple_to_storetuple({Key, TStamp, Value}) ->
     storetuple_make(Key, TStamp, Value, gmt_util:io_list_len(Value), 0, []);
@@ -1719,19 +1598,20 @@ my_insert2(#state{thisdo_mods=Mods, max_log_size=MaxLogSize}=S, Key, TStamp, Val
             DelTStamp = brick_server:make_timestamp(),
             {{ok, TStamp}, my_delete(S#state{thisdo_mods = [Mod|Mods]}, Key, DelTStamp, CurExpTime)};
         _ ->
-            Val = gmt_util:bin_ify(Value),
-            ValSize = byte_size(Val),
+            BinValue = gmt_util:bin_ify(Value),
+            ValSize = byte_size(BinValue),
             if ValSize > MaxLogSize ->
-                    {val_error, ValSize};
+                    {val_error, {value_size_exceeded_brick_max_log_size_mb,
+                                 ValSize / 1024 / 1024}};
                true ->
                     UseRamP = lists:member(value_in_ram, Flags),
-                    ST = storetuple_make(Key, TStamp, Val, size(Val),
+                    ST = storetuple_make(Key, TStamp, BinValue, ValSize,
                                          ExpTime, Flags -- [value_in_ram]),
                     Mod =
-                        if UseRamP ; S#state.bigdata_dir =:= undefined ->
+                        if UseRamP ->
                                 {insert_value_into_ram, ST};
                            true ->
-                                Loc = bigdata_dir_store_val(Key, Value, S),
+                                Loc = bigdata_dir_store_val(Key, BinValue, S),
                                 {insert, ST, storetuple_replace_val(ST, Loc)}
                         end,
                     {{ok, TStamp}, S#state{thisdo_mods = [Mod|Mods]}}
@@ -1777,12 +1657,7 @@ my_delete(#state{thisdo_mods=Mods}=State, Key, Timestamp, ExpTime) ->
 
 my_delete_ignore_logging(State, Key, Timestamp, ExpTime) ->
     delete_prior_expiry(State, Key),
-    if
-        State#state.bigdata_dir =:= undefined ->
-            ok;
-        true ->
-            bigdata_dir_delete_val(Key, State)
-    end,
+    bigdata_dir_delete_val(Key, State),
     my_delete_ignore_logging2(State, Key, Timestamp, ExpTime).
 
 my_delete_ignore_logging2(State, Key, _Timestamp, ExpTime) ->
@@ -1795,15 +1670,11 @@ my_lookup(State, Key, _MustHaveVal_p = false) ->
     my_lookup2(State, Key);
 my_lookup(State, Key, true) ->
     case my_lookup2(State, Key) of
-        [StoreTuple] = Res ->
-            if State#state.bigdata_dir =:= undefined ->
-                    Res;
-               true ->
-                    Val0 = storetuple_val(StoreTuple),
-                    ValLen = storetuple_vallen(StoreTuple),
-                    Val = bigdata_dir_get_val(Key, Val0, ValLen, State),
-                    [storetuple_replace_val(StoreTuple, Val)]
-            end;
+        [StoreTuple] ->
+            Val0 = storetuple_val(StoreTuple),
+            ValLen = storetuple_vallen(StoreTuple),
+            Val = bigdata_dir_get_val(Key, Val0, ValLen, State),
+            [storetuple_replace_val(StoreTuple, Val)];
         Res ->
             Res
     end.
@@ -1818,17 +1689,17 @@ my_lookup2(State, Key) ->
     ets:lookup(State#state.ctab, Key).
 
 %% REMINDER: It is the *caller's responsibility* to manage the
-%%           logging_op_serial counter, not log_mods() or log_mods2().
+%%           logging_op_serial counter.
 
--spec log_mods(tuple(), boolean() | undefined) -> {goahead, tuple()} | {wait, tuple()}.
-log_mods(S, _SyncOverride) when S#state.do_logging =:= false ->
+-spec log_mods(tuple(), boolean() | undefined) ->
+                      {goahead, state_r()}
+                          | {wait, brick_hlog_wal:callback_ticket(), state_r()}.
+log_mods(#state{do_logging=false}=S, _SyncOverride) ->
     {goahead, S#state{thisdo_mods = []}};
-log_mods(S, SyncOverride) ->
-    if S#state.thisdo_mods =:= [] ->
-            {goahead, S};
-       true ->
-            log_mods2(S#state.thisdo_mods, SyncOverride, S)
-    end.
+log_mods(#state{thisdo_mods=[]}=S, _SyncOverride) ->
+    {goahead, S};
+log_mods(#state{thisdo_mods=ThisDoMods}=S, SyncOverride) ->
+    write_metadata_term(ThisDoMods, S, SyncOverride, true).
 
 load_rec_from_log_common_insert(StoreTuple, S) ->
     Key = storetuple_key(StoreTuple),
@@ -1882,8 +1753,6 @@ filter_mods_for_downstream(Thisdo_Mods) ->
                       X
               end, Thisdo_Mods).
 
-filter_mods_from_upstream(Thisdo_Mods, #state{bigdata_dir=undefined}) ->
-    Thisdo_Mods;
 filter_mods_from_upstream(Thisdo_Mods, #state{name=Name}=State) ->
     lists:map(fun({insert, ST}) ->
                       Key = storetuple_key(ST),
@@ -1939,65 +1808,6 @@ filter_mods_from_upstream(Thisdo_Mods, #state{name=Name}=State) ->
                       X
               end, Thisdo_Mods).
 
-sync_pid_start(SPA) ->
-    process_flag(priority, high),
-    link(SPA#syncpid_arg.wal_pid),      % share fate
-    {ok, Interval} = application:get_env(gdss_brick, brick_sync_interval_msec),
-    brick_itimer:send_interval(Interval, force_sync),
-    sync_pid_loop(SPA).
-
-sync_pid_loop(SPA) ->
-    %% The 3rd param to collect_sync_requests() is a minor (?)
-    %% tunable, values lower than 5 start hurting on my laptop 10-15%
-    %% but larger than 5 seem to help very little (and add latency in
-    %% extremely low load situations).
-    Timeout = 5,
-    %% Timeout = 50,
-    case collect_sync_requests([], SPA, Timeout) of
-        [] ->
-            ok;
-        SyncRequests ->
-            LastSerial = sync_get_last_serial(SyncRequests),
-            Start = brick_metrics:histogram_timed_begin(wal_sync_latencies),
-            {ok, _X, _Y} = wal_sync(SPA#syncpid_arg.wal_pid,
-                                    SPA#syncpid_arg.wal_mod),
-            brick_metrics:histogram_timed_notify(Start),
-            brick_metrics:notify({wal_sync_requests, length(SyncRequests)}),
-            SPA#syncpid_arg.parent_pid ! {sync_done, self(), LastSerial},
-            ok
-    end,
-    ?MODULE:sync_pid_loop(SPA).
-
-collect_sync_requests([], SPA, Timeout) ->
-    %% Nobody should be sending us anything other than sync request
-    %% tuples Block forever waiting for the first request, then slurp
-    %% in as many as we can without blocking.
-    receive
-        T when is_tuple(T) ->
-            collect_sync_requests([T], SPA, Timeout);
-        force_sync ->
-            []                                  % return empty list to caller
-    end;
-collect_sync_requests(Acc, SPA, Timeout) ->
-    receive
-        T when is_tuple(T) ->
-            collect_sync_requests([T|Acc], SPA, Timeout);
-        force_sync ->
-            %% We can still collect requests when this message
-            %% arrives, but we won't wait any longer for stragglers.
-            collect_sync_requests(Acc, SPA, 0)
-    after Timeout ->
-            lists:reverse(Acc)
-    end.
-
-sync_get_last_serial(L) ->
-    sync_get_last_serial(L, 0).
-
-sync_get_last_serial([{sync_msg, Serial}|T], _LastSerial) ->
-    sync_get_last_serial(T, Serial);
-sync_get_last_serial([], LastSerial) ->
-    LastSerial.
-
 map_mods_into_ets([{insert, StoreTuple} | Tail], S) ->
     Key = storetuple_key(StoreTuple),
     my_insert_ignore_logging(S, Key, StoreTuple),
@@ -2041,59 +1851,82 @@ map_mods_into_ets(NotList, _S) when not is_list(NotList) ->
     %% This is when applying mods to head, when head is a sweep tuple.
     ok.
 
-pull_items_out_of_logging_queue(LastLogSerial, S) ->
-    Q = S#state.logging_op_q,
-    pull_items_out_of_logging_queue(queue:out(Q), [], Q,
-                                    LastLogSerial, -1, S).
+%% log_mods2_b(Thisdo_Mods0, #state{do_sync=Sync}=S, SyncOverride) ->
+%%     Thisdo_Mods = lists:map(
+%%                     fun({insert, _ChainStoreTuple, StoreTuple}) ->
+%%                             {insert, StoreTuple};
+%%                        (X) ->
+%%                             X
+%%                     end, Thisdo_Mods0),
+%%     %% @TODO (new hlog) Handle {hunk_too_big, ...} and {error, ..}.
+%%     ok = wal_write_metadata_term(Thisdo_Mods, S),
 
-pull_items_out_of_logging_queue({{value, LQI}, NewQ}, Acc, _OldQ,
-                                LastLogSerial, UpstreamSerial, S)
-  when is_record(LQI, log_q), LQI#log_q.logging_serial =< LastLogSerial ->
-    pull_items_out_of_logging_queue(queue:out(NewQ), [LQI|Acc], NewQ,
-                                    LastLogSerial, UpstreamSerial, S);
-%%
-pull_items_out_of_logging_queue({{value, {upstream_serial, NewUS}}, NewQ}, Acc,
-                                _OldQ, LastLogSerial, _UpstreamSerial, S) ->
-    pull_items_out_of_logging_queue(queue:out(NewQ), Acc, NewQ,
-                                    LastLogSerial, NewUS, S);
-%%
-pull_items_out_of_logging_queue(_, Acc, Q, _LastLogSerial,
-                                _UpstreamSerial, S) ->
-    {lists:reverse(Acc), S#state{logging_op_q = Q}}.
+%%     case {Sync, SyncOverride} of
+%%         {true, false} ->
+%%             %% NOTICE: This clobbering of #state.thisdo_mods
+%%             %% should not cause problems when called outside
+%%             %% the context of a handle_call({do, ...}, ...)
+%%             %% call, right?
+%%             {goahead, S#state{thisdo_mods = []}};
+%%         {true, _TrueOrUndefined} ->
+%%             {wait, S};
+%%         {false, true} ->
+%%             {wait, S};
+%%         {false, _FalseOrUndefined} ->
+%%             {goahead, S#state{thisdo_mods = []}}
+%%     end.
 
 %% @doc Write a set of Thisdo_Mods to disk, with the option of overriding sync.
--spec log_mods2([do_mod()], boolean() | undefined, state_r()) ->
-                       {goahead, state_r()} | {wait, state_r()}.
-log_mods2(Thisdo_Mods, SyncOverride, S) ->
-    log_mods2_b(Thisdo_Mods, S, SyncOverride).  % thin shim nowadays
-
--spec log_mods2_b([do_mod()], state_r(), boolean() | undefined) ->
-                         {goahead, state_r()} | {wait, state_r()}.
-log_mods2_b([], S, _) ->                        % dialyzer: can never match...
+-spec write_metadata_term([do_mod()], state_r(), boolean() | undefined, boolean()) ->
+                                 {goahead, state_r()}
+                                     | {wait, state_r()}
+                                     | {wait, brick_hlog_wal:callback_ticket(), state_r()}.
+write_metadata_term([], S, _, _) ->               % dialyzer: can never match...
     {goahead, S#state{thisdo_mods = []}};
-log_mods2_b(Thisdo_Mods0, #state{do_sync=DoSync}=S, SyncOverride) ->
-    Thisdo_Mods = lists:map(
-                    fun({insert, _ChainStoreTuple, StoreTuple}) ->
-                            {insert, StoreTuple};
-                       (X) ->
-                            X
-                    end, Thisdo_Mods0),
-    {ok, _, _} = wal_write_metadata_term(Thisdo_Mods, S),
-
-    case {DoSync, SyncOverride} of
-        {true, false} ->
-            %% NOTICE: This clobbering of #state.thisdo_mods
-            %% should not cause problems when called outside
-            %% the context of a handle_call({do, ...}, ...)
-            %% call, right?
+write_metadata_term(Thisdo_Mods, #state{md_store=MdStore}=S, _SyncOverride=false, _IsHeadBrick) ->
+    case MdStore:write_metadata(remove_chain_store_tuple(Thisdo_Mods)) of
+        ok ->
             {goahead, S#state{thisdo_mods = []}};
-        {true, _TrueOrUndefined} ->
+        Other ->
+            %% @TODO (new hlog) Handle {hunk_too_big, ...} and {error, ..}.
+            error(Other)
+    end;
+write_metadata_term(Thisdo_Mods, #state{do_sync=DoSync, md_store=MdStore}=S, SyncOverride, true)
+  when DoSync =:= true; SyncOverride =:= true ->
+    %% This is a head brick.
+    case MdStore:write_metadata_group_commit(remove_chain_store_tuple(Thisdo_Mods)) of
+        {ok, WALSyncTicket} ->
+            {wait, WALSyncTicket, S};
+        Other ->
+            %% @TODO (new hlog) Handle {hunk_too_big, ...} and {error, ..}.
+            error(Other)
+    end;
+write_metadata_term(Thisdo_Mods, #state{do_sync=DoSync, md_store=MdStore}=S, SyncOverride, false)
+  when DoSync =:= true; SyncOverride =:= true ->
+    %% This is a meddle or official/reparing tail brick.
+    case MdStore:write_metadata(remove_chain_store_tuple(Thisdo_Mods)) of
+        ok ->
             {wait, S};
-        {false, true} ->
-            {wait, S};
-        {false, _FalseOrUndefined} ->
-            {goahead, S#state{thisdo_mods = []}}
+        Other ->
+            %% @TODO (new hlog) Handle {hunk_too_big, ...} and {error, ..}.
+            error(Other)
+    end;
+write_metadata_term(Thisdo_Mods, #state{md_store=MdStore}=S, _FalseOrUndefined, _IsHeadBrick) ->
+    case MdStore:write_metadata(remove_chain_store_tuple(Thisdo_Mods)) of
+        ok ->
+            {goahead, S#state{thisdo_mods = []}};
+        Other ->
+            %% @TODO (new hlog) Handle {hunk_too_big, ...} and {error, ..}.
+            error(Other)
     end.
+
+%% -spec remove_chain_store_tuple([thisdo_mod()]) -> [thisdo_mod()]
+remove_chain_store_tuple(Thisdo_Mods) ->
+    lists:map(fun({insert, _ChainStoreTuple, StoreTuple}) ->
+                      {insert, StoreTuple};
+                 (X) ->
+                      X
+              end, Thisdo_Mods).
 
 any_dirty_keys_p(DoKeys, State) ->
     lists:any(fun({_, K}) -> check_dirty_key(K, State) end, DoKeys).
@@ -2317,13 +2150,9 @@ repair_loop([StoreTuple|Tail] = UpList, MyKey, Is, Ds, S) ->
             if UpTS =:= MyTS ->
                     %% We're repairing, so it's impossible to have active
                     %% shadowtab right now.
-                    MyVal = if S#state.bigdata_dir =:= undefined ->
-                                    storetuple_val(MyStoreTuple);
-                               true ->
-                                    Val0 = storetuple_val(StoreTuple),
-                                    ValLen = storetuple_vallen(StoreTuple),
-                                    bigdata_dir_get_val(UpKey, Val0, ValLen, S)
-                            end,
+                    Val0 = storetuple_val(StoreTuple),
+                    ValLen = storetuple_vallen(StoreTuple),
+                    MyVal =  bigdata_dir_get_val(UpKey, Val0, ValLen, S),
                     if UpVal =/= MyVal ->
                             ?E_INFO("TODO: Weird, but we got a repair "
                                     "update for ~p with same ts but "
@@ -2366,7 +2195,7 @@ repair_loop_insert(Tuple, S) ->
                           [{insert, StoreTuple}]
                   end,
     LocalMods = filter_mods_from_upstream(Thisdo_Mods, S),
-    _ = log_mods2(LocalMods, undefined, S),
+    _ = write_metadata_term(LocalMods, S, undefined, false),
     %% Cannot use Tuple or Thisdo_Mods here: bigdata_dir storage
     %% locations in our local log (inside LocalMods) must be used!
     ST = case LocalMods of
@@ -2385,7 +2214,7 @@ repair_loop_delete(Key, ExpTime, S) ->
     ?DBG_REPAIR("repair [delete] ~w", [Key]),
     Timestamp = brick_server:make_timestamp(),
     Thisdo_mods = [{delete, Key, Timestamp, ExpTime}],
-    _ = log_mods2(Thisdo_mods, undefined, S),
+    _ = write_metadata_term(Thisdo_mods, S, undefined, false),
     my_delete_ignore_logging(S, Key, Timestamp, ExpTime),
     ok.
 
@@ -2405,12 +2234,15 @@ delete_remaining_keys(Key, S, Deletes) ->
 %% Disk storage extension stuff
 %%
 
-bigdata_dir_store_val(_Key, <<>>, _S) ->
-    {0, 0}; % Don't write blob hunk if value is empty.
-bigdata_dir_store_val(Key, Val, #state{wal_mod=WalMod, log=HLogPid, name=Name}) ->
-    {ok, Seq, Off} = WalMod:write_hunk(HLogPid, Name, bigblob, Key, ?LOGTYPE_BLOB, [Val],[]),
-    %% ?DBG_GEN("bigdate_store_val ~w at seq ~w, off ~w", [Key, Seq, Off]),
-    {Seq, Off}.
+bigdata_dir_store_val(_Key, Value, #state{blob_store=BlobStore}) when is_binary(Value) ->
+    case BlobStore:write_value(Value) of
+        {ok, StorageLocation} ->
+            StorageLocation;
+        {error, Err} ->
+            error(Err)
+    end;
+bigdata_dir_store_val(Key, _, _) ->
+    error({invalid_value_type_for_key, Key}).
 
 bigdata_dir_delete_val(_Key, _S) ->
     %% LTODO: anything to do here?
@@ -2421,53 +2253,44 @@ bigdata_dir_get_val(_Key, Val, ValLen, S) ->
 
 %% TODO: This bad boy will crash if the file doesn't exist.
 
-bigdata_dir_get_val(Key, Val, ValLen, CheckMD5_p, S)
-  when is_tuple(Val) ->
-    case Val of
-        {0, 0} ->
-            <<>>;
-        {SeqNum, Offset} ->
-            %% {sigh} So much for 100% module API interop.
-            case if S#state.wal_mod =:= gmt_hlog_local ->
-                         (S#state.wal_mod):read_bigblob_hunk_blob(
-                           SeqNum, Offset, CheckMD5_p, ValLen);
-                    true ->
-                         (S#state.wal_mod):read_bigblob_hunk_blob(
-                           S#state.log_dir, SeqNum, Offset, CheckMD5_p,
-                           ValLen)
-                 end of
-                Blob when is_binary(Blob) ->
-                    Blob;
-                {error, Reason} when Reason =:= system_limit ->
-                    %% We shouldn't mark the file as bad: in this
-                    %% clause we aborted before reads were entirely
-                    %% successful.  Logging an error probably won't
-                    %% work because we're probably pretty hosed
-                    %% (e.g. out of file descriptors), but we should
-                    %% try anyway.
-                    %%
-                    %% TODO: What other erors here that we need to look for?
-                    %%
-                    ?E_ERROR("~s: read error ~p at seq ~p offset ~p for the stored value of key ~p",
-                             [S#state.name, Reason, SeqNum, Offset, Key]),
-                    throw(silently_drop_reply);
-                eof when S#state.do_sync =:= false ->
-                    %% The brick is in async mode.  If we're trying to
-                    %% read something that was written very very
-                    %% recently, then the commonLogServer may have
-                    %% buffered it while a sync for some other brick
-                    %% is in progress.  If that's true, then the data
-                    %% we're looking for hasn't been written to the OS
-                    %% yet, and trying to read from the promised file
-                    %% & offset will yield 'eof'.  Doctor, it hurts
-                    %% when I read async-written data too early....
-                    throw(silently_drop_reply);
-                Error ->
-                    ?E_WARNING("~s: read error ~p at seq ~p offset ~p the stored value of key ~p",
-                               [S#state.name, Error, SeqNum, Offset, Key]),
-                    sequence_file_is_bad(SeqNum, Offset, S),
-                    throw(silently_drop_reply)
-            end
+bigdata_dir_get_val(_Key, no_blob, _ValLen, _CheckMD5_p, _S) ->
+    <<>>;
+bigdata_dir_get_val(_Key, StorageLocation, _ValLen, _CheckMD5_p,
+                    #state{blob_store=BlobStore}=S)
+  when is_tuple(StorageLocation) ->
+    case BlobStore:read_value(StorageLocation) of
+        {ok, Blob} ->
+            Blob;
+        %% {error, Reason} when Reason =:= system_limit ->
+        %% We shouldn't mark the file as bad: in this
+        %% clause we aborted before reads were entirely
+        %% successful.  Logging an error probably won't
+        %% work because we're probably pretty hosed
+        %% (e.g. out of file descriptors), but we should
+        %% try anyway.
+        %%
+        %% TODO: What other erors here that we need to look for?
+        %%
+        %%     ?E_ERROR("~s: read error ~p at seq ~p offset ~p for the stored value of key ~p",
+        %%              [S#state.name, Reason, SeqNum, Offset, Key]),
+        %%     throw(silently_drop_reply);
+        eof when S#state.do_sync =:= false ->
+            %% The brick is in async mode.  If we're trying to
+            %% read something that was written very very
+            %% recently, then the commonLogServer may have
+            %% buffered it while a sync for some other brick
+            %% is in progress.  If that's true, then the data
+            %% we're looking for hasn't been written to the OS
+            %% yet, and trying to read from the promised file
+            %% & offset will yield 'eof'.  Doctor, it hurts
+            %% when I read async-written data too early....
+            throw(silently_drop_reply);
+        _Error ->
+            %% @TODO (new hlog) Temporary disabled.
+            %% ?E_WARNING("~s: read error ~p at seq ~p offset ~p the stored value of key ~p",
+            %%            [S#state.name, Error, SeqNum, Offset, Key]),
+            %% sequence_file_is_bad(SeqNum, Offset, S),
+            throw(silently_drop_reply)
     end;
 bigdata_dir_get_val(_Key, Val, _ValLen, _CheckMD5_p, _S)
   when is_binary(Val) ->
@@ -2497,15 +2320,16 @@ bigdata_dir_get_val(_Key, Val, _ValLen, _CheckMD5_p, _S)
 bigdata_dir_get_val(_Key, Val0, _ValLen, _CheckMD5_p, _S) ->
     exit({ltodo_2_when_does_this_happen, _Key, Val0}).
 
-sequence_file_is_bad(SeqNum, Offset, S)
-  when S#state.wal_mod =:= gmt_hlog ->
-    write_bad_sequence_hunk(S#state.wal_mod, S#state.log, S#state.name,
-                            SeqNum, Offset),
-    sequence_file_is_bad_common(S#state.log_dir, S#state.wal_mod, S#state.log,
-                                S#state.name, SeqNum, Offset);
-sequence_file_is_bad(SeqNum, Offset, S)
-  when S#state.wal_mod =:= gmt_hlog_local ->
-    gmt_hlog_common:sequence_file_is_bad(SeqNum, Offset).
+%% @TODO (new hlog) Temporary disabled.
+%% sequence_file_is_bad(SeqNum, Offset, S)
+%%   when S#state.wal_mod =:= gmt_hlog ->
+%%     write_bad_sequence_hunk(S#state.wal_mod, S#state.log, S#state.name,
+%%                             SeqNum, Offset),
+%%     sequence_file_is_bad_common(S#state.log_dir, S#state.wal_mod, S#state.log,
+%%                                 S#state.name, SeqNum, Offset);
+%% sequence_file_is_bad(SeqNum, Offset, S)
+%%   when S#state.wal_mod =:= gmt_hlog_local ->
+%%     gmt_hlog_common:sequence_file_is_bad(SeqNum, Offset).
 
 sequence_rename(OldPath1, OldPath2, NewPath) ->
     case file:rename(OldPath1, NewPath) of
@@ -2517,18 +2341,19 @@ sequence_rename(OldPath1, OldPath2, NewPath) ->
             Err
     end.
 
-write_bad_sequence_hunk(WalMod, Log, Name, SeqNum, Offset) ->
-    try
-        _ = WalMod:advance_seqnum(Log, 2),
-        _ = WalMod:write_hunk(
-              Log, Name, metadata, <<"k:sequence_file_is_bad">>,
-              ?LOGTYPE_BAD_SEQUENCE, [term_to_binary({SeqNum, Offset})], []),
-        _ = wal_sync(Log, WalMod)
-    catch
-        X:Y ->
-            ?E_ERROR("sequence_file_is_bad: ~p ~p -> ~p ~p (~p)",
-                     [SeqNum, Offset, X, Y, erlang:get_stacktrace()])
-    end.
+%% @TODO (new hlog) Temporary disabled.
+%% write_bad_sequence_hunk(WalMod, Log, Name, SeqNum, Offset) ->
+%%     try
+%%         _ = WalMod:advance_seqnum(Log, 2),
+%%         _ = WalMod:write_hunk(
+%%               Log, Name, metadata, <<"k:sequence_file_is_bad">>,
+%%               ?LOGTYPE_BAD_SEQUENCE, [term_to_binary({SeqNum, Offset})], []),
+%%         _ = wal_sync(Log, WalMod)
+%%     catch
+%%         X:Y ->
+%%             ?E_ERROR("sequence_file_is_bad: ~p ~p -> ~p ~p (~p)",
+%%                      [SeqNum, Offset, X, Y, erlang:get_stacktrace()])
+%%     end.
 
 -spec sequence_file_is_bad_common(nonempty_string(), atom(), pid(), atom(),integer(),integer()) -> ok.
 sequence_file_is_bad_common(LogDir, WalMod, _Log, Name, SeqNum, Offset) ->
@@ -2564,9 +2389,12 @@ sequence_file_is_bad_common(LogDir, WalMod, _Log, Name, SeqNum, Offset) ->
 -spec load_metadata(state_r()) -> {non_neg_integer(), [tuple()]}.
 load_metadata(#state{name=BrickName}=State) ->
     %% put(wal_scan_cast_count, 0),
-    CommonLogServer = gmt_hlog_common:hlog_pid(?GMT_HLOG_COMMON_LOG_NAME),
-    MetadataDB = gmt_hlog:get_metadata_db(CommonLogServer, BrickName),
-    FirstMDBKey = h2leveldb:first_key(MetadataDB),
+    %% @TODO (new hlog) Implement this.
+    %% CommonLogServer = gmt_hlog_common:hlog_pid(?GMT_HLOG_COMMON_LOG_NAME),
+    %% MetadataDB = gmt_hlog:get_metadata_db(CommonLogServer, BrickName),
+    %% FirstMDBKey = h2leveldb:first_key(MetadataDB),
+    MetadataDB = undefined,
+    FirstMDBKey = end_of_table,
     load_metadata1(BrickName, MetadataDB, FirstMDBKey, State, {0, []}).
 
 load_metadata1(_BrickName, _MetadataDB, end_of_table, _State, {Count, Errors}) ->
@@ -2595,14 +2423,8 @@ load_metadata1(BrickName, MetadataDB, {ok, MDBKey}, State, {Count, Errors}=PrevR
     NextMDBKey = h2leveldb:next_key(MetadataDB, MDBKey),
     load_metadata1(BrickName, MetadataDB, NextMDBKey, State, Result).
 
--spec wal_write_metadata_term(term(), state_r()) ->
-                                     {ok, seqnum(), offset()} | {hunk_too_big, len()} | no_return().
-wal_write_metadata_term(Term, #state{wal_mod=WalMod, log=HLogPid, name=Name}) ->
-    WalMod:write_hunk(HLogPid, Name, metadata, <<"k:md">>, ?LOGTYPE_METADATA,
-                      [term_to_binary(Term)], []).
-
-wal_sync(Pid, WalMod) when is_pid(Pid) ->
-    WalMod:sync(Pid).
+%% wal_sync(Pid, WalMod) when is_pid(Pid) ->
+%%     WalMod:sync(Pid).
 
 flush_gen_server_calls() ->
     receive {'$gen_call', _, _} ->
@@ -2673,8 +2495,8 @@ flush_gen_cast_calls(#state{name=Name}=S) ->
 %% * key relocated by scavenger -> almost certainly in OS buffer cache
 
 bcb_squidflash_primer(KsRaws, ResubmitFun,
-                      #state{name=Name, log=Log, log_dir=LogDir, wal_mod=WalMod}) ->
-    FakeS = #state{name=Name, log=Log, log_dir=LogDir, wal_mod=WalMod},
+                      #state{name=Name, blob_store=BlobStore}) ->
+    FakeS = #state{name=Name, blob_store=BlobStore},
     spawn(fun() ->
                   squidflash_doit(KsRaws, ResubmitFun, FakeS)
           end).
@@ -2982,99 +2804,208 @@ file_output_fun(Log) ->
 %%     ok = disk_log:close(OutLog),
 %%     X.
 
+
 %%
-%% Brick callback functions
+%% bcb: Brick Callback Functions
 %%
 
-bcb_handle_do({do, _SentAt, DoOpList, DoFlags}=DoOp, From, State) ->
+bcb_handle_do({do, _SentAt, DoOpList, DoFlags}=DoOp, From, S) ->
     %% do_do/6 reads/writes blob values from/to disk, and build
     %% the metadata modification list (thisdo_mods).
-    case do_do(DoOpList, DoFlags, State#state{thisdo_mods=[]}, check_dirty) of
+    case do_do(DoOpList, DoFlags, S#state{thisdo_mods=[]}, check_dirty) of
         has_dirty_keys ->
             DQI = #dirty_q{from=From, do_op=DoOp},
-            DirtyQ = State#state.wait_on_dirty_q,
-            {noreply, State#state{wait_on_dirty_q=queue:in(DQI, DirtyQ)}};
-        {no_dirty_keys, {Reply, NewState}} ->
-            if NewState#state.read_only_p, NewState#state.thisdo_mods =/= [] ->
+            DirtyQ = S#state.wait_on_dirty_q,
+            {noreply, S#state{wait_on_dirty_q=queue:in(DQI, DirtyQ)}};
+        {no_dirty_keys, {Reply, S1}} ->
+            if S1#state.read_only_p, S1#state.thisdo_mods =/= [] ->
                     %% This is a tail brick.
-                    {up1_read_only_mode, From, DoOp, NewState};
+                    {up1_read_only_mode, From, DoOp, S1};
                true ->
                     %% #state.thisdo_mods will be in reverse order of DoOpList!
-                    Thisdo_Mods = lists:reverse(NewState#state.thisdo_mods),
+                    Thisdo_Mods = lists:reverse(S1#state.thisdo_mods),
+
                     %% Write the metadata modifications to the common log.
                     SyncOverride = proplists:get_value(sync_override, DoFlags),
-                    case log_mods(NewState, SyncOverride) of
-                        {goahead, NewState3} ->
+                    case log_mods(S1, SyncOverride) of
+                        {goahead, #state{logging_op_serial=LoggingSerial, n_do=N_do}=S2} ->
                             %% Apply the metadata modifications to ctab
-                            ok = map_mods_into_ets(Thisdo_Mods, NewState3),
+                            ok = map_mods_into_ets(Thisdo_Mods, S2),
                             case proplists:get_value(local_op_only_do_not_forward, DoFlags) of
                                 true ->
-                                    {reply, Reply, NewState3};
+                                    {reply, Reply, S2};
                                 _ ->
                                     %% Send the modifications to downstream
-                                    LoggingSerial = NewState3#state.logging_op_serial,
                                     ToDos = [{chain_send_downstream, LoggingSerial,
                                               DoFlags, From, Reply, Thisdo_Mods}],
+
                                     %% If we've got modifications, we should be a head
                                     %% brick. Therefore we need to increment LoggingSerial.
                                     %% If we're other brick, we must not change LiggingSerial.
-                                    LoggingSerial2 = case Thisdo_Mods of
-                                                         [] ->
-                                                             LoggingSerial;
-                                                         _ ->
-                                                             LoggingSerial + 1
-                                                     end,
+                                    LoggingSerial2 =
+                                        case Thisdo_Mods of
+                                            [] ->
+                                                LoggingSerial;
+                                            _ ->
+                                                LoggingSerial + 1
+                                        end,
                                     {up1, ToDos,
-                                     {noreply, NewState3#state{
-                                                 n_do=NewState3#state.n_do + 1,
-                                                 logging_op_serial=LoggingSerial2}}}
+                                     {noreply, S2#state{n_do=N_do + 1,
+                                                        logging_op_serial=LoggingSerial2}}}
                             end;
-                        {wait, NewState3} ->
+                        {wait, WALSyncTicket, #state{logging_op_serial=LoggingSerial, n_do=N_do}=S2} ->
                             %% Apply the metadata modifications to dirty tab
-                            add_mods_to_dirty_tab(Thisdo_Mods, NewState3),
-                            LoggingSerial = NewState3#state.logging_op_serial,
-                            SyncMsg = {sync_msg, LoggingSerial},
-                            NewState3#state.sync_pid ! SyncMsg,
+                            add_mods_to_dirty_tab(Thisdo_Mods, S2),
+
                             LQI = #log_q{
                                      time=brick_metrics:histogram_timed_begin(logging_op_latencies),
                                      logging_serial=LoggingSerial,
                                      thisdo_mods=Thisdo_Mods,
                                      doflags=DoFlags,
-                                     from=From, reply=Reply
-                                    },
-                            NewQ = queue:in(LQI, NewState3#state.logging_op_q),
-                            N_do = NewState3#state.n_do,
-                            %% {wait, _} means we've got modifications and we should
+                                     from=From, reply=Reply},
+                            S3 = push_logging_op_q(LQI, WALSyncTicket, S2),
+
+                            %% {wait, _, _} means we've got modifications and we should
                             %% be a head brick. Therefore we need to increment LoggingSerial.
-                            LoggingSerial2 = LoggingSerial + 1,
-                            NewState4 = NewState3#state{n_do=N_do + 1,
-                                                        logging_op_serial=LoggingSerial2,
-                                                        logging_op_q=NewQ},
-                            {noreply, NewState4}
+                            {noreply, S3#state{n_do=N_do + 1,
+                                               logging_op_serial=LoggingSerial + 1}}
                     end
             end;
-        {noreply_now, NewState} ->
-            {noreply, NewState};
+        {noreply_now, S1} ->
+            {noreply, S1};
         silently_drop_reply ->
             %% Somewhere deep in the bowels of the do list processing,
             %% we hit some bad data.  We can't form a good answer, so
             %% don't reply at all.
-            {noreply, State}
+            {noreply, S}
     end.
+
+bcb_handle_info({wal_sync, WALSyncTicket, ok}, State) ->
+    case pop_logging_op_q(WALSyncTicket, State) of
+        none ->
+            error({logging_op_queue, missing, WALSyncTicket});
+        {LogQ_All, LogQ_ToDos, State1} ->
+            [ ok = map_mods_into_ets(DoOpList, State1) ||
+                #log_q{thisdo_mods = DoOpList} <- LogQ_ToDos ],
+            [ ok = clear_dirty_tab(DoOpList, State1) ||
+                #log_q{thisdo_mods = DoOpList} <- LogQ_ToDos ],
+            [ brick_metrics:histogram_timed_notify(Begin) ||
+                #log_q{time=Begin} <- LogQ_All],
+            ToDos = [ {chain_send_downstream,
+                       LQI#log_q.logging_serial,
+                       LQI#log_q.doflags,
+                       LQI#log_q.from,
+                       LQI#log_q.reply,
+                       LQI#log_q.thisdo_mods} || LQI <- LogQ_ToDos ],
+            %% CHAIN TODO: ISSUE001: Does the ToDos list (above) contain mods
+            %%             for the dirty keys?  Or is the attempt below to
+            %%             resubmit the dirty keys truly independent??
+            %% put(issue001, ToDos), ... looks like they're independent, whew!
+            {State2, ToDos2} = retry_dirty_key_ops(State1),
+            %% ?DBG_TLOG("sync_done_dirty_q ~w, ~w", [State2#state.name, State2#state.wait_on_dirty_q]),
+
+            LastLogSerial = (lists:last(LogQ_All))#log_q.logging_serial,
+            {up1_sync_done, LastLogSerial, ToDos ++ ToDos2, State2}
+    end;
+bcb_handle_info(do_init_second_half, #state{name=Name}=State) ->
+    ?E_INFO("do_init_second_half: ~w", [Name]),
+
+    %% @TODO (new hlog) Temporary disabled.
+    %% ok = gmt_hlog_common:full_writeback(),
+    ?E_INFO("Loading metadata records for brick ~w", [Name]),
+    Start = os:timestamp(),
+    {LoadCount, ErrList} = load_metadata(State),
+    Elapse = timer:now_diff(os:timestamp(), Start) div 1000,
+
+    ZeroDiskErrorsP = (ErrList =:= []),
+    if
+        ZeroDiskErrorsP ->
+            ?E_INFO("Finished loading metadata records for brick ~w [~w ms]. "
+                    "key count: ~w, no error",
+                    [Name, Elapse, LoadCount]);
+        true ->
+            ErrorCount = length(ErrList),
+            Message =
+                lists:flatten(
+                  io_lib:format("Could net load ~w metadata records for brick ~w, "
+                                "must recover via chain replication.~n"
+                                "\tloaded key count: ~w~n"
+                                "\terror key count:  ~w~n"
+                                "\terror details:    ~p~n"
+                                "\telapse: ~w ms",
+                                [ErrorCount, Name, LoadCount, ErrorCount,
+                                 ErrList, Elapse])),
+            ?E_CRITICAL(Message, []),
+            gmt_util:set_alarm({load_metadata, Name}, Message, fun() -> ok end)
+    end,
+
+    %% For recently bigdata_dir files, sync them all in a big safety blatt.
+    %% ... Except that it also seems to have the potential to slam the
+    %% ... disk system really, really hard, which can (in turn) create
+    %% ... extremely bad timeout conditions.  {sigh}  So, for now,
+    %% ... comment out the sync.
+    %% os:cmd("sync"),
+
+    %% Set these timers only after the WAL scan is finished.
+    %% brick_itimer:send_interval(1*1000, qqq_debugging_only),
+    {ok, ExpiryTRef} = brick_itimer:send_interval(1 * 1000, check_expiry),
+
+    ?E_INFO("do_init_second_half: ~p finished", [State#state.name]),
+    self() ! {storage_layer_init_finished, State#state.name, ZeroDiskErrorsP},
+    {noreply, State#state{expiry_tref = ExpiryTRef,
+                          scavenger_tref = undefined}};
+bcb_handle_info(Msg, State) ->
+    ?E_ERROR("========================== Unhandled bcb_handle_info message: ~P (~p)", [Msg, 40, ?MODULE]),
+    ?MODULE:handle_info(Msg, State).
+
 
 %% @doc Flush all volatile data to stable storage <b>synchronously</b>.
 
-bcb_force_flush(S) when is_record(S, state) ->
-    catch (S#state.wal_mod):sync(S#state.log).
+bcb_force_flush(#state{md_store=_MdStore}) ->
+    %% @TODO (new hlog) Temporary disabled.
+    %% catch MdStore:sync().
+    ok.
 
 %% @doc Flush chain replication logging serial # stable storage asynchronously.
 
-bcb_async_flush_log_serial(Serial, S) when is_record(S, state) ->
-    S#state.sync_pid ! {sync_msg, Serial},
-    S.
+bcb_async_flush_log_serial(LoggingSerial, #state{md_store=MdStore}=S) ->
+    WALSyncTicket = MdStore:request_group_commit(),
+    LQI = #log_q{
+             time=brick_metrics:histogram_timed_begin(logging_op_latencies),
+             logging_serial=LoggingSerial,
+             is_bcb_async_flush_request=true
+            },
+    push_logging_op_q(LQI, WALSyncTicket, S).
 
-bcb_keys_for_squidflash_priming(_DoList, _DoFlags, #state{bigdata_dir=undefined}) ->
-    [];
+-spec push_logging_op_q(log_q(), brick_hlog_wal:callback_ticket(), state_r()) -> state_r().
+push_logging_op_q(LoggingOp, WALSyncTicket, #state{logging_op_q=LoggingOpQueue}=S) ->
+    QueueForTicket =
+        case gb_trees:lookup(WALSyncTicket, LoggingOpQueue) of
+            none ->
+                queue:new();
+            {value, Q} ->
+                Q
+        end,
+    LoggingOpQueue2 = gb_trees:enter(WALSyncTicket,
+                                     queue:in(LoggingOp, QueueForTicket),
+                                     LoggingOpQueue),
+    S#state{logging_op_q=LoggingOpQueue2}.
+
+-spec pop_logging_op_q(brick_hlog_wal:callback_ticket(), state_r()) ->
+                              none() | {LogQ_All::[log_q()], LogQ_ToDos::[log_q()], state_r()}.
+pop_logging_op_q(WALSyncTicket, #state{logging_op_q=LoggingOpQueue}=S) ->
+    case gb_trees:lookup(WALSyncTicket, LoggingOpQueue) of
+        none ->
+            none;
+        {value, QueueForTicket} ->
+            LogQ_All = queue:to_list(QueueForTicket),
+            LogQ_ToDos = lists:filter(fun(#log_q{is_bcb_async_flush_request=Bool}) ->
+                                              not Bool
+                                      end, LogQ_All),
+            S1 = S#state{logging_op_q=gb_trees:delete(WALSyncTicket, LoggingOpQueue)},
+            {LogQ_All, LogQ_ToDos, S1}
+    end.
+
 bcb_keys_for_squidflash_priming(DoList, DoFlags, State) ->
     SF_resubmit = proplists:get_value(squidflash_resubmit, DoFlags) =:= true, %% true or undefined
     case SF_resubmit of
@@ -3136,8 +3067,6 @@ bcb_keys_for_squidflash_priming(DoList, DoFlags, State) ->
               end, [], DoList)
     end.
 
-bcb_keys_for_squidflash_priming(_DoMods, #state{bigdata_dir=undefined}) ->
-    [];
 bcb_keys_for_squidflash_priming(DoMods, State) ->
     lists:foldl(
       fun({insert_existing_value, _StoreTuple, OldKey, _OldTimestamp}, Acc) ->
@@ -3168,7 +3097,8 @@ accumulate_maybe(Key, StoreTuple, Acc) ->
 
 is_sequence_frozen(StoreTuple) ->
     case storetuple_val(StoreTuple) of
-        {_Seq, _} ->
+        Tuple when is_tuple(Tuple) ->  %% record #w{} or #p{}
+            %% @TODO: Implement brick_blob_store:is_sequence_frozen/1.
             true;
         Blob when is_binary(Blob) ->
             false
@@ -3183,14 +3113,14 @@ is_sequence_frozen(Key, State) ->
     end.
 
 %% @doc Write values and Thisdo_Mods list to disk.
-bcb_log_mods(Thisdo_Mods, Serial, S) when is_record(S, state) ->
+bcb_log_mods(Thisdo_Mods, LoggingSerial, S) when is_record(S, state) ->
     ?DBG_ETS("bcb_log_mods_to_storage ~w: ~w", [S#state.name, Thisdo_Mods]),
     LocalMods = filter_mods_from_upstream(Thisdo_Mods, S),
-    case log_mods2(LocalMods, undefined, S) of
+    case write_metadata_term(LocalMods, S, undefined, false) of
         {goahead, S2} ->
-            {goahead, S2#state{logging_op_serial = Serial + 1}, LocalMods};
+            {goahead, S2#state{logging_op_serial = LoggingSerial + 1}, LocalMods};
         {wait, S2} ->
-            {wait, S2#state{logging_op_serial = Serial + 1}, LocalMods}
+            {wait, S2#state{logging_op_serial = LoggingSerial + 1}, LocalMods}
     end.
 
 %% @doc Convert Thisdo_Mods list to internal storage.
@@ -3218,16 +3148,12 @@ bcb_map_mods_to_storage(Thisdo_Mods, S) when is_record(S, state) ->
 
 bcb_get_list(Keys, S) when is_record(S, state) ->
     F_ram = fun(Key, Flags) ->
-                    if S#state.bigdata_dir =:= undefined ->
-                            Flags;
-                       true ->
-                            [ST] = my_lookup(S, Key, false),
-                            case storetuple_val(ST) of
-                                Bin when is_binary(Bin) ->
-                                    [value_in_ram|Flags];
-                                _ ->
-                                    Flags
-                            end
+                    [ST] = my_lookup(S, Key, false),
+                    case storetuple_val(ST) of
+                        Bin when is_binary(Bin) ->
+                            [value_in_ram|Flags];
+                        _ ->
+                            Flags
                     end
             end,
     lists:reverse(lists:foldl(
@@ -3298,13 +3224,16 @@ bcb_get_metadata(Key, S) when is_record(S, state) ->
 %%
 %% WARNING: This is a blocking, synchronous disk I/O operation.
 
-bcb_set_metadata(Key, Val, S) when is_record(S, state) ->
+bcb_set_metadata(Key, Val,
+                 #state{mdtab=MdTab, do_sync=DoSync, md_store=_MdStore}=S) ->
     T = {Key, Val},
-    ets:insert(S#state.mdtab, T),
+    ets:insert(MdTab, T),
     Thisdo_Mods = [{md_insert, T}],
-    {_, NewS} = log_mods2(Thisdo_Mods, undefined, S),
-    if S#state.do_sync ->
-            catch (S#state.wal_mod):sync(S#state.log);
+    {_, NewS} = write_metadata_term(Thisdo_Mods, S, undefined, false),
+    if DoSync ->
+            %% @TODO (new hlog) Temporary disabled.
+            %% catch MdStore:sync();
+            ok;
        true ->
             ok
     end,
@@ -3314,12 +3243,15 @@ bcb_set_metadata(Key, Val, S) when is_record(S, state) ->
 %%
 %% WARNING: This is a blocking, synchronous disk I/O operation.
 
-bcb_delete_metadata(Key, S) when is_record(S, state) ->
-    ets:delete(S#state.mdtab, Key),
+bcb_delete_metadata(Key,
+                    #state{mdtab=MdTab, do_sync=DoSync, md_store=_MdStore}=S) ->
+    ets:delete(MdTab, Key),
     Thisdo_Mods = [{md_delete, Key}],
-    {_, NewS} = log_mods2(Thisdo_Mods, undefined, S),
-    if S#state.do_sync ->
-            catch (S#state.wal_mod):sync(S#state.log);
+    {_, NewS} = write_metadata_term(Thisdo_Mods, S, undefined, false),
+    if DoSync ->
+            %% @TODO (new hlog) Temporary disabled.
+            %% catch MdStore:sync();
+            ok;
        true ->
             ok
     end,
@@ -3392,9 +3324,10 @@ bcb_lookup_key_storetuple(Key, true = _MustHaveVal_p, S)
         [ST] ->
             [ST2] = my_lookup(S, Key, true),
             RawVal = storetuple_val(ST),
-            if S#state.bigdata_dir =/= undefined, is_binary(RawVal) ->
+            if
+                is_binary(RawVal) ->
                     [{true, ST2}];
-               true ->
+                true ->
                     [{false, ST2}]
             end;
         [] ->
@@ -3446,17 +3379,21 @@ bcb_incr_logging_serial(S) when is_record(S, state) ->
 bcb_peek_logging_serial(S) when is_record(S, state) ->
     S#state.logging_op_serial.
 
-%% @spec (state_r()) -> integer()
+
 %% @doc Return the current length the ImplState's logging op queue
+-spec bcb_peek_logging_op_q_len(state_r()) -> non_neg_integer().
+bcb_peek_logging_op_q_len(#state{logging_op_q=LoggingOpQueue}) ->
+    lists:foldl(fun(Q, Acc) ->
+                        Acc + queue:len(Q)
+                end, 0, gb_trees:values(LoggingOpQueue)).
 
-bcb_peek_logging_op_q_len(S) when is_record(S, state) ->
-    queue:len(S#state.logging_op_q).
-
-%% @spec (state_r()) -> integer()
 %% @doc Return the current value the ImplState's logging op queue in list form.
-
-bcb_get_logging_op_q(S) when is_record(S, state) ->
-    queue:to_list(S#state.logging_op_q).
+-spec bcb_get_logging_op_q(state_r()) -> [log_q()].
+bcb_get_logging_op_q(#state{logging_op_q=LoggingOpQueue}) ->
+    Queues = lists:foldl(fun(Q, Acc) ->
+                                 [queue:to_list(Q) | Acc]
+                end, [], gb_trees:values(LoggingOpQueue)),
+    lists:flatten(lists:reverse(Queues)).
 
 %% @spec (state_r()) -> proplist()
 %% @doc Return the ImplState's status in proplist form (the same proplist

@@ -39,8 +39,11 @@
           thisdo_mods = [],                         % ops for this do
           doflags,                                  % DoFlags for this do
           from,                                     % gen_server:reply() to
-          reply                                     % gen_server:reply() info
+          reply,                                    % gen_server:reply() info
+          %% Set to true if this #log_q{} is created by brick_ets:bcb_async_flush_log_serial/2
+          is_bcb_async_flush_request = false :: boolean()
          }).
+-type log_q() :: #log_q{}.
 
 -record(dirty_q, {
           from,                                     % gen_server:reply info

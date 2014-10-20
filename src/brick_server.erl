@@ -2162,6 +2162,7 @@ handle_cast({ch_log_replay, UpstreamBrick, Serial, Thisdo_Mods, From,
     handle_cast({ch_log_replay_v2, UpstreamBrick, Serial, Thisdo_Mods, From,
                  Reply, undefined}, State);
 handle_cast(Msg, State) ->
+    ?E_DBG("====================== brick_server:handle_cast - deligating to brick_ets. message: ~P", [Msg, 40]),
     {ImplMod, ImplState} = impl_details(State),
     case ImplMod:handle_cast(Msg, ImplState) of
         {noreply, S} ->
@@ -2302,7 +2303,7 @@ handle_info({'DOWN', MRef, _Type, _Pid, _Info} = Msg, State) ->
 handle_info(Msg, State) ->
     {ImplMod, ImplState} = impl_details(State),
     false = size(ImplState) =:= record_info(size, state), %sanity
-    case ImplMod:handle_info(Msg, ImplState) of
+    case ImplMod:bcb_handle_info(Msg, ImplState) of
         {up1, ToDos, OrigReturn} ->
             State2 = do_chain_todos_iff_empty_log_q(ToDos, State),
             calc_original_return(OrigReturn, State2);
@@ -3412,8 +3413,7 @@ chain_do_log_replay(ChainSerial, DoFlags, Thisdo_Mods, From, Reply, S)
     case ImplMod:bcb_log_mods(Thisdo_Mods, ChainSerial, ImplState) of
         {goahead, ImplState2, LocalMods} ->
             ?DBG_CHAIN_TLOG("chain_do_log_replay ~w calling bcb_map_mods_to_storage", [S#state.name]),
-            ImplState3 = ImplMod:bcb_map_mods_to_storage(LocalMods,
-                                                         ImplState2),
+            ImplState3 = ImplMod:bcb_map_mods_to_storage(LocalMods, ImplState2),
             false = size(ImplState3) =:= record_info(size, state), %sanity
             %% TODO: Should this be chain_send_downstream_iff_empty_log_q()??
             S2 = chain_send_downstream(ChainSerial,

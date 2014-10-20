@@ -29,7 +29,8 @@
 -export([start_link/2,
          %% read_metadata/1,
          write_metadata/2,
-         write_metadata_group_commit/2
+         write_metadata_group_commit/2,
+         request_group_commit/1
         ]).
 
 %% API for Write-back Module
@@ -106,6 +107,11 @@ write_metadata_group_commit(Pid, MetadataList) ->
 writeback_to_stable_storage(_Pid, _WalEntries) ->
     %% gen_server:call(Pid, {writeback_value, WalEntries}).
     ok.
+
+-spec request_group_commit(pid()) -> callback_ticket().
+request_group_commit(_Pid) ->
+    Caller = self(),
+    brick_hlog_wal:request_group_commit(Caller).
 
 
 %% ====================================================================
