@@ -5,4 +5,5 @@
 *.log
 *.script
 .eunit/
+.rebar/
 erl_crash.dump

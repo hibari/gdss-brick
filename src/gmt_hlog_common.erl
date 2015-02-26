@@ -59,7 +59,7 @@
 %%% Types/Specs/Records
 %%%----------------------------------------------------------------------
 
--opaque from() :: {pid(),term()}.
+-type from() :: {pid(),term()}.
 
 -record(state, {
           name                            :: file:name(),
