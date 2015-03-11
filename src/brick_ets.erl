@@ -1164,26 +1164,32 @@ rename_key2(Key, TStamp, NewKey, ExpTime, Flags, State, TS) ->
             case key_exists_p(NewKey, [], State, false) of
                 false ->
                     %% NewKey doesn't exist
-                    case my_insert(State, Key, TStamp, {?KEY_SWITCHAROO, NewKey}, ExpTime, Flags) of
-                        {val_error, _} = Err ->
-                            {Err, State};
-                        {{ok, _}, _} = Ok ->
-                            Ok
-                    end;
+                    rename_key_with_get_set_delete(Key, TStamp, NewKey, ExpTime, Flags, State);
                 {NewKey, OldTS, _, _, _, _} when TStamp > OldTS ->
                     %% NewKey does exist and TStamp is OK
-                    case my_insert(State, Key, TStamp, {?KEY_SWITCHAROO, NewKey}, ExpTime, Flags) of
-                        {val_error, _} = Err ->
-                            {Err, State};
-                        {{ok, _}, _} = Ok ->
-                            Ok
-                    end;
+                    rename_key_with_get_set_delete(Key, TStamp, NewKey, ExpTime, Flags, State);
                 {NewKey, OldTS, _, _, _, _} ->
                     %% Otherwise TStamp is not ok
                     {{ts_error, OldTS}, State}
             end;
         true ->
             {{ts_error, TS}, State}
+    end.
+
+rename_key_with_get_set_delete(Key, TStamp, NewKey, ExpTime, Flags, State) ->
+    %% Get the old value. It has been loaded by the squidflash primer.
+    [StoreTuple] = my_lookup(State, Key, true),
+    Value = storetuple_val(StoreTuple),
+    case set_key(NewKey, TStamp, Value, ExpTime, Flags, State) of
+        {{ok, _}, NewState1} ->
+            case delete_key(Key, [], NewState1) of
+                {ok, NewState2} ->
+                    {{ok, TStamp}, NewState2};
+                Err ->
+                    Err
+            end;
+        Err ->
+            Err
     end.
 
 get_key(Key, Flags, State) ->
@@ -1805,6 +1811,9 @@ my_insert2(#state{thisdo_mods=Mods, max_log_size=MaxLogSize}=S, Key, TStamp, Val
                 end,
             {{ok, TStamp}, S#state{thisdo_mods = [Mod|Mods]}};
         {?KEY_SWITCHAROO, NewKey} ->
+            %% This clause should never match in Hibair v0.1.x
+            ?E_ERROR("BUG: Error ~w ?KEY_SWITCHAROO is used", [S#state.name]),
+
             %% @TODO - value_in_ram support?
             [ST] = my_lookup(S, Key, false),
             CurVal = storetuple_val(ST),
@@ -2092,16 +2101,20 @@ filter_mods_from_upstream(Thisdo_Mods, S) ->
                                      Key, TS, CurVal, CurValLen, Exp, Flags),
                            {insert_constant_value, NewST};
                       ({insert_existing_value, ST, OldKey}) ->
+                           %% This clause should never match in Hibari v0.1.x
+                           ?E_ERROR("BUG: Error ~w bad_mod_from_upstream: insert_existing_value",
+                                    [S#state.name]),
+
+                           %% This will read the actual value from disk and block
+                           %% brick_server's main event loop. The squidflash primer
+                           %% technique cannot be used here as it will reorder the
+                           %% modifications from upstream by delaying the read.
+                           [CurSt] = my_lookup(ST, OldKey, true),
+                           CurVal = storetuple_val(CurSt),
                            Key = storetuple_key(ST),
-                           TS = storetuple_ts(ST),
-                           [CurST] = my_lookup(S, OldKey, false),
-                           CurVal = storetuple_val(CurST),
-                           CurValLen = storetuple_vallen(CurST),
-                           Exp = storetuple_exptime(ST),
-                           Flags = storetuple_flags(ST),
-                           NewST = storetuple_make(
-                                     Key, TS, CurVal, CurValLen, Exp, Flags),
-                           {insert_existing_value, NewST, OldKey};
+                           Loc = bigdata_dir_store_val(Key, CurVal, ST),
+                           %% ?E_DBG("insert_exsiting_value - sequence_frozen", []),
+                           {insert, ST, storetuple_replace_val(ST, Loc)};
                       (X) ->
                            X
                    end, Thisdo_Mods),
@@ -3199,6 +3212,7 @@ squidflash_primer({do, _SentAt, Dos, DoFlags} = DoOp, From, S) ->
                            {undefined, [ST]} ->
                                accumulate_maybe(Key, ST, Acc)
                        end;
+
                   ({get_many, Key, Flags}, Acc) ->
                        case (proplists:get_value(witness, Flags, false) orelse
                              proplists:get_value(get_many_raw_storetuples, Flags, false)) of
@@ -3220,6 +3234,17 @@ squidflash_primer({do, _SentAt, Dos, DoFlags} = DoOp, From, S) ->
                                                    F_look(K, Acc2)
                                            end, [], L) ++ Acc
                        end;
+
+                 ({rename, Key, _Timestamp, _NewKey, _ExpTime, _Flags}, Acc) ->
+                      case my_lookup(S, Key, false) of
+                          [] ->
+                              Acc;
+                          [StoreTuple] ->
+                              accumulate_maybe(Key, StoreTuple, Acc);
+                          false ->
+                              Acc
+                      end;
+
                   (_, Acc) ->
                        Acc
                end, [], Dos),
