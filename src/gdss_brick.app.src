@@ -24,7 +24,7 @@
   %% NOTE: GDSS stands for Gemini Distributed Storage Service, which is
   %%       the predecessor of Hibari
   {description, "Hibari Brick Server"},
-  {vsn, "0.3.0"},
+  {vsn, "0.1.11"},
   {registered, []},
   {applications, [kernel, stdlib, sasl, crypto]},
   {mod, {brick, []}},
