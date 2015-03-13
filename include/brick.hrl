@@ -1,5 +1,5 @@
 %%%----------------------------------------------------------------------
-%%% Copyright (c) 2007-2013 Hibari developers.  All rights reserved.
+%%% Copyright (c) 2007-2015 Hibari developers.  All rights reserved.
 %%%
 %%% Licensed under the Apache License, Version 2.0 (the "License");
 %%% you may not use this file except in compliance with the License.
@@ -82,53 +82,63 @@
 -define(CAT_MIGRATE,              (1 bsl  6)). % Migration-related
 -define(CAT_HASH,                 (1 bsl  7)). % Hash-related
 
+-define(E_EMERGENCY(Fmt, Args),
+        ?ELOG_EMERGENCY(?CAT_GENERAL, Fmt, Args)).
+-define(E_ALERT(Fmt, Args),
+        ?ELOG_ALERT(?CAT_GENERAL, Fmt, Args)).
+-define(E_CRITICAL(Fmt, Args),
+        ?ELOG_CRITICAL(?CAT_GENERAL, Fmt, Args)).
 -define(E_ERROR(Fmt, Args),
         ?ELOG_ERROR(?CAT_GENERAL, Fmt, Args)).
 -define(E_WARNING(Fmt, Args),
         ?ELOG_WARNING(?CAT_GENERAL, Fmt, Args)).
+-define(E_NOTICE(Fmt, Args),
+        ?ELOG_NOTICE(?CAT_GENERAL, Fmt, Args)).
 -define(E_INFO(Fmt, Args),
         ?ELOG_INFO(?CAT_GENERAL, Fmt, Args)).
 -define(E_DBG(Cat, Fmt, Args),
         ?ELOG_DEBUG(Cat, Fmt, Args)).
+-define(E_TRACE(Cat, Fmt, Args),
+        ?ELOG_TRACE(Cat, Fmt, Args)).
 
 -define(DBG_GEN(Fmt, Args),
-        ?ELOG_DEBUG(?CAT_GENERAL, Fmt, Args)).
+        ?ELOG_TRACE(?CAT_GENERAL, Fmt, Args)).
 -define(DBG_OP(Fmt, Args),
-        ?ELOG_DEBUG(?CAT_OP, Fmt, Args)).
+        ?ELOG_TRACE(?CAT_OP, Fmt, Args)).
 -define(DBG_ETS(Fmt, Args),
-        ?ELOG_DEBUG(?CAT_ETS, Fmt, Args)).
+        ?ELOG_TRACE(?CAT_ETS, Fmt, Args)).
 -define(DBG_TLOG(Fmt, Args),
-        ?ELOG_DEBUG(?CAT_TLOG, Fmt, Args)).
+        ?ELOG_TRACE(?CAT_TLOG, Fmt, Args)).
 -define(DBG_REPAIR(Fmt, Args),
-        ?ELOG_DEBUG(?CAT_REPAIR, Fmt, Args)).
+        ?ELOG_TRACE(?CAT_REPAIR, Fmt, Args)).
 -define(DBG_CHAIN(Fmt, Args),
-        ?ELOG_DEBUG(?CAT_CHAIN, Fmt, Args)).
+        ?ELOG_TRACE(?CAT_CHAIN, Fmt, Args)).
 -define(DBG_CHAIN_TLOG(Fmt, Args),
-        ?ELOG_DEBUG((?CAT_CHAIN bor ?CAT_TLOG), Fmt, Args)).
+        ?ELOG_TRACE((?CAT_CHAIN bor ?CAT_TLOG), Fmt, Args)).
 -define(DBG_MIGRATE(Fmt, Args),
-        ?ELOG_DEBUG(?CAT_MIGRATE, Fmt, Args)).
+        ?ELOG_TRACE(?CAT_MIGRATE, Fmt, Args)).
 -define(DBG_HASH(Fmt, Args),
-        ?ELOG_DEBUG(?CAT_HASH, Fmt, Args)).
+        ?ELOG_TRACE(?CAT_HASH, Fmt, Args)).
 
 %% Hold-over from brick_simple:dumblog/1, which only took a single arg.
 
 -define(DBG_GENx(Arg),
-        ?ELOG_DEBUG(?CAT_GENERAL, "~p", [Arg])).
+        ?ELOG_TRACE(?CAT_GENERAL, "~w", [Arg])).
 -define(DBG_OPx(Arg),
-        ?ELOG_DEBUG(?CAT_OP, "~p", [Arg])).
+        ?ELOG_TRACE(?CAT_OP, "~w", [Arg])).
 -define(DBG_ETSx(Arg),
-        ?ELOG_DEBUG(?CAT_ETS, "~p", [Arg])).
+        ?ELOG_TRACE(?CAT_ETS, "~w", [Arg])).
 -define(DBG_TLOGx(Arg),
-        ?ELOG_DEBUG(?CAT_TLOG, "~p", [Arg])).
+        ?ELOG_TRACE(?CAT_TLOG, "~w", [Arg])).
 -define(DBG_REPAIRx(Arg),
-        ?ELOG_DEBUG(?CAT_REPAIR, "~p", [Arg])).
+        ?ELOG_TRACE(?CAT_REPAIR, "~w", [Arg])).
 -define(DBG_CHAINx(Arg),
-        ?ELOG_DEBUG(?CAT_CHAIN, "~p", [Arg])).
+        ?ELOG_TRACE(?CAT_CHAIN, "~w", [Arg])).
 -define(DBG_CHAIN_TLOGx(Arg),
-        ?ELOG_DEBUG((?CAT_CHAIN bor ?CAT_TLOG), "~p", [Arg])).
+        ?ELOG_TRACE((?CAT_CHAIN bor ?CAT_TLOG), "~w", [Arg])).
 -define(DBG_MIGRATEx(Arg),
-        ?ELOG_DEBUG(?CAT_MIGRATE, "~p", [Arg])).
+        ?ELOG_TRACE(?CAT_MIGRATE, "~w", [Arg])).
 -define(DBG_HASHx(Arg),
-        ?ELOG_DEBUG(?CAT_HASH, "~p", [Arg])).
+        ?ELOG_TRACE(?CAT_HASH, "~w", [Arg])).
 
 -endif. % -ifndef(ets_brick_hrl).

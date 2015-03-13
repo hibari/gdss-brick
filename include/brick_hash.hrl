@@ -1,5 +1,5 @@
 %%%----------------------------------------------------------------------
-%%% Copyright (c) 2009-2013 Hibari developers.  All rights reserved.
+%%% Copyright (c) 2009-2015 Hibari developers.  All rights reserved.
 %%%
 %%% Licensed under the Apache License, Version 2.0 (the "License");
 %%% you may not use this file except in compliance with the License.
@@ -64,7 +64,7 @@
           phase = pre               :: pre | migrating,
           cookie                    :: term(),
           migr_dict                 :: hibari_dict() | undefined   % migration dictionary
-                                                            % dict keyed by chain name
+                                                                   % dict keyed by chain name
          }).
 
 %% Character that separates the hashable prefix

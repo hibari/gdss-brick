@@ -1,5 +1,5 @@
 %%%----------------------------------------------------------------------
-%%% Copyright (c) 2008-2013 Hibari developers.  All rights reserved.
+%%% Copyright (c) 2008-2015 Hibari developers.  All rights reserved.
 %%%
 %%% Licensed under the Apache License, Version 2.0 (the "License");
 %%% you may not use this file except in compliance with the License.
@@ -730,8 +730,8 @@ do_write_hunk(HLogType, _TypeNum, H_Len, H_Bytes,
                                 true ->
                                      {S1#state.cur_fhS, S1#state.cur_offS}
                              end,
-                         ?DBG_GEN("DBG: write type ~p\nbytes ~p (grep tag=sync)",
-                                  [HLogType, H_Bytes]),
+                         ?DBG_GEN("do_write_hunk: hlog type ~w, bytes ~w (grep tag=sync)",
+                                  [HLogType, H_Len]),
                          {ok, MyOffset0} = file:position(MyFH, cur), %BZDEBUG
                          if MyOffset =/= MyOffset0 ->
                                  erlang:error({prewrite, MyOffset, MyOffset0, H_Len});
@@ -748,7 +748,7 @@ do_write_hunk(HLogType, _TypeNum, H_Len, H_Bytes,
                          end,
                          S1;
                     true ->
-                         ?DBG_GEN("DBG: buff type ~p\nbytes ~p (grep tag=sync)",
+                         ?DBG_GEN("do_write_hunk [sync_problem] hlog type ~w, bytes ~w (grep tag=sync)",
                                   [HLogType, H_Len]),
                          Wb = S#state.write_backlog,
                          S#state{write_backlog = [H_Bytes|Wb]}
@@ -773,7 +773,7 @@ create_hunk(TypeNum, CBlobs, UBlobs) ->
                    File = "./disable-md5",
                    case (catch file:read_file(File)) of
                        {ok, _} ->
-                           ?E_WARNING("~s: MD5 DISABLED by ~p\n",
+                           ?E_WARNING("~s: MD5 DISABLED by ~p",
                                       [?MODULE, File]),
                            put(disable_md5_hack, yes),
                            [];
@@ -936,7 +936,7 @@ read_hunk_summary(Dir, N, Offset, HunkLenHint, XformFun)
                 read_hunk_summary(FH, N, Offset, HunkLenHint, XformFun)
             catch
                 X:Y ->
-                    ?E_ERROR("Error: ~p ~p at ~p ~p for ~p bytes:\n~p\n",
+                    ?E_ERROR("Error: ~p ~p at ~p ~p for ~p bytes:~p",
                              [X, Y, N, Offset, HunkLenHint, erlang:get_stacktrace()]),
                     {error, {X, Y}}
             after
@@ -988,7 +988,7 @@ fold2(ShortLong, Dir, Fun, FiltFun, InitialAcc) ->
                    find_longterm_log_seqnums(Dir, ?ARCH_H1_SIZE, ?ARCH_H2_SIZE)
            end,
     SeqNums = lists:filter(FiltFun, List),
-    ?DBG_TLOGx({gmt_hlog_fold2, ShortLong, Dir, SeqNums}),
+    ?DBG_TLOG("fold2: ~w, ~s ~w", [ShortLong, Dir, SeqNums]),
     lists:foldl(
       fun(N, {Acc00, ErrList}) ->
               {ok, FH} = open_log_file(Dir, N, [read]),
@@ -998,7 +998,7 @@ fold2(ShortLong, Dir, Fun, FiltFun, InitialAcc) ->
                   {{ok, _Path, FI}, _, _} = {log_file_info(Dir, N), Dir, N},
                   if FI#file_info.size >= size(Hdr) ->
                           Res = fold_a_file(FH, FI#file_info.size, N, Fun, Acc00),
-                          ?DBG_TLOGx({gmt_hlog_fold2, done, N, Res}),
+                          ?DBG_TLOG("fold2: done (~w) -> ~w", [N, Res]),
                           {Res, ErrList};
                      true ->
                           {Acc00, ErrList}
@@ -1007,9 +1007,9 @@ fold2(ShortLong, Dir, Fun, FiltFun, InitialAcc) ->
                   X:Y ->
                       Seq = get(fold_seq),
                       Off = get(fold_off),
-                      ?DBG_TLOGx({gmt_hlog_fold2, err,X,Y, seq_off,Seq,Off}),
-                      fold_warning("WAL fold of dir ~p sequence ~p offset ~p. "
-                                   "\nerror ~p:~p\n~p",
+                      ?DBG_TLOG("fold2: error ~w:~w seq ~w off ~w", [X, Y, Seq, Off]),
+                      fold_warning("WAL fold of dir ~s sequence ~w offset ~w. "
+                                   "error ~p:~p ~p",
                                    [Dir, Seq, Off, X, Y, erlang:get_stacktrace()]),
                       Err = {seq, N, err, Y},
                       {Acc00, [Err|ErrList]}
@@ -1041,7 +1041,7 @@ fold_a_file(FH, LogSize, SeqNum, Offset, Fun, Acc) ->
             %%                                 H2#hunk_summ.off + H2#hunk_summ.len}
             %%                            catch
             %%                                _X:{new_offset, X} ->
-            %%                                    io:format("CAUGHT ~p\n", [X]),
+            %%                                    io:format("CAUGHT ~p", [X]),
             %%                                    {Acc, X}
             %%                            end,
             {Acc2, NewOffset} = case Fun(H2, FH, Acc) of
@@ -1061,7 +1061,8 @@ fold_a_file(FH, LogSize, SeqNum, Offset, Fun, Acc) ->
                     %%   2. The file is being actively written to (e.g.
                     %%      CommonLog case).
                     %% In either case, it's OK to stop here.
-                    ?DBG_TLOGx({fold_a_file, SeqNum, too_big, NewOffset, LogSize}),
+                    ?DBG_TLOG("fold_a_file: seq ~w, too_big, new_offset ~w, log_size ~w",
+                              [SeqNum, NewOffset, LogSize]),
                     Acc2;
                true ->
                     AllBSize = lists:sum(H2#hunk_summ.c_len ++ H2#hunk_summ.u_len),
@@ -1073,14 +1074,13 @@ fold_a_file(FH, LogSize, SeqNum, Offset, Fun, Acc) ->
                     fold_a_file(FH, LogSize, SeqNum, NewOffset, Fun, Acc2)
             end;
         {bof, NewOffset} ->
-            ?DBG_TLOGx({fold_a_file, SeqNum, bof, NewOffset}),
+            ?DBG_TLOG("fold_a_file: seq ~w, bof, new_offset ~w", [SeqNum, NewOffset]),
             fold_a_file(FH, LogSize, SeqNum, NewOffset, Fun, Acc);
         eof ->
-            ?DBG_TLOGx({fold_a_file, SeqNum, eof}),
+            ?DBG_TLOG("fold_a_file: seq ~w, eof", [SeqNum]),
             Acc;
         Err ->
-            ?E_ERROR("fold_a_file: seq ~p offset ~p: ~p\n",
-                     [SeqNum, Offset, Err]),
+            ?E_ERROR("fold_a_file: seq ~p offset ~p: ~p", [SeqNum, Offset, Err]),
             throw(Err)
     end.
 
@@ -1103,10 +1103,13 @@ open_log_file(Dir, N, Options) ->
     case file:open(Path, [binary, raw|Options]) of
         {error, enoent} when N > 0 ->
             %% Retry: perhaps this file was moved to long-term storage?
-            ?DBG_TLOGx({open_log_file, Dir, N, Options, Path, retry}),
+            ?DBG_TLOG("open_log_file ~s ~w -> {error, enoent}, retry", [Path, Options]),
             open_log_file(Dir, -N, Options);
+        {ok, _}=Res ->
+            ?DBG_TLOG("open_log_file ~w ~s", [Options, Path]),
+            Res;
         Res ->
-            ?DBG_TLOGx({open_log_file, Dir, N, Options, Path, Res}),
+            ?DBG_TLOG("open_log_file ~w ~s -> ~w", [Options, Path, Res]),
             Res
     end.
 
@@ -1299,7 +1302,7 @@ do_md5(X) ->
             File = "./use-md5-bif",
             case (catch file:read_file(File)) of
                 {ok, _} ->
-                    ?E_WARNING("~s: MD5 BIF in use by ~p\n",
+                    ?E_WARNING("~s: MD5 BIF in use by ~p",
                                [?MODULE, self()]),
                     put(Key, yes),
                     do_md5(X);
@@ -1316,34 +1319,33 @@ do_md5(X) ->
 do_sync_asyncly(From, #state{syncer_pid = undefined} = S) ->
     ThisRound = [From],
     {Pid, Ref} = spawn_sync_asyncly(ThisRound, S),
-    ?DBG_GENx({do_sync_asyncly, S#state.dir, one_waiter}),
+    ?DBG_GEN("do_sync_asyncly [one_waiter] ~s", [S#state.dir]),
     S#state{syncer_pid = Pid, syncer_ref = Ref, syncers_next_round = [],
             syncer_advance_reqs = []};
 do_sync_asyncly(From, #state{syncers_next_round = NextRound} = S) ->
-    ?DBG_GENx({do_sync_asyncly, S#state.dir, many_waiters}),
+    ?DBG_GEN("do_sync_asyncly [many_waiters] ~s", [S#state.dir]),
     S#state{syncers_next_round = [From|NextRound]}.
 
 spawn_sync_asyncly(Froms, S) ->
     Start = now(),
     spawn_monitor(
       fun() ->
-              ?DBG_GENx({spawn_sync_asyncly, S#state.dir, top,
-                         S#state.cur_seqS, S#state.cur_offS}),
+              ?DBG_GEN("spawn_sync_asyncly [top] ~s seq ~w off ~w",
+                       [S#state.dir, S#state.cur_seqS, S#state.cur_offS]),
               %% Warning: [write] => truncate file.
               Path = "././" ++ S#state.dir,
               {ok, FH} = open_log_file(Path, S#state.cur_seqS, [append]),
               _ = try
                       {ok, FI} = file:read_file_info(Path),
                       if FI#file_info.size == 0 ->
-                              ?E_ERROR("fsync ~s, size 0\n", [Path]);
+                              ?E_ERROR("fsync ~s, size 0", [Path]);
                          true ->
                               ok
                       end,
-                      ?DBG_GENx({spawn_sync_asyncly, S#state.dir, after_open_log_file}),
+                      ?DBG_GEN("spawn_sync_asyncly [after_open_log_file] ~s", [S#state.dir]),
                       Res = file:sync(FH),
                       debug_sleep(S#state.debug_sync_sleep),
-                      ?DBG_GENx({spawn_sync_asyncly, S#state.dir, after_sync}),
-                      ?DBG_GENx({spawn_sync_asyncly, S#state.dir, froms, Froms}),
+                      ?DBG_GEN("spawn_sync_asyncly [after_sync] ~s froms ~w", [S#state.dir, Froms]),
                       [gen_server:reply(
                          From, {Res, S#state.cur_seqS, S#state.cur_offS}) ||
                           From <- Froms]
@@ -1352,19 +1354,18 @@ spawn_sync_asyncly(Froms, S) ->
                   end,
               MSec = timer:now_diff(now(), Start) div 1000,
               if MSec > 200 ->
-                      ?ELOG_INFO("~s sync was ~p msec for ~p callers\n",
+                      ?ELOG_INFO("~s sync was ~p msec for ~p callers",
                                  [S#state.name, MSec, length(Froms)]);
                  true ->
                       ok
               end,
-              ?DBG_GENx({spawn_sync_asyncly, S#state.dir, bottom, MSec}),
+              ?DBG_GEN("spawn_sync_asyncly [bottom] ~s ~w", [S#state.dir, MSec]),
               normal
       end).
 
 asyncly_done(Pid, _Reason, S) when S#state.syncer_pid == Pid ->
-    ?DBG_GENx({asyncly_done, S#state.dir,
-               backlog, length(S#state.write_backlog),
-               next_round, length(S#state.syncers_next_round)}),
+    ?DBG_GEN("asyncly_done: ~s backlog ~w next_round ~w",
+             [S#state.dir, length(S#state.write_backlog), length(S#state.syncers_next_round)]),
     do_pending_syncs(do_pending_writes(S#state{syncer_pid = undefined,
                                                syncer_ref = undefined}));
 asyncly_done(_Pid, _Reason, S) ->
@@ -1375,7 +1376,7 @@ asyncly_done(_Pid, _Reason, S) ->
 do_pending_writes(S) ->
     if S#state.write_backlog /= [] ->
             %% io:format("bl ~p ", [length(S#state.write_backlog)]),
-            ?DBG_GEN("DBG: buffer write bytes ~p total (grep tag=sync)",
+            ?DBG_GEN("do_pending_writes: buffer write bytes ~p total (grep tag=sync)",
                      [erlang:iolist_size(S#state.write_backlog)]),
             write_shortterm_backlog(S, true);
        true ->
@@ -1413,7 +1414,7 @@ do_sync_longterm_asyncly(From, S) ->
                       try
                           {ok, FI} = file:read_file_info(Path),
                           if FI#file_info.size == 0 ->
-                                  ?E_ERROR("fsync ~s, size 0\n", [Path]);
+                                  ?E_ERROR("fsync ~s, size 0", [Path]);
                              true ->
                                   ok
                           end,

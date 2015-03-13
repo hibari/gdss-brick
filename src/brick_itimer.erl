@@ -1,5 +1,5 @@
 %%%-------------------------------------------------------------------
-%%% Copyright (c) 2009-2013 Hibari developers.  All rights reserved.
+%%% Copyright (c) 2009-2015 Hibari developers.  All rights reserved.
 %%%
 %%% Licensed under the Apache License, Version 2.0 (the "License");
 %%% you may not use this file except in compliance with the License.
@@ -42,6 +42,12 @@
          terminate/2, code_change/3]).
 %% Internal export
 -export([start_interval_loop/1, interval_loop/1]).
+
+-ifdef(namespaced_dict_and_queue).
+-type hibari_dict() :: dict:dict().
+-else.
+-type hibari_dict() :: dict().
+-endif.
 
 -define(SERVER, ?MODULE).
 
