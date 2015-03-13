@@ -51,12 +51,6 @@
 
 -define(SERVER, ?MODULE).
 
--ifdef(namespaced_dict_and_queue).
--type hibari_dict() :: dict:dict().
--else.
--type hibari_dict() :: dict().
--endif.
-
 -record(state, {
           interval_d=dict:new() :: hibari_dict() % key: interval size, val: pid
          }).
