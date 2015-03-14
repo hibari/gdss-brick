@@ -1177,10 +1177,19 @@ rename_key2(Key, TStamp, NewKey, ExpTime, Flags, State, TS) ->
     end.
 
 rename_key_with_get_set_delete(Key, TStamp, NewKey, ExpTime, Flags, State) ->
-    %% Get the old value. It has been loaded by the squidflash primer.
+    %% Drop exp_time_directive and attrib_directive so that set_key/6
+    %% won't be affected by these directives.
+    NewFlags = lists:filter(
+                 fun({exp_time_directive, _}) -> false;
+                    ({attrib_directive,   _}) -> false;
+                    (_)                       -> true
+                 end, Flags),
+
+    %% Get the old value. It should have been loaded to RAM by the
+    %% squidflash primer.
     [StoreTuple] = my_lookup(State, Key, true),
     Value = storetuple_val(StoreTuple),
-    case set_key(NewKey, TStamp, Value, ExpTime, Flags, State) of
+    case set_key(NewKey, TStamp, Value, ExpTime, NewFlags, State) of
         {{ok, _}, NewState1} ->
             case delete_key(Key, [], NewState1) of
                 {ok, NewState2} ->
