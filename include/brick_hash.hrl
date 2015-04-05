@@ -1,5 +1,5 @@
 %%%----------------------------------------------------------------------
-%%% Copyright (c) 2009-2013 Hibari developers.  All rights reserved.
+%%% Copyright (c) 2009-2015 Hibari developers.  All rights reserved.
 %%%
 %%% Licensed under the Apache License, Version 2.0 (the "License");
 %%% you may not use this file except in compliance with the License.
@@ -16,6 +16,24 @@
 %%% File    : brick_hash.hrl
 %%% Purpose : brick hash stuff
 %%%----------------------------------------------------------------------
+
+-ifndef(hibari_dict).
+-define(hibari_dict, true).
+-ifdef(namespaced_dict_and_queue).
+-type hibari_dict()  :: dict:dict().
+-else.
+-type hibari_dict()  :: dict().
+-endif. %% namespaced_dict_and_queue
+-endif. %% hibari_dict
+
+-ifndef(hibari_queue).
+-define(hibari_queue, true).
+-ifdef(namespaced_dict_and_queue).
+-type hibari_queue() :: queue:queue().
+-else.
+-type hibari_queue() :: queue().
+-endif. %% namespaced_dict_and_queue
+-endif. %% hibari_queue
 
 %% Hash descriptor for a *single* table.
 -record(hash_r, {
@@ -38,15 +56,15 @@
           minor_rev = 1             :: integer(),           % updated each time that
                                                             % either of the 2 dicts below
                                                             % is updated
-          current_chain_dict        :: dict(),              % dict keyed by chain name
-          new_chain_dict            :: dict(),
+          current_chain_dict        :: hibari_dict(),              % dict keyed by chain name
+          new_chain_dict            :: hibari_dict(),
 
           %% Migration-related stuff, maintained locally by each brick.
           migrating_p = false       :: boolean(),
           phase = pre               :: pre | migrating,
           cookie                    :: term(),
-          migr_dict                 :: dict() | undefined   % migration dictionary
-                                                            % dict keyed by chain name
+          migr_dict                 :: hibari_dict() | undefined   % migration dictionary
+                                                                   % dict keyed by chain name
          }).
 
 %% Character that separates the hashable prefix

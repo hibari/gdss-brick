@@ -1,7 +1,7 @@
 %%% -*- mode: erlang -*-
 
 %%%----------------------------------------------------------------------
-%%% Copyright (c) 2006-2013 Hibari developers.  All rights reserved.
+%%% Copyright (c) 2006-2015 Hibari developers.  All rights reserved.
 %%%
 %%% Licensed under the Apache License, Version 2.0 (the "License");
 %%% you may not use this file except in compliance with the License.
@@ -21,8 +21,10 @@
 
 {application, gdss_brick,
  [
-  {description, "Gemini Distributed Storage Service"},
-  {vsn, "0.1.6.1"},
+  %% NOTE: GDSS stands for Gemini Distributed Storage Service, which is
+  %%       the predecessor of Hibari
+  {description, "Hibari Brick Server"},
+  {vsn, "0.1.11"},
   {registered, []},
   {applications, [kernel, stdlib, sasl, crypto]},
   {mod, {brick, []}},
