@@ -36,7 +36,7 @@
 %%   * Version       (2 bytes, unsigned integer) <<0, 1>>
 %%   * Reserved      (6 bytes)                   <<"Hibari">>
 %% - Hunk 1
-%%   * Header        (12 bytes)
+%%   * Header        (wal: 12 bytes, blob store: 8 or 10 bytes)
 %%   * Body          (variable length)
 %%   * Footer        (variable length)
 %%     ** ...
@@ -53,7 +53,7 @@
 %%
 %% ubint: unsigned, big-endian, integer
 %%
-%% Hunk Layout - Common Header
+%% Hunk Layout - metadata; many blobs in one hunk
 %% - Header (12 bytes, fixed length)
 %%   * Header Magic Number (2 bytes)                    <<16#90, 16#7F>>  %% no meaning
 %%   * Type (1 byte)
@@ -61,9 +61,8 @@
 %%   * BrickNameSize (2 bytes, ubint)                    0 for non-WAL hunks
 %%   * NumberOfBlobs (2 bytes, ubnit)
 %%   * TotalBlobSize (4 bytes, ubnit)                    Max value size is (4 GB - 1 byte)
-%%
-%% Hunk Layout - Body for metadata; many blobs in one hunk
 %% - Body (variable length)
+%%   * BrickName (binary)
 %%   * Blob1 (binary)
 %%   * Blob2 (binary)
 %%   * ...
@@ -71,12 +70,19 @@
 %% - Footer (variable length)
 %%   * Footer Magic Number (2 bytes)                    <<16#07, 16#E3>>  %% no meaning
 %%   * Blob Checksum (md5) (16 bytes) (optional)
-%%   * BrickName (binary)
 %%   * Blob Index (4 bytes * NumberOfBlobs, ubint)
 %%   * Padding                                          Total hunk size is aligned to 8 bytes
 %%
-%% Hunk Layout - Body for blob_wal; many blobs in one hunk
+%% Hunk Layout - blob_wal; many blobs in one hunk
+%% - Header (12 bytes, fixed length)
+%%   * Header Magic Number (2 bytes)                    <<16#90, 16#7F>>  %% no meaning
+%%   * Type (1 byte)
+%%   * Flags (deleted, etc.) (1 byte)
+%%   * BrickNameSize (2 bytes, ubint)                    0 for non-WAL hunks
+%%   * NumberOfBlobs (2 bytes, ubnit)
+%%   * TotalBlobSize (4 bytes, ubnit)                    Max value size is (4 GB - 1 byte)
 %% - Body (variable length)
+%%   * BrickName (binary)
 %%   * Blob1 (binary)
 %%   * Blob2 (binary)
 %%   * ...
@@ -84,20 +90,31 @@
 %% - Footer (variable length)
 %%   * Footer Magic Number (2 bytes)                    <<16#07, 16#E3>>  %% no meaning
 %%   * Blob Checksum (md5) (16 bytes) (optional)
-%%   * BrickName (binary)
 %%   * Blob Index (4 bytes * NumberOfBlobs, ubint)
 %%   * Padding                                          Total hunk size is aligned to 8 bytes
 %%
-%% Hunk Layout - Body for blob_single; one blob in one hunk
+%%
+%% Hunk Layout - blob_single; one blob in one hunk
+%% - Header (8 bytes, fixed length)
+%%   * Header Magic Number (2 bytes)                    <<16#90, 16#7F>>  %% no meaning
+%%   * Type (1 byte)
+%%   * Flags (deleted, etc.) (1 byte)
+%%   * TotalBlobSize (4 bytes, ubnit)                    Max value size is (4 GB - 1 byte)
 %% - Body (variable length)
 %%   * Blob (binary)
 %% - Footer (variable length)
 %%   * Footer Magic Number (2 bytes)                    <<16#07, 16#E3>>  %% no meaning
 %%   * Blob Checksum (md5) (16 bytes) (optional)
-%%   * Blob Index (4 bytes * 1, ubint)
+%%   * Blob Age (1 byte)
 %%   * Padding                                          Total hunk size is aligned to 8 bytes
 %%
-%% Hunk Layout - Body for blob_multi; many blobs in one hunk
+%% Hunk Layout - blob_multi; many blobs in one hunk
+%% - Header (10 bytes, fixed length)
+%%   * Header Magic Number (2 bytes)                    <<16#90, 16#7F>>  %% no meaning
+%%   * Type (1 byte)
+%%   * Flags (deleted, etc.) (1 byte)
+%%   * NumberOfBlobs (2 bytes, ubnit)
+%%   * TotalBlobSize (4 bytes, ubnit)                    Max value size is (4 GB - 1 byte)
 %% - Body (variable length)
 %%   * Blob1 (binary)
 %%   * Blob2 (binary)
@@ -107,6 +124,7 @@
 %%   * Footer Magic Number (2 bytes)                    <<16#07, 16#E3>>  %% no meaning
 %%   * Blob Checksum (md5) (16 bytes) (optional)
 %%   * Blob Index (4 bytes * NumberOfBlobs, ubint)
+%%   * Blob Ages  (1 byte * NumberOfBlobs, ubint))
 %%   * Padding                                          Total hunk size is aligned to 8 bytes
 %%
 
