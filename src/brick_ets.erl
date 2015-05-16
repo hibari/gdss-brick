@@ -2897,8 +2897,16 @@ bcb_handle_info({wal_sync, WALSyncTicket, ok}, State) ->
                 #log_q{thisdo_mods = DoOpList} <- LogQ_ToDos ],
             [ ok = clear_dirty_tab(DoOpList, State1) ||
                 #log_q{thisdo_mods = DoOpList} <- LogQ_ToDos ],
-            [ brick_metrics:histogram_timed_notify(Begin) ||
-                #log_q{time=Begin} <- LogQ_All],
+            lists:foreach(
+              fun(#log_q{time=Begin}) ->
+                      try
+                          brick_metrics:histogram_timed_notify(Begin)
+                      catch
+                          _:_=Err ->
+                              ?E_WARNING("Failed to record logging_op_latencies metrics. ~p, ~p",
+                                         [Begin, Err])
+                      end
+              end, LogQ_All),
             ToDos = [ {chain_send_downstream,
                        LQI#log_q.logging_serial,
                        LQI#log_q.doflags,
