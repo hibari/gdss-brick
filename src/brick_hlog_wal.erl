@@ -369,7 +369,7 @@ spawn_sync_wal(Ticket, ListenerList, Count, Dir, CurSeq) ->
                           ok
                   end,
                   Res = file:sync(FH),
-                  Elapse = timer:now_diff(os:timestamp(), Start2),
+                  ElapseMillis = timer:now_diff(os:timestamp(), Start2) div 1000,
                   brick_metrics:histogram_timed_notify(Start1),
                   brick_metrics:notify({wal_sync_requests, length(ListenerList)}),
 
@@ -379,10 +379,10 @@ spawn_sync_wal(Ticket, ListenerList, Count, Dir, CurSeq) ->
                                         Pid ! Notification
                                 end, ListenerList),
 
-                  %% NOTE: Elapse does not include the time for sending notifications.
-                  if Elapse > 200000 ->   %% 200 ms
+                  %% NOTE: ElapseMillis does not include the time for sending notifications.
+                  if ElapseMillis > 200 ->   %% 200 ms
                           ?ELOG_INFO("sync was ~p msec for ~p writes",
-                                     [Elapse div 1000, Count]);
+                                     [ElapseMillis, Count]);
                      true ->
                           ok
                   end
