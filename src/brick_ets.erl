@@ -2510,7 +2510,7 @@ bcb_squidflash_primer(KsRaws, ResubmitFun,
           end).
 
 squidflash_doit(KsRaws, ResubmitFun, FakeS) ->
-    Start = brick_metrics:histogram_timed_begin(squidflash_priming_latencies),
+    Start = brick_metrics:histogram_timed_begin(read_priming_latencies),
     Me = self(),
     KRV_Refs = [{X, make_ref()} || X <- KsRaws],
     [catch gmt_parallel_limit:enqueue(

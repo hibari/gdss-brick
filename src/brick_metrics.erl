@@ -76,12 +76,12 @@ init([]) ->
     %% Spin up folsom
     folsom:start(),
 
-    %% @TODO: Add cache hit ratio for squidflash_priming
+    %% @TODO: Add cache hit ratio for read_priming
     Metrics = [%% do_ok_latencies,
                %% do_ok_length,
                %% do_error_latencies,
                %% do_error_length,
-               squidflash_priming_latencies,
+               read_priming_latencies,
                logging_op_latencies,
                wal_sync_latencies,
                wal_sync_requests
@@ -124,7 +124,7 @@ process_stats() ->
     %% {DoOkLenMedian, DoOkLenP95} = get_statistics(do_ok_length, false),
     %% {DoErrMedian, DoErrP95} = get_statistics(do_error_latencies, true),
     %% {DoErrLenMedian, DoErrLenP95} = get_statistics(do_error_length, false),
-    {SqFlashMedian, SqFlashP95} = get_statistics(squidflash_priming_latencies, true),
+    {ReadPrimingMedian, ReadPrimingP95} = get_statistics(read_priming_latencies, true),
     {LoggingOpMedian, LoggingOpP95} = get_statistics(logging_op_latencies, true),
     {WalSyncMedian, WalSyncP95} = get_statistics(wal_sync_latencies, true),
     {WalSyncReqsMedian, WalSyncReqsP95} = get_statistics(wal_sync_requests, false),
@@ -132,13 +132,13 @@ process_stats() ->
     ?E_INFO("statistics report~n"
             %% "\tdo ok - ~w, ~w, len ~w, ~w~n"
             %% "\tdo error - ~w, ~w, len ~w, ~w~n"
-            "\t(read)  sqflash prminig  median: ~w ms, 95 percentile: ~w ms~n"
-            "\t(write) logging wait     median: ~w ms, 95 percentile: ~w ms~n"
-            "\t(write) wal sync         median: ~w ms, 95 percentile: ~w ms, reqs ~w, ~w~n",
+            "\t(read)  read prminig  median: ~w ms, 95 percentile: ~w ms~n"
+            "\t(write) logging wait  median: ~w ms, 95 percentile: ~w ms~n"
+            "\t(write) wal sync      median: ~w ms, 95 percentile: ~w ms, reqs ~w, ~w~n",
             [
              %% DoOkMedian, DoOkP95, DoOkLenMedian, DoOkLenP95,
              %% DoErrMedian, DoErrP95, DoErrLenMedian, DoErrLenP95,
-             SqFlashMedian, SqFlashP95,
+             ReadPrimingMedian, ReadPrimingP95,
              LoggingOpMedian, LoggingOpP95,
              WalSyncMedian, WalSyncP95, WalSyncReqsMedian, WalSyncReqsP95
             ]).
