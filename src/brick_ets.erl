@@ -1,5 +1,5 @@
 %%%-------------------------------------------------------------------
-%%% Copyright (c) 2007-2014 Hibari developers.  All rights reserved.
+%%% Copyright (c) 2007-2015 Hibari developers.  All rights reserved.
 %%%
 %%% Licensed under the Apache License, Version 2.0 (the "License");
 %%% you may not use this file except in compliance with the License.
@@ -1144,7 +1144,8 @@ rename_key_with_get_set_delete(Key, TStamp, NewKey, ExpTime, Flags, State) ->
                     (_)                       -> true
                  end, Flags),
 
-    %% Get the old value. It has been loaded by the squidflash primer.
+    %% Get the old value. It should have been loaded to RAM by
+    %% the squidflash primer.
     [StoreTuple] = my_lookup(State, Key, true),
     Value = storetuple_val(StoreTuple),
     case set_key(NewKey, TStamp, Value, ExpTime, NewFlags, State) of
@@ -1592,6 +1593,9 @@ my_insert2(#state{thisdo_mods=Mods, max_log_size=MaxLogSize}=S, Key, TStamp, Val
                 end,
             {{ok, TStamp}, S#state{thisdo_mods = [Mod|Mods]}};
         {?KEY_SWITCHAROO, NewKey} ->
+            %% This clause should never match in Hibair v0.1.x
+            ?E_ERROR("BUG: Error ~w ?KEY_SWITCHAROO is used", [S#state.name]),
+
             %% @TODO - value_in_ram support?
             [ST] = my_lookup(S, Key, false),
             CurTStamp = storetuple_ts(ST),
