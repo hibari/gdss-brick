@@ -228,7 +228,8 @@ create_hunk_iolist(#hunk{type=blob_single, brick_name=undefined, blobs=[_Blob]}=
 create_hunk_iolist(#hunk{type=blob_multi, brick_name=undefined}=Hunk) ->
     create_hunk_iolist1(Hunk).
 
--spec parse_hunks(binary()) -> {ok, [hunk()]} | {error, Reason::term(), [hunk()]}.
+-spec parse_hunks(binary()) -> {ok, [hunk()], Remainder::binary()}
+                                   | {error, Reason::term(), [hunk()]}.
 parse_hunks(Hunks) when is_binary(Hunks) ->
     parse_hunks1(Hunks, []).
 
@@ -284,10 +285,11 @@ parse_hunk_iodata(<<?HUNK_HEADER_MAGIC,
                     end
             end
     end;
-parse_hunk_iodata(<<Header:12/binary, _Rest/binary>>) ->
-    {error, {invalid_format, hunk_header, Header}};
-parse_hunk_iodata(Header) ->
-    {error, {invalid_format, hunk_header, Header}}.
+parse_hunk_iodata(<<Bin:?HUNK_HEADER_SIZE, _Remainder/binary>>)
+  when byte_size(Bin) >= ?HUNK_HEADER_SIZE ->
+    {error, {invalid_format, hunk_header, Bin}};
+parse_hunk_iodata(Bin) ->
+    {error, {incomplete_input, byte_size(Bin)}}.
 
 %% read_hunk(FH, HunkOffset) ->
 %%     Header = read_hunk_header_bytes(FH, HunkOffset),
@@ -369,12 +371,17 @@ create_blob_index(Blobs) ->
           end, {?HUNK_HEADER_SIZE, []}, [0|SizesWithoutLastBlob]),
     {lists:reverse(BlobIndex), NumberOfBlobs, TotalBlobSize}.
 
+-spec parse_hunks1(binary(), [hunk()])
+                  -> {ok, [hunk()], Remainder::binary()}
+                         | {error, Reason::term(), [hunk()]}.
 parse_hunks1(<<>>, Acc) ->
-    lists:reverse(Acc);
+    {ok, lists:reverse(Acc), <<>>};
 parse_hunks1(Hunks, Acc) ->
     case parse_hunk_iodata(Hunks) of
         {ok, Hunk, Remainder} ->
             parse_hunks1(Remainder, [Hunk | Acc]);
+        {error, {incomplete_input, _Size}} ->
+            {ok, lists:reverse(Acc), Hunks};
         {error, Reason} ->
             {error, Reason, lists:reverse(Acc)}
     end.

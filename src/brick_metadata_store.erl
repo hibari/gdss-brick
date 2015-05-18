@@ -43,6 +43,9 @@
 -export([writeback_to_stable_storage/3
         ]).
 
+%% Temporary API
+-export([get_leveldb/1]).
+
 %% gen_server callbacks
 -export([init/1,
          handle_call/3,
@@ -127,11 +130,15 @@ request_group_commit(#?MODULE{impl_mod=ImplMod, pid=Pid}) ->
     ImplMod:request_group_commit(Pid).
 
 %% Called by the WAL write-back process.
--spec writeback_to_stable_storage([wal_entry()], impl(), boolean()) -> ok | {error, term()}.
-writeback_to_stable_storage(WalEntries,
-                            #?MODULE{impl_mod=ImplMod, pid=Pid},
-                            IsLastBatch) ->
+-spec writeback_to_stable_storage([wal_entry()], boolean(), impl()) -> ok | {error, term()}.
+writeback_to_stable_storage(WalEntries, IsLastBatch,
+                            #?MODULE{impl_mod=ImplMod, pid=Pid}) ->
     ImplMod:writeback_to_stable_storage(Pid, WalEntries, IsLastBatch).
+
+%% Temporary API. Need higher abstruction.
+-spec get_leveldb(impl()) -> {ok, h2leveldb:db()}.
+get_leveldb(#?MODULE{impl_mod=ImplMod, pid=Pid}) ->
+    ImplMod:get_leveldb(Pid).
 
 
 %% ====================================================================

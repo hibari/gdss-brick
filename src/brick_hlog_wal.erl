@@ -35,7 +35,10 @@
          write_hunk/1,
          write_hunk_group_commit/2,
          request_group_commit/1,
-         open_wal_for_read/1]).
+         open_wal_for_read/1,
+         get_all_seqnums/0,
+         get_current_seqnum_and_offset/0
+        ]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -81,8 +84,8 @@
           wal_dir                       :: dirname(),
           file_len_max                  :: len(),                    % WAL file size max
           file_len_min                  :: len(),                    % WAL file size min
-          cur_seq                       :: non_neg_integer(),        % current sequence #
-          cur_pos                       :: non_neg_integer(),        % current position
+          cur_seq                       :: seqnum(),                 % current sequence #
+          cur_pos                       :: offset(),                 % current position
           cur_fh                        :: file:fd(),                % current file
           cur_hunk_overhead=0           :: non_neg_integer(),
           sync_listeners=gb_sets:new()  :: set(pid()),
@@ -130,6 +133,16 @@ open_wal_for_read(SeqNum) ->
     Dir = gen_server:call(wal_server(), get_wal_dir, ?TIMEOUT),
     do_open_wal_for_read(Dir, SeqNum).
 
+-spec get_all_seqnums() -> [seqnum()].
+get_all_seqnums() ->
+    Dir = gen_server:call(wal_server(), get_wal_dir, ?TIMEOUT),
+    HLogFiles = filelib:wildcard("*.HLOG", Dir),
+    [ list_to_integer(filename:basename(N, ".HLOG")) || N <- lists:sort(HLogFiles) ].
+
+-spec get_current_seqnum_and_offset() -> {seqnum(), offset()}.
+get_current_seqnum_and_offset() ->
+    gen_server:call(wal_server(), get_current_seqnum_and_offset, ?TIMEOUT).
+
 
 %% ====================================================================
 %% gen_server callbacks
@@ -144,11 +157,13 @@ init(PropList) ->
     LenMax = proplists:get_value(file_len_max, PropList, 64 * 1024 * 1024),
     LenMin = proplists:get_value(file_len_min, PropList, LenMax),
 
-    %% @TODO: Find the correct seq num.
-    CurSeq = 1,
-    %% @TODO: REMOVEME
-    file:delete(wal_path(Dir, CurSeq)),
-
+    CurSeq = case filelib:wildcard("*.HLOG", Dir) of
+                 [] ->
+                     1;
+                 HLogFiles ->
+                     LastFile = filename:basename(lists:max(HLogFiles), ".HLOG"),
+                     list_to_integer(LastFile) + 1
+             end,
     {CurFH, CurPos} = create_wal(Dir, CurSeq),
 
     ?E_INFO("WAL server started. current_seq: ~w, "
@@ -243,12 +258,10 @@ handle_call({request_group_commit, Requester}, _From,
             {reply, CommitTicket, State1}
     end;
 handle_call(get_wal_dir, _From, #state{wal_dir=Dir}=State) ->
-    {reply, Dir, State}.
-%% handle_call(get_current_seqnum, _From, #state{cur_seq=CurSeq}=State) ->
-%%     {reply, CurSeq, State};
-%% handle_call(get_current_seqnum_and_position, _From,
-%%             #state{cur_seq=CurSeq, cur_pos=CurPos}=State) ->
-%%     {reply, {CurSeq, CurPos}, State}.
+    {reply, Dir, State};
+handle_call(get_current_seqnum_and_offset, _From,
+            #state{cur_seq=CurSeq, cur_pos=CurPos}=State) ->
+    {reply, {CurSeq, CurPos}, State}.
 
 handle_cast(_Msg, State) ->
     {noreply, State}.

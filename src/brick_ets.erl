@@ -2401,12 +2401,9 @@ sequence_file_is_bad_common(LogDir, WalMod, _Log, Name, SeqNum, Offset) ->
 -spec load_metadata(state_r()) -> {non_neg_integer(), [tuple()]}.
 load_metadata(#state{name=BrickName}=State) ->
     %% put(wal_scan_cast_count, 0),
-    %% @TODO (new hlog) Implement this.
-    %% CommonLogServer = gmt_hlog_common:hlog_pid(?GMT_HLOG_COMMON_LOG_NAME),
-    %% MetadataDB = gmt_hlog:get_metadata_db(CommonLogServer, BrickName),
-    %% FirstMDBKey = h2leveldb:first_key(MetadataDB),
-    MetadataDB = undefined,
-    FirstMDBKey = end_of_table,
+    {ok, MdStore} = brick_metadata_store:get_metadata_store(BrickName),
+    {ok, MetadataDB} = MdStore:get_leveldb(),
+    FirstMDBKey = h2leveldb:first_key(MetadataDB),
     load_metadata1(BrickName, MetadataDB, FirstMDBKey, State, {0, []}).
 
 load_metadata1(_BrickName, _MetadataDB, end_of_table, _State, {Count, Errors}) ->
@@ -2930,8 +2927,7 @@ bcb_handle_info({wal_sync, WALSyncTicket, ok}, State) ->
 bcb_handle_info(do_init_second_half, #state{name=Name}=State) ->
     ?E_INFO("do_init_second_half: ~w", [Name]),
 
-    %% @TODO (new hlog) Temporary disabled.
-    %% ok = gmt_hlog_common:full_writeback(),
+    ok = brick_hlog_writeback:full_writeback(),
     ?E_INFO("Loading metadata records for brick ~w", [Name]),
     Start = os:timestamp(),
     {LoadCount, ErrList} = load_metadata(State),

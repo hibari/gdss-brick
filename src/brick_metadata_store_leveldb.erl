@@ -38,6 +38,9 @@
 -export([writeback_to_stable_storage/3
         ]).
 
+%% Temporary API
+-export([get_leveldb/1]).
+
 %% gen_server callbacks
 -export([init/1,
          handle_call/3,
@@ -133,9 +136,14 @@ request_group_commit(_Pid) ->
 
 -spec writeback_to_stable_storage(pid(), [wal_entry()], boolean()) -> ok | {error, term()}.
 writeback_to_stable_storage(Pid, WalEntries, IsLastBatch) ->
-    MetadataDB = gen_server:call(Pid, get_leveldb, ?TIMEOUT),
+    {ok, MetadataDB} = gen_server:call(Pid, get_leveldb, ?TIMEOUT),
     writeback_to_leveldb(MetadataDB, WalEntries, IsLastBatch),
     ok.
+
+%% Temporary API. Need higher abstruction.
+-spec get_leveldb(pid()) -> {ok, h2leveldb:db()}.
+get_leveldb(Pid) ->
+    gen_server:call(Pid, get_leveldb, ?TIMEOUT).
 
 
 %% ====================================================================
@@ -229,9 +237,16 @@ close_metadata_db(#state{brick_name=BrickName}) ->
 %% Internal functions - Write-Back
 %% ====================================================================
 
--spec writeback_to_leveldb(h2leveldb:db(), [wal_entry()], boolean()) -> ok.
-writeback_to_leveldb(MetadataDB, DoMods, IsLastBatch) ->
-    Batch = lists:foldl(fun add_metadata_db_op/2, h2leveldb:new_write_batch(), DoMods),
+-spec writeback_to_leveldb(h2leveldb:db(), [hunk()], boolean()) -> ok.
+writeback_to_leveldb(MetadataDB, Hunks, IsLastBatch) ->
+    Batch = lists:foldl(
+              fun(#hunk{blobs=Blobs}, Acc1) ->
+                      lists:foldl(
+                        fun(Blob, Acc2) ->
+                                DoMod = binary_to_term(Blob),
+                                add_metadata_db_op(DoMod, Acc2)
+                        end, Acc1, Blobs)
+              end, h2leveldb:new_write_batch(), Hunks),
     IsEmptyBatch = h2leveldb:is_empty_batch(Batch),
     case {IsLastBatch, IsEmptyBatch} of
         {true, true} ->

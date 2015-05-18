@@ -80,6 +80,11 @@ init([]) ->
          {brick_hlog_wal, start_link, WALArgs},
          permanent, 2000, worker, [brick_hlog_wal]},
 
+    WALWriteBack =
+        {?WRITEBACK_SERVER_REG_NAME,
+         {brick_hlog_writeback, start_link, [[]]},
+         permanent, 2000, worker, [brick_hlog_writeback]},
+
     BrickBrickSup =
         {brick_brick_sup, {brick_brick_sup, start_link, []},
          permanent, 2000, supervisor, [brick_brick_sup]},
@@ -105,6 +110,7 @@ init([]) ->
                                   H2LevelDB,
                                   BrickMetadataStore,
                                   WAL,
+                                  WALWriteBack,
                                   BrickBrickSup,
                                   BrickShepherd,
                                   BrickMboxMon,
