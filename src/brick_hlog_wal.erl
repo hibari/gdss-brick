@@ -30,6 +30,7 @@
 
 -module(brick_hlog_wal).
 
+%% API
 -export([start_link/1,
          write_hunk/1,
          write_hunk_group_commit/2,
@@ -126,7 +127,7 @@ request_group_commit(Requester) ->
 
 -spec open_wal_for_read(seqnum()) -> {ok, file:fd()} | {error, term()} | not_available.
 open_wal_for_read(SeqNum) ->
-    Dir = gen_server:call(wal_server(), {open_wal_for_read, SeqNum}, ?TIMEOUT),
+    Dir = gen_server:call(wal_server(), get_wal_dir, ?TIMEOUT),
     do_open_wal_for_read(Dir, SeqNum).
 
 
@@ -241,8 +242,7 @@ handle_call({request_group_commit, Requester}, _From,
         _ ->
             {reply, CommitTicket, State1}
     end;
-handle_call({open_wal_for_read, _SeqNum}, _From, #state{wal_dir=Dir}=State) ->
-    %% Res = do_open_wal_for_read(Dir, SeqNum),
+handle_call(get_wal_dir, _From, #state{wal_dir=Dir}=State) ->
     {reply, Dir, State}.
 %% handle_call(get_current_seqnum, _From, #state{cur_seq=CurSeq}=State) ->
 %%     {reply, CurSeq, State};

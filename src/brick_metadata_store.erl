@@ -28,7 +28,9 @@
 -export([get_metadata_store/1]).
 
 %% API for brick_data_sup Module
--export([start_link/2]).
+-export([start_link/2,
+         stop/0
+        ]).
 
 %% API for Brick Server
 -export([read_metadata/2,
@@ -38,7 +40,7 @@
         ]).
 
 %% API for Write-back Module
--export([writeback_to_stable_storage/2
+-export([writeback_to_stable_storage/3
         ]).
 
 %% gen_server callbacks
@@ -61,7 +63,10 @@
 %% ====================================================================
 
 %% @TODO: Use registered name rather than pid. pid will change when a process crashes.
--record(?MODULE, {impl_mod :: module(), pid :: pid()}).
+-record(?MODULE, {
+           impl_mod   :: module(),
+           brick_name :: brickname(),
+           pid        :: pid()}).
 
 -type impl() :: #?MODULE{}.
 -type brickname() :: atom().
@@ -84,16 +89,22 @@
 %% @TODO Define brick_metadata_store behaviour.
 
 
--spec get_metadata_store(brickname()) -> {ok, impl()} | {error, term()}.
-get_metadata_store(BrickName) ->
-    gen_server:call(?METADATA_STORE_REG_NAME,
-                    {get_or_start_metadata_store_impl, BrickName}, ?TIMEOUT).
-
 -spec start_link(module(), [term()])
                 -> {ok, impl()} | ignore | {error, term()}.
 start_link(ImplMod, Options) ->
     gen_server:start_link({local, ?METADATA_STORE_REG_NAME},
                           ?MODULE, [ImplMod, Options], []).
+
+%% @TODO: It will be better to stop each brick_metadata_store_leveldb when
+%%        brick server is stopped.
+-spec stop() -> ok.
+stop() ->
+    gen_server:cast(?METADATA_STORE_REG_NAME, stop).
+
+-spec get_metadata_store(brickname()) -> {ok, impl()} | {error, term()}.
+get_metadata_store(BrickName) ->
+    gen_server:call(?METADATA_STORE_REG_NAME,
+                    {get_or_start_metadata_store_impl, BrickName}, ?TIMEOUT).
 
 -spec read_metadata(key(), impl()) -> brick_ets:store_tuple().
 read_metadata(Key, #?MODULE{impl_mod=ImplMod}) ->
@@ -101,24 +112,26 @@ read_metadata(Key, #?MODULE{impl_mod=ImplMod}) ->
 
 -spec write_metadata([brick_ets:store_tuple()], impl())
                     -> ok | {hunk_too_big, len()} | {error, term()}.
-write_metadata(MetadataList, #?MODULE{impl_mod=ImplMod, pid=Pid}) ->
-    ImplMod:write_metadata(Pid, MetadataList).
+write_metadata(MetadataList, #?MODULE{impl_mod=ImplMod, brick_name=BrickName, pid=Pid}) ->
+    ImplMod:write_metadata(Pid, BrickName, MetadataList).
 
 -spec write_metadata_group_commit([brick_ets:store_tuple()], impl())
                                  -> {ok, callback_ticket()}
                                         | {hunk_too_big, len()}
                                         | {error, term()}.
-write_metadata_group_commit(MetadataList, #?MODULE{impl_mod=ImplMod, pid=Pid}) ->
-    ImplMod:write_metadata_group_commit(Pid, MetadataList).
-
-%% Called by the WAL write-back process.
--spec writeback_to_stable_storage([wal_entry()], impl()) -> ok | {error, term()}.
-writeback_to_stable_storage(WalEntries, #?MODULE{impl_mod=ImplMod, pid=Pid}) ->
-    ImplMod:writeback_to_stable_storage(Pid, WalEntries).
+write_metadata_group_commit(MetadataList, #?MODULE{impl_mod=ImplMod, brick_name=BrickName, pid=Pid}) ->
+    ImplMod:write_metadata_group_commit(Pid, BrickName, MetadataList).
 
 -spec request_group_commit(impl()) -> callback_ticket().
 request_group_commit(#?MODULE{impl_mod=ImplMod, pid=Pid}) ->
     ImplMod:request_group_commit(Pid).
+
+%% Called by the WAL write-back process.
+-spec writeback_to_stable_storage([wal_entry()], impl(), boolean()) -> ok | {error, term()}.
+writeback_to_stable_storage(WalEntries,
+                            #?MODULE{impl_mod=ImplMod, pid=Pid},
+                            IsLastBatch) ->
+    ImplMod:writeback_to_stable_storage(Pid, WalEntries, IsLastBatch).
 
 
 %% ====================================================================
@@ -139,7 +152,11 @@ handle_call({get_or_start_metadata_store_impl, BrickName}, _From,
             Options = [],
             case ImplMod:start_link(BrickName, Options) of
                 {ok, Pid} ->
-                    Impl = #?MODULE{impl_mod=ImplMod, pid=Pid},
+                    Impl = #?MODULE{
+                               impl_mod=ImplMod,
+                               brick_name=BrickName,
+                               pid=Pid
+                              },
                     Registory1 = orddict:store(BrickName, Impl, Registory),
                     {reply, {ok, Impl}, State#state{registory=Registory1}};
                 ignore ->
@@ -149,6 +166,8 @@ handle_call({get_or_start_metadata_store_impl, BrickName}, _From,
             end
     end.
 
+handle_cast(stop, State) ->
+    {stop, normal, State};
 handle_cast(_, State) ->
     {noreply, State}.
 
@@ -156,8 +175,11 @@ handle_cast(_, State) ->
 handle_info(_, State) ->
     {noreply, State}.
 
-terminate(_Reason, _State) ->
-    %% @TODO: terminate the gen_servers of metadata_store impl
+terminate(_Reason, #state{impl_mod=ImplMod, registory=Registory}) ->
+    orddict:fold(fun(_BrickName, #?MODULE{pid=Pid}, _Acc) ->
+                         catch ImplMod:stop(Pid),
+                         ok
+                 end, undefined, Registory),
     ok.
 
 code_change(_OldVsn, State, _Extra) ->

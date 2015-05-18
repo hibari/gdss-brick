@@ -21,13 +21,17 @@
 
 %% -behaviour(gen_server).
 
+%% -include("brick_specs.hrl").
+-include("brick_hlog.hrl").
+-include("brick.hrl").      % for ?E_ macros
+
 %% API
-%% -export([start_link/1,
-%%          stop/0,
-%%          register_local_brick/1,
-%%          full_writeback/0,
-%%          get_all_registrations/0
-%%         ]).
+-export([start_link/1,
+         stop/0
+         %% register_local_brick/1,
+         %% full_writeback/0,
+         %% get_all_registrations/0
+        ]).
 
 %% gen_server callbacks
 %% -export([init/1,
@@ -38,36 +42,50 @@
 %%          code_change/3
 %%         ]).
 
+%% DEBUG
+-export([read_wal_entries/0,
+         read_wal_entry/0
+        ]).
+
 
 %% ====================================================================
 %% types, specs and records
 %% ====================================================================
 
 %% -type from() :: {pid(), term()}.
-%% -type prop() :: [].
+-type prop() :: [].
+
+%% -type brickname() :: atom().
+
+%% -record(state, {
+%%           registory=orddict:new() :: orddict(brickname())
+%%          }).
+
+-define(HUNK, brick_hlog_hunk).
+-define(WAL, brick_hlog_wal).
 
 %% ====================================================================
 %% API
 %% ====================================================================
 
-%% -spec start_link([prop()]) -> {ok,pid()} | ignore | {error,term()}.
-%% start_link(PropList) ->
-%%     gen_server:start_link(?MODULE, PropList, []).
+-spec start_link([prop()]) -> {ok,pid()} | ignore | {error,term()}.
+start_link(PropList) ->
+    gen_server:start_link(?MODULE, PropList, []).
 
-%% -spec stop() -> ok | {error, term()}.
-%% stop() ->
-%%     gen_server:call(?Server, stop).
+-spec stop() -> ok | {error, term()}.
+stop() ->
+    gen_server:call(?WRITEBACK_SERVER_REG_NAME, stop).
 
 %% -spec register_local_brick(brickname()) -> ok | {error, term()}.
 %% register_local_brick(LocalBrick) when is_atom(LocalBrick) ->
-%%     gen_server:call(?Server, {register_local_brick, LocalBrick}).
+%%     gen_server:call(?WRITEBACK_SERVER_REG_NAME, {register_local_brick, LocalBrick}).
 
 %% full_writeback() ->
-%%     full_writeback(?Server).
+%%     full_writeback(?WRITEBACK_SERVER_REG_NAME).
 
 %% -spec get_all_registrations() -> [brickname()].
 %% get_all_registrations() ->
-%%     get_all_registrations(?Server).
+%%     get_all_registrations(?WRITEBACK_SERVER_REG_NAME).
 
 
 %% ====================================================================
@@ -79,23 +97,20 @@
 %% Internal functions
 %% ====================================================================
 
-
-
 %% MOVEME: to brick_metadata_store leveldb module.
 
-%% -spec write_back_to_stable_storege1(brickname(), [metadata_tuple()],
-%%                                     state_readonly(), [term()]) -> [term()].
-%% write_back_to_stable_storege1(_BrickName, [], _State, Errors) ->
+%% -spec write_back_to_stable_storege(brickname(), [metadata_tuple()]) -> ok.
+%% write_back_to_stable_storege(_BrickName, [], Errors) ->
 %%     lists:reverse(Errors);
-%% write_back_to_stable_storege1(BrickName,
-%%                               [{eee, _BrickName, _SeqNum, _Offset, _Key, _TypeNum,
-%%                                 _H_Len, [Summary, CBlobs, _UBlobs]} | RemainingMetaDataTuples],
-%%                               #state{hlog_pid=HLog}=State,
-%%                               Errors) ->
+%% write_back_to_stable_storege(BrickName,
+%%                              [{eee, _BrickName, _SeqNum, _Offset, _Key, _TypeNum,
+%%                                _H_Len, [Summary, CBlobs, _UBlobs]} | RemainingMetaDataTuples],
+%%                              #state{hlog_pid=HLog}=State,
+%%                              Errors) ->
 %%     case gmt_hlog:parse_hunk_summary(Summary) of
 %%         #hunk_summ{c_len=CLen, u_len=ULen}=ParsedSummary ->
-%%             [_] = CLen,        % sanity
-%%             []  = ULen,        % sanity
+%%             [_] = CLen,        sanity
+%%             []  = ULen,        sanity
 %%             MetadataBin = gmt_hlog:get_hunk_cblob_member(ParsedSummary, CBlobs, 1),
 %%             case gmt_hlog:md5_checksum_ok_p(ParsedSummary#hunk_summ{c_blobs=[MetadataBin]}) of
 %%                 true ->
@@ -104,101 +119,54 @@
 %%                     IsLastBatch = RemainingMetaDataTuples =:= [],
 %%                     ok = write_back_to_metadata_db(MetadataDB, BrickName, DoMods, IsLastBatch);
 %%                 false ->
-%%                     %% @TODO: Do not crash, and do sync
+%%                     @TODO: Do not crash, and do sync
 %%                     error({invalid_checksum, {_BrickName, _SeqNum, _Offset, _Key}})
 %%             end;
 %%         too_big ->
-%%             %% @TODO: Do not crash, and do sync
+%%             @TODO: Do not crash, and do sync
 %%             error({hunk_is_too_big_to_parse, {_BrickName, _SeqNum, _Offset, _Key}})
 %%     end,
 %%     write_back_to_stable_storege1(BrickName, RemainingMetaDataTuples, State, Errors).
 
-%% -spec write_back_to_metadata_db(h2leveldb:db(), brickname(), [do_mod()], boolean()) -> ok.
-%% write_back_to_metadata_db(MetadataDB, _BrickName, DoMods, IsLastBatch) ->
-%%     Batch = lists:foldl(fun add_metadata_db_op/2, h2leveldb:new_write_batch(), DoMods),
-%%     IsEmptyBatch = h2leveldb:is_empty_batch(Batch),
-%%     case {IsLastBatch, IsEmptyBatch} of
-%%         {true, true} ->
-%%             %% Write something to sync.
-%%             Batch1 = [h2leveldb:make_put(sext:encode(control_sync), <<"sync">>)],
-%%             WriteOptions = [sync];
-%%         {true, false} ->
-%%             Batch1 = Batch,
-%%             WriteOptions = [sync];
-%%         {false, true} ->
-%%             Batch1 = [],   %% This will not write anything to LevelDB and that is OK.
-%%             WriteOptions = [];
-%%         {false, false} ->
-%%             Batch1 = Batch,
-%%             WriteOptions = []
-%%     end,
-%%     ok = h2leveldb:write(MetadataDB, Batch1, WriteOptions),
-%%     ok.
 
-%% -spec add_metadata_db_op(do_mod(), write_batch()) -> write_batch().
-%% add_metadata_db_op({insert, StoreTuple}, Batch) ->
-%%     h2leveldb:add_put(metadata_db_key(StoreTuple), term_to_binary(StoreTuple), Batch);
-%% add_metadata_db_op({insert_value_into_ram, StoreTuple}, Batch) ->
-%%     h2leveldb:add_put(metadata_db_key(StoreTuple), term_to_binary(StoreTuple), Batch);
-%% add_metadata_db_op({insert_constant_value, StoreTuple}, Batch) ->
-%%     h2leveldb:add_put(metadata_db_key(StoreTuple), term_to_binary(StoreTuple), Batch);
-%% add_metadata_db_op({insert_existing_value, StoreTuple, _OldKey, _OldTimestamp}, Batch) ->
-%%     h2leveldb:add_put(metadata_db_key(StoreTuple), term_to_binary(StoreTuple), Batch);
-%% add_metadata_db_op({delete, _Key, 0, _ExpTime}=Op, _Batch) ->
-%%     error({timestamp_is_zero, Op});
-%% add_metadata_db_op({delete, Key, _Timestamp, _ExpTime}, Batch) ->
-%% %%     DeleteMarker = make_delete_marker(Key, Timestamp),
-%% %%     leveldb:add_put(metadata_db_key(Key, Timestamp),
-%% %%                     term_to_binary(DeleteMarker), Batch);
-%%     h2leveldb:add_delete(metadata_db_key(Key, 0), Batch);
-%% add_metadata_db_op({delete_noexptime, _Key, 0}=Op, _Batch) ->
-%%     error({timestamp_is_zero, Op});
-%% add_metadata_db_op({delete_noexptime, Key, _Timestamp}, Batch) ->
-%% %%     DeleteMarker = make_delete_marker(Key, Timestamp),
-%% %%     leveldb:add_put(metadata_db_key(Key, Timestamp),
-%% %%                     term_to_binary(DeleteMarker), Batch);
-%%     h2leveldb:add_delete(metadata_db_key(Key, 0), Batch);
-%% add_metadata_db_op({delete_all_table_items}=Op, _Batch) ->
-%%     error({writeback_not_implemented, Op});
-%% add_metadata_db_op({md_insert, _Tuple}=Op, _Batch) ->
-%%     %% @TODO: CHECKME: brick_ets:checkpoint_start/4, which was deleted after
-%%     %% commit #b2952a393, had the following code to dump brick's private
-%%     %% metadata. Check when metadata will be written and implement
-%%     %% add_metadata_db_op/2 for it.
-%%     %% ----
-%%     %% %% Dump data from the private metadata table.
-%%     %% MDs = term_to_binary([{md_insert, T} ||
-%%     %%                       T <- ets:tab2list(S_ro#state.mdtab)]),
-%%     %% {_, Bin2} = WalMod:create_hunk(?LOGTYPE_METADATA, [MDs], []),
-%%     %% ok = file:write(CheckFH, Bin2),
-%%     %% ----
-%%     error({writeback_not_implemented, Op});
-%% add_metadata_db_op({md_delete, _Key}=Op, _Batch) ->
-%%     error({writeback_not_implemented, Op});
-%% add_metadata_db_op({log_directive, sync_override, false}=Op, _Batch) ->
-%%     error({writeback_not_implemented, Op});
-%% add_metadata_db_op({log_directive, map_sleep, _Delay}=Op, _Batch) ->
-%%     error({writeback_not_implemented, Op});
-%% add_metadata_db_op({log_noop}, Batch) ->
-%%     Batch. %% noop
+%% ====================================================================
+%% Internal functions - Debugging
+%% ====================================================================
 
-%% %% As for Hibari 0.3.0, metadata DB key is {Key, 0}. (The reversed
-%% %% timestamp is always zero.)
-%% -spec metadata_db_key(store_tuple()) -> binary().
-%% metadata_db_key(StoreTuple) ->
-%%     Key = brick_ets:storetuple_key(StoreTuple),
-%%     %% Timestamp = brick_ets:storetuple_ts(StoreTuple),
-%%     %% metadata_db_key(Key, Timestamp).
-%%     metadata_db_key(Key, 0).
+%% DEBUG
+read_wal_entries() ->
+    {ok, FH} = ?WAL:open_wal_for_read(1),
+    try file:read(FH, 100 * 1024 * 1024) of  %% 100MB!
+        {ok, Binary} ->
+            ?HUNK:parse_hunks(Binary)
+    after
+        catch file:close(FH)
+    end.
 
-%% -spec metadata_db_key(key(), ts()) -> binary().
-%% metadata_db_key(Key, _Timestamp) ->
-%%     %% NOTE: Using reversed timestamp, so that Key-values will be sorted
-%%     %%       in LevelDB from newer to older.
-%%     %% ReversedTimestamp = -(Timestamp),
-%%     ReversedTimestamp = -0,
-%%     sext:encode({Key, ReversedTimestamp}).
+%% DEBUG
+read_wal_entry() ->
+    {ok, FH} = ?WAL:open_wal_for_read(1),
+    try file:read(FH, 100 * 1024 * 1024) of  %% 100MB!
+        {ok, Binary} ->
+            <<16#90, 16#7F,
+              Type:1/binary,
+              Flags:1/unit:8,
+              BrickNameSize:2/unit:8,
+              NumberOfBlobs:2/unit:8,
+              TotalBlobSize:4/unit:8,
+              Rest/binary>> = Binary,
+            DecodedType  = ?HUNK:decode_type(Type),
+            DecodedFlags = ?HUNK:decode_flags(Flags),
+            {FooterSize, _RawSize, PaddingSize, _Overhead} =
+                ?HUNK:calc_hunk_size(DecodedFlags, BrickNameSize, NumberOfBlobs, TotalBlobSize),
+            ?ELOG_DEBUG("parse_hunk_iodata -  Type: ~p, Flags: ~p, BrickNameSize: ~w, NumberOfBlobs: ~w, "
+                        "TotalBlobSize: ~w, FooterSize: ~w, RawSize: ~w, PaddingSize: ~w, Overhead: ~w~n",
+              [DecodedType, DecodedFlags, BrickNameSize, NumberOfBlobs,
+               TotalBlobSize, FooterSize, _RawSize, PaddingSize, _Overhead]),
+            BodyBin   = binary:part(Rest, 0, TotalBlobSize),
+            FooterBin = binary:part(Rest, TotalBlobSize, FooterSize),
 
-%% %% -spec make_delete_marker(key(), ts()) -> tuple().
-%% %% make_delete_marker(Key, Timestamp) ->
-%% %%     {Key, Timestamp, delete_marker}.
+            {BodyBin, FooterBin}
+    after
+        catch file:close(FH)
+    end.

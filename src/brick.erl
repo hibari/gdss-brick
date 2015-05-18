@@ -78,6 +78,9 @@ prep_stop(State) ->
 
     %% Finally, shut down any bootstrap bricks.
     _ = [catch Fstop(Br) || Br <- BootstrapBricks],
+
+    %% Stop brick_metadata_store to close LevelDB
+    _ = (catch brick_metadata_store:stop()),
     State.
 
 config_change(_Changed, _New, _Removed) ->

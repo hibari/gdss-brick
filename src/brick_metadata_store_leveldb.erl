@@ -27,14 +27,15 @@
 
 %% API for Brick Server
 -export([start_link/2,
+         stop/1,
          %% read_metadata/1,
-         write_metadata/2,
-         write_metadata_group_commit/2,
+         write_metadata/3,
+         write_metadata_group_commit/3,
          request_group_commit/1
         ]).
 
 %% API for Write-back Module
--export([writeback_to_stable_storage/2
+-export([writeback_to_stable_storage/3
         ]).
 
 %% gen_server callbacks
@@ -86,32 +87,55 @@ start_link(BrickName, Options) ->
             ErrorOrIgnore
     end.
 
+-spec stop(pid()) -> ok | {error, term()}.
+stop(Pid) ->
+    gen_server:cast(Pid, stop).
+
 %% -spec read_metadata(pid(), key(), impl()) -> storetuple().
 
 
 %% Called by brick_ets:write_metadata_term(Term, #state{md_store})
--spec write_metadata(pid(), [brick_ets:store_tuple()])
+-spec write_metadata(pid(), brickname(), [brick_ets:store_tuple()])
                     -> ok | {hunk_too_big, len()} | {error, term()}.
-write_metadata(Pid, MetadataList) ->
-    gen_server:call(Pid, {write_metadata, MetadataList}, ?TIMEOUT).
+write_metadata(_Pid, BrickName, MetadataList) ->
+    Blobs = [ term_to_binary(Metadata) || Metadata <- MetadataList ],
+    {HunkIOList, _HunkSize, _Overhead, _BlobIndex} =
+        ?HUNK:create_hunk_iolist(#hunk{type=metadata, flags=[],
+                                       brick_name=BrickName, blobs=Blobs}),
+    case ?WAL:write_hunk(HunkIOList) of
+        {ok, _WALSeqNum, _WALPosition} ->
+            ok;
+        Err ->
+            Err
+    end.
 
--spec write_metadata_group_commit(pid(), [brick_ets:store_tuple()])
+-spec write_metadata_group_commit(pid(), brickname(), [brick_ets:store_tuple()])
                                  -> {ok, callback_ticket()}
                                         | {hunk_too_big, len()}
                                         | {error, term()}.
-write_metadata_group_commit(Pid, MetadataList) ->
+write_metadata_group_commit(_Pid, BrickName, MetadataList) ->
     Caller = self(),
-    gen_server:call(Pid, {write_metadata_group_commit, MetadataList, Caller}, ?TIMEOUT).
-
--spec writeback_to_stable_storage(pid(), [wal_entry()]) -> ok | {error, term()}.
-writeback_to_stable_storage(_Pid, _WalEntries) ->
-    %% gen_server:call(Pid, {writeback_value, WalEntries}).
-    ok.
+    Blobs = [ term_to_binary(Metadata) || Metadata <- MetadataList ],
+    {HunkIOList, _HunkSize, _Overhead, _BlobIndex} =
+        ?HUNK:create_hunk_iolist(#hunk{type=metadata, flags=[],
+                                       brick_name=BrickName, blobs=Blobs}),
+    case ?WAL:write_hunk_group_commit(HunkIOList, Caller) of
+        {ok, _WALSeqNum, _WALPosition, CallbackTicket} ->
+            {ok, CallbackTicket};
+        Err ->
+            Err
+    end.
 
 -spec request_group_commit(pid()) -> callback_ticket().
 request_group_commit(_Pid) ->
     Caller = self(),
     brick_hlog_wal:request_group_commit(Caller).
+
+-spec writeback_to_stable_storage(pid(), [wal_entry()], boolean()) -> ok | {error, term()}.
+writeback_to_stable_storage(Pid, WalEntries, IsLastBatch) ->
+    MetadataDB = gen_server:call(Pid, get_leveldb, ?TIMEOUT),
+    writeback_to_leveldb(MetadataDB, WalEntries, IsLastBatch),
+    ok.
 
 
 %% ====================================================================
@@ -120,35 +144,14 @@ request_group_commit(_Pid) ->
 
 init([BrickName, _Options]) ->
     process_flag(trap_exit, true),
-    %% process_flag(priority, high),
     {ok, MetadataDB} = open_metadata_db(BrickName),
     {ok, #state{brick_name=BrickName, leveldb=MetadataDB}}.
 
-handle_call({write_metadata, MetadataList}, _From,
-            #state{brick_name=BrickName}=State) ->
-    Blobs = [ term_to_binary(Metadata) || Metadata <- MetadataList ],
-    {HunkIOList, _HunkSize, _Overhead, _BlobIndex} =
-        ?HUNK:create_hunk_iolist(#hunk{type=metadata, flags=[],
-                                       brick_name=BrickName, blobs=Blobs}),
-    case ?WAL:write_hunk(HunkIOList) of
-        {ok, _WALSeqNum, _WALPosition} ->
-            {reply, ok, State};
-        Err ->
-            {reply, Err, State}
-    end;
-handle_call({write_metadata_group_commit, MetadataList, Caller}, _From,
-            #state{brick_name=BrickName}=State) ->
-    Blobs = [ term_to_binary(Metadata) || Metadata <- MetadataList ],
-    {HunkIOList, _HunkSize, _Overhead, _BlobIndex} =
-        ?HUNK:create_hunk_iolist(#hunk{type=metadata, flags=[],
-                                       brick_name=BrickName, blobs=Blobs}),
-    case ?WAL:write_hunk_group_commit(HunkIOList, Caller) of
-        {ok, _WALSeqNum, _WALPosition, CallbackTicket} ->
-            {reply, {ok, CallbackTicket}, State};
-        Err ->
-            {reply, Err, State}
-    end.
+handle_call(get_leveldb, _From, #state{leveldb=MetadataDB}=State) ->
+    {reply, MetadataDB, State}.
 
+handle_cast(stop, State) ->
+    {stop, normal, State};
 handle_cast(_, State) ->
     {noreply, State}.
 
@@ -164,12 +167,17 @@ code_change(_OldVsn, State, _Extra) ->
 
 
 %% ====================================================================
-%% Internal functions
+%% Internal functions - misc
 %% ====================================================================
 
 -spec reg_name(brickname()) -> atom().
 reg_name(BrickName) ->
     list_to_atom("hibari_md_store_" ++ atom_to_list(BrickName)).
+
+
+%% ====================================================================
+%% Internal functions - Metadata DB
+%% ====================================================================
 
 -spec metadata_dir(brickname()) -> dirname().
 metadata_dir(BrickName) ->
@@ -217,19 +225,120 @@ close_metadata_db(#state{brick_name=BrickName}) ->
     end.
 
 
+%% ====================================================================
+%% Internal functions - Write-Back
+%% ====================================================================
+
+-spec writeback_to_leveldb(h2leveldb:db(), [wal_entry()], boolean()) -> ok.
+writeback_to_leveldb(MetadataDB, DoMods, IsLastBatch) ->
+    Batch = lists:foldl(fun add_metadata_db_op/2, h2leveldb:new_write_batch(), DoMods),
+    IsEmptyBatch = h2leveldb:is_empty_batch(Batch),
+    case {IsLastBatch, IsEmptyBatch} of
+        {true, true} ->
+            %% Write something to sync.
+            Batch1 = [h2leveldb:make_put(sext:encode(control_sync), <<"sync">>)],
+            WriteOptions = [sync];
+        {true, false} ->
+            Batch1 = Batch,
+            WriteOptions = [sync];
+        {false, true} ->
+            Batch1 = [],   %% This will not write anything to LevelDB and that is OK.
+            WriteOptions = [];
+        {false, false} ->
+            Batch1 = Batch,
+            WriteOptions = []
+    end,
+    ok = h2leveldb:write(MetadataDB, Batch1, WriteOptions),
+    ok.
+
+-spec add_metadata_db_op(brick_ets:do_mod(), h2leveldb:batch_write()) -> h2leveldb:batch_write().
+add_metadata_db_op({insert, StoreTuple}, Batch) ->
+    h2leveldb:add_put(metadata_db_key(StoreTuple), term_to_binary(StoreTuple), Batch);
+add_metadata_db_op({insert_value_into_ram, StoreTuple}, Batch) ->
+    h2leveldb:add_put(metadata_db_key(StoreTuple), term_to_binary(StoreTuple), Batch);
+add_metadata_db_op({insert_constant_value, StoreTuple}, Batch) ->
+    h2leveldb:add_put(metadata_db_key(StoreTuple), term_to_binary(StoreTuple), Batch);
+add_metadata_db_op({insert_existing_value, StoreTuple, _OldKey, _OldTimestamp}, Batch) ->
+    h2leveldb:add_put(metadata_db_key(StoreTuple), term_to_binary(StoreTuple), Batch);
+add_metadata_db_op({delete, _Key, 0, _ExpTime}=Op, _Batch) ->
+    error({timestamp_is_zero, Op});
+add_metadata_db_op({delete, Key, _Timestamp, _ExpTime}, Batch) ->
+%%     DeleteMarker = make_delete_marker(Key, Timestamp),
+%%     leveldb:add_put(metadata_db_key(Key, Timestamp),
+%%                     term_to_binary(DeleteMarker), Batch);
+    h2leveldb:add_delete(metadata_db_key(Key, 0), Batch);
+add_metadata_db_op({delete_noexptime, _Key, 0}=Op, _Batch) ->
+    error({timestamp_is_zero, Op});
+add_metadata_db_op({delete_noexptime, Key, _Timestamp}, Batch) ->
+%%     DeleteMarker = make_delete_marker(Key, Timestamp),
+%%     leveldb:add_put(metadata_db_key(Key, Timestamp),
+%%                     term_to_binary(DeleteMarker), Batch);
+    h2leveldb:add_delete(metadata_db_key(Key, 0), Batch);
+add_metadata_db_op({delete_all_table_items}=Op, _Batch) ->
+    error({writeback_not_implemented, Op});
+add_metadata_db_op({md_insert, _Tuple}=Op, _Batch) ->
+    %% @TODO: CHECKME: brick_ets:checkpoint_start/4, which was deleted after
+    %% commit #b2952a393, had the following code to dump brick's private
+    %% metadata. Check when metadata will be written and implement
+    %% add_metadata_db_op/2 for it.
+    %% ----
+    %% %% Dump data from the private metadata table.
+    %% MDs = term_to_binary([{md_insert, T} ||
+    %%                       T <- ets:tab2list(S_ro#state.mdtab)]),
+    %% {_, Bin2} = WalMod:create_hunk(?LOGTYPE_METADATA, [MDs], []),
+    %% ok = file:write(CheckFH, Bin2),
+    %% ----
+    error({writeback_not_implemented, Op});
+add_metadata_db_op({md_delete, _Key}=Op, _Batch) ->
+    error({writeback_not_implemented, Op});
+add_metadata_db_op({log_directive, sync_override, false}=Op, _Batch) ->
+    error({writeback_not_implemented, Op});
+add_metadata_db_op({log_directive, map_sleep, _Delay}=Op, _Batch) ->
+    error({writeback_not_implemented, Op});
+add_metadata_db_op({log_noop}, Batch) ->
+    Batch. %% noop
+
+%% As for Hibari 0.3.0, metadata DB key is {Key, 0}. (The reversed
+%% timestamp is always zero.)
+-spec metadata_db_key(brick_ets:store_tuple()) -> binary().
+metadata_db_key(StoreTuple) ->
+    Key = brick_ets:storetuple_key(StoreTuple),
+    %% Timestamp = brick_ets:storetuple_ts(StoreTuple),
+    %% metadata_db_key(Key, Timestamp).
+    metadata_db_key(Key, 0).
+
+-spec metadata_db_key(key(), ts()) -> binary().
+metadata_db_key(Key, _Timestamp) ->
+    %% NOTE: Using reversed timestamp, so that Key-values will be sorted
+    %%       in LevelDB from newer to older.
+    %% ReversedTimestamp = -(Timestamp),
+    ReversedTimestamp = -0,
+    sext:encode({Key, ReversedTimestamp}).
+
+%% -spec make_delete_marker(key(), ts()) -> tuple().
+%% make_delete_marker(Key, Timestamp) ->
+%%     {Key, Timestamp, delete_marker}.
+
+
+%% ====================================================================
+%% Internal functions -- Tests
+%% ====================================================================
+
 %% DEBUG (@TODO: eunit / quickcheck cases)
 
 test_start_link() ->
     {ok, _Pid} = start_link(table1_ch1_b1, []).
 
 test1() ->
-    StoreTuple1 = {<<"key1">>, brick_server:make_timestamp(), <<"val1">>},
+    Brick = tab1_ch1_b1,
+    StoreTuple1 = {<<"key1">>,  brick_server:make_timestamp(), <<"val1">>},
     StoreTuple2 = {<<"key12">>, brick_server:make_timestamp(), <<"val12">>},
     MetadataList = [StoreTuple1, StoreTuple2],
-    write_metadata(metadata_store, MetadataList).
+    write_metadata(metadata_store, Brick, MetadataList).
 
 test2() ->
-    StoreTuple1 = {<<"key1">>, brick_server:make_timestamp(), <<"val1">>},
+    Brick = tab1_ch1_b1,
+    StoreTuple1 = {<<"key1">>,  brick_server:make_timestamp(), <<"val1">>},
     StoreTuple2 = {<<"key12">>, brick_server:make_timestamp(), <<"val12">>},
     MetadataList = [StoreTuple1, StoreTuple2],
-    write_metadata_group_commit(metadata_store, MetadataList).
+    write_metadata_group_commit(metadata_store, Brick, MetadataList).
