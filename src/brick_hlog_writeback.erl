@@ -159,7 +159,7 @@ terminate(_Reason, #state{writeback_timer=TRef}) ->
     timer:cancel(TRef),
     ok.
 
-                code_change(_OldVsn, State, _Extra) ->
+code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
 
@@ -228,6 +228,8 @@ do_writeback_wal_block(SeqNum, _FH, Offset, EndOffset, _BlockSize, Remainder)
   when EndOffset =/= undefined, Offset >= EndOffset ->
     do_writeback_wal_finish(SeqNum, Remainder, maybe_ok);
 do_writeback_wal_block(SeqNum, FH, Offset, EndOffset, BlockSize, Remainder) ->
+    ?ELOG_DEBUG("SeqNum: ~w, Offset: ~w, EndOffset: ~w, BlockSize: ~w, byte_size(Remainder): ~w",
+                [SeqNum, Offset, EndOffset, BlockSize, byte_size(Remainder)]),
     %% @TODO Cleanup the logic
     case file:read(FH, BlockSize) of
         {error, Err1} ->
@@ -236,7 +238,7 @@ do_writeback_wal_block(SeqNum, FH, Offset, EndOffset, BlockSize, Remainder) ->
             do_writeback_wal_finish(SeqNum, Remainder, maybe_ok);
         {ok, Bin} ->
             Bin2 = if Remainder =:= <<>> -> Bin;
-                      true ->               [Remainder, Bin]
+                      true               -> <<Remainder/binary, Bin/binary>>
                    end,
             case ?HUNK:parse_hunks(Bin2) of
                 {ok, Hunks, Remainder2} ->
@@ -245,7 +247,7 @@ do_writeback_wal_block(SeqNum, FH, Offset, EndOffset, BlockSize, Remainder) ->
                         ReadSize = byte_size(Bin),
                         if
                             ReadSize < BlockSize ->
-                                do_writeback_wal_finish(SeqNum, Remainder, maybe_ok);
+                                do_writeback_wal_finish(SeqNum, Remainder2, maybe_ok);
                             true ->
                                 do_writeback_wal_block(SeqNum, FH,
                                                        Offset + ReadSize, EndOffset, BlockSize,
@@ -263,7 +265,7 @@ do_writeback_wal_block(SeqNum, FH, Offset, EndOffset, BlockSize, Remainder) ->
 
 -spec do_writeback_wal_finish(seqnum(), binary(), maybe_ok | {error, term()}) -> ok.
 do_writeback_wal_finish(SeqNum, <<>>, maybe_ok) ->
-    ?ELOG_INFO("Finished writing back HLog seqence: ~w", [SeqNum]),
+    ?ELOG_DEBUG("Finished writing back HLog seqence: ~w", [SeqNum]),
     ok;
 do_writeback_wal_finish(SeqNum, Remainder, maybe_ok) ->
     ?ELOG_CRITICAL("BUG: Finished writing back HLog seqence: ~w, "
@@ -286,9 +288,11 @@ do_writeback_hunks(Hunks) ->
                           ok = MdStore:writeback_to_stable_storage(Hunks1, IsLastBatch)
                   end, MetadataHunksGBB),
     lists:foreach(fun({BrickName, Hunks1}) ->
-                          ?ELOG_DEBUG("blob:     ~w - ~w hunks.", [BrickName, length(Hunks1)])
-                          %% IsLastBatch = true,
-                          %% ?BlobStore:writeback_to_stable_storage(BrickName, Hunks1, IsLastBatch)
+                          ?ELOG_DEBUG("blob:     ~w - ~w hunks.", [BrickName, length(Hunks1)]),
+                          %% @TODO Maintain a cache of BlobStores
+                          {ok, BlobStore} = brick_blob_store:get_blob_store(BrickName),
+                          ok = BlobStore:writeback_to_stable_storage(Hunks1),
+                          ok = BlobStore:sync()
                   end, BlobHunksGBB),
     ok.
 

@@ -19,11 +19,21 @@
 
 -module(brick_blob_store).
 
+-behaviour(gen_server).
+
 -include("brick_specs.hrl").
+-include("brick_hlog.hrl").
+
+%% Common API
+-export([get_blob_store/1]).
+
+%% API for brick_data_sup Module
+-export([start_link/2,
+         stop/0
+        ]).
 
 %% API for Brick Server
--export([start_link/3,
-         read_value/2,
+-export([read_value/2,
          write_value/2
         ]).
 
@@ -32,17 +42,40 @@
          sync/1
         ]).
 
+%% gen_server callbacks
+-export([init/1,
+         handle_call/3,
+         handle_cast/2,
+         handle_info/2,
+         terminate/2,
+         code_change/3
+        ]).
+
+
 %% ====================================================================
 %% types and records
 %% ====================================================================
 
 %% @TODO: Use registered name rather than pid. pid will change when a process crashes.
--record(?MODULE, {impl_mod :: module(), pid :: pid()}).
-
+-record(?MODULE, {
+           impl_mod   :: module(),
+           brick_name :: brickname(),
+           pid        :: pid()
+          }).
 -type impl() :: #?MODULE{}.
+
 -type brickname() :: atom().
 -type storage_location() :: term().
 -type wal_entry() :: term().
+
+-type orddict(_A) :: term().  %% orddict in stdlib
+
+-record(state, {
+          impl_mod                :: module(),
+          registory=orddict:new() :: orddict(impl())  %% Registory of metadata_store impl
+         }).
+
+-define(TIMEOUT, 60 * 1000).
 
 
 %% ====================================================================
@@ -51,20 +84,26 @@
 
 %% @TODO Define brick_value_store behaviour.
 
--spec start_link(brickname(), [term()], module())
-                -> {ok, impl()} | ignore | {error, term()}.
-start_link(BrickName, Options, ImplMod) ->
-    case ImplMod:start_link(BrickName, Options) of
-        {ok, Pid} ->
-            {ok, #?MODULE{impl_mod=ImplMod, pid=Pid}};
-        Err ->
-            Err
-    end.
+-spec start_link(module(), [term()])
+                -> {ok, pid()} | ignore | {error, term()}.
+start_link(ImplMod, Options) ->
+    gen_server:start_link({local, ?BRICK_BLOB_STORE_REG_NAME},
+                          ?MODULE, [ImplMod, Options], []).
+
+-spec stop() -> ok.
+stop() ->
+    gen_server:cast(?BRICK_BLOB_STORE_REG_NAME, stop),
+    ok.
+
+-spec get_blob_store(brickname()) -> {ok, impl()} | {error, term()}.
+get_blob_store(BrickName) ->
+    gen_server:call(?BRICK_BLOB_STORE_REG_NAME,
+                    {get_or_start_blob_store_impl, BrickName}, ?TIMEOUT).
 
 %% Called by brick_ets:bigdata_dir_get_val(Key, Loc, Len, ...)
 -spec read_value(storage_location(), impl()) -> val().
-read_value(Location, #?MODULE{impl_mod=ImplMod}) ->
-    ImplMod:read_value(Location).
+read_value(Location, #?MODULE{impl_mod=ImplMod, brick_name=BrickName}) ->
+    ImplMod:read_value(BrickName, Location).
 
 %% Called by brick_ets:bigdata_dir_store_val(Key, Val, State)
 -spec write_value(val(), impl()) -> {ok, storage_location()} | {error, term()}.
@@ -73,9 +112,61 @@ write_value(Value, #?MODULE{impl_mod=ImplMod, pid=Pid}) ->
 
 %% Called by the WAL write-back process.
 -spec writeback_to_stable_storage([wal_entry()], impl()) -> ok | {error, term()}.
-writeback_to_stable_storage(WalEntries, #?MODULE{impl_mod=ImplMod, pid=Pid}) ->
-    ImplMod:writeback_to_stable_storage(Pid, WalEntries).
+writeback_to_stable_storage(WalEntries, #?MODULE{impl_mod=ImplMod, brick_name=BrickName, pid=Pid}) ->
+    ImplMod:writeback_to_stable_storage(Pid, BrickName, WalEntries).
 
 -spec sync(impl()) -> ok | {error, term()}.
 sync(#?MODULE{impl_mod=ImplMod, pid=Pid}) ->
     ImplMod:sync(Pid).
+
+
+%% ====================================================================
+%% gen_server callbacks
+%% ====================================================================
+
+init([ImplMod, _Options]) ->
+    process_flag(trap_exit, true),
+    %% process_flag(priority, high),
+    {ok, #state{impl_mod=ImplMod}}.
+
+handle_call({get_or_start_blob_store_impl, BrickName}, _From,
+            #state{impl_mod=ImplMod, registory=Registory}=State) ->
+    case orddict:find(BrickName, Registory) of
+        {ok, _Impl}=Res ->
+            {reply, Res, State};
+        error ->
+            Options = [],
+            case ImplMod:start_link(BrickName, Options) of
+                {ok, Pid} ->
+                    Impl = #?MODULE{
+                               impl_mod=ImplMod,
+                               brick_name=BrickName,
+                               pid=Pid
+                              },
+                    Registory1 = orddict:store(BrickName, Impl, Registory),
+                    {reply, {ok, Impl}, State#state{registory=Registory1}};
+                ignore ->
+                    error({inconsistent_blob_registory, ImplMod, BrickName});
+                Err ->
+                    {reply, Err, State}
+            end
+    end.
+
+handle_cast(stop, State) ->
+    {stop, normal, State};
+handle_cast(_, State) ->
+    {noreply, State}.
+
+%% @TODO: Handle exit from the gen_servers of metadata_store impl
+handle_info(_, State) ->
+    {noreply, State}.
+
+terminate(_Reason, #state{impl_mod=ImplMod, registory=Registory}) ->
+    orddict:fold(fun(_BrickName, #?MODULE{pid=Pid}, _Acc) ->
+                         catch ImplMod:stop(Pid),
+                         ok
+                 end, undefined, Registory),
+    ok.
+
+code_change(_OldVsn, State, _Extra) ->
+    {ok, State}.

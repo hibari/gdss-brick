@@ -433,7 +433,7 @@ init([ServerName, Options]) ->
 
     %% WalMod = proplists:get_value(wal_log_module, Options, gmt_hlog_local),
     %% MdStoreModule = brick_metadata_store_leveldb,
-    BlobStoreModule = brick_blob_store_hlog,
+    %% BlobStoreModule = brick_blob_store_hlog,
 
     %% Avoid race conditions where a quick restart of the brick
     %% catches up with the not-yet-finished death of the previous log proc.
@@ -467,7 +467,7 @@ init([ServerName, Options]) ->
     MDTab = ets:new(MDTabName, [ordered_set, protected, named_table]),
 
     {ok, MdStore} = brick_metadata_store:get_metadata_store(ServerName),
-    {ok, BlobStore} = brick_blob_store:start_link(ServerName, [], BlobStoreModule),
+    {ok, BlobStore} = brick_blob_store:get_blob_store(ServerName),
 
     DirtyTabName = list_to_atom(atom_to_list(ServerName) ++ "_dirty"),
     DirtyTab = ets:new(DirtyTabName, [ordered_set, protected, named_table]),
@@ -588,7 +588,7 @@ handle_info(_Info, State) ->
 %% Returns: any (ignored by gen_server)
 %%----------------------------------------------------------------------
 terminate(Reason, #state{name=Name, ctab=CTab, etab=ETab,
-                         md_store=_MdStorePid, blob_store=_BlobStorePid}) ->
+                         md_store=_MdStore, blob_store=_BlobStore}) ->
     ?E_INFO("Stopping brick server: ~w, reason ~w", [Name, Reason]),
     catch ets:delete(CTab),
     catch ets:delete(ETab),
@@ -2267,7 +2267,7 @@ bigdata_dir_get_val(_Key, Val, ValLen, S) ->
 
 bigdata_dir_get_val(_Key, no_blob, _ValLen, _CheckMD5_p, _S) ->
     <<>>;
-bigdata_dir_get_val(_Key, StorageLocation, _ValLen, _CheckMD5_p,
+bigdata_dir_get_val(Key, StorageLocation, _ValLen, _CheckMD5_p,
                     #state{blob_store=BlobStore}=S)
   when is_tuple(StorageLocation) ->
     case BlobStore:read_value(StorageLocation) of
@@ -2296,11 +2296,12 @@ bigdata_dir_get_val(_Key, StorageLocation, _ValLen, _CheckMD5_p,
             %% yet, and trying to read from the promised file
             %% & offset will yield 'eof'.  Doctor, it hurts
             %% when I read async-written data too early....
+            ?E_WARNING("~s: read error ~p at ~p the stored value of key ~p",
+                       [S#state.name, async_eof, StorageLocation, Key]),
             throw(silently_drop_reply);
-        _Error ->
-            %% @TODO (new hlog) Temporary disabled.
-            %% ?E_WARNING("~s: read error ~p at seq ~p offset ~p the stored value of key ~p",
-            %%            [S#state.name, Error, SeqNum, Offset, Key]),
+        Error ->
+            ?E_WARNING("~s: read error ~p at ~p the stored value of key ~p",
+                       [S#state.name, Error, StorageLocation, Key]),
             %% sequence_file_is_bad(SeqNum, Offset, S),
             throw(silently_drop_reply)
     end;

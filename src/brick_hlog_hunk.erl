@@ -236,52 +236,44 @@ parse_hunks(Hunks) when is_binary(Hunks) ->
 -spec parse_hunk_iodata(iodata()) -> {ok, hunk(), Remainder::binary()} | {error, term()}.
 parse_hunk_iodata(Hunk) when is_list(Hunk) ->
     parse_hunk_iodata(list_to_binary(Hunk));
-parse_hunk_iodata(<<?HUNK_HEADER_MAGIC,
-                    Type:1/binary,
-                    Flags:1/unit:8,
-                    BrickNameSize:2/unit:8,
-                    NumberOfBlobs:2/unit:8,
-                    TotalBlobSize:4/unit:8,
+parse_hunk_iodata(<<?HUNK_HEADER_MAGIC, Type:1/binary, Flags:1/unit:8,
+                    BrickNameSize:2/unit:8, NumberOfBlobs:2/unit:8, TotalBlobSize:4/unit:8,
                     Rest/binary>>) ->
+    RestSize     = byte_size(Rest),
     DecodedType  = decode_type(Type),
     DecodedFlags = decode_flags(Flags),
     {FooterSize, _RawSize, PaddingSize, _Overhead} =
         calc_hunk_size(DecodedFlags, BrickNameSize, NumberOfBlobs, TotalBlobSize),
-    %% ?ELOG_DEBUG("Type: ~p, Flags: ~p, BrickNameSz: ~w, NumBlobs: ~w, "
-    %%             "BlobSz: ~w, FooterSz: ~w, RawSz: ~w, PaddingSz: ~w, Overhead: ~w~n",
-    %%           [DecodedType, DecodedFlags, BrickNameSize, NumberOfBlobs,
-    %%            TotalBlobSize, FooterSize, _RawSize, PaddingSize, _Overhead]),
     RemainderPos  = TotalBlobSize + FooterSize + PaddingSize,
-    RemainderSize = byte_size(Rest) - RemainderPos,
+    RemainderSize = RestSize - RemainderPos,
 
-    BodyBin   = binary:part(Rest, 0, TotalBlobSize),
-    FooterBin = binary:part(Rest, TotalBlobSize, FooterSize),
-    Remainder = binary:part(Rest, RemainderPos, RemainderSize),
+    if
+        RemainderSize < 0 ->
+            {error, {incomplete_input, ?HUNK_HEADER_SIZE + RestSize}};
+        true ->
+            BodyBin   = binary:part(Rest, 0, TotalBlobSize),
+            FooterBin = binary:part(Rest, TotalBlobSize, FooterSize),
+            Remainder = binary:part(Rest, RemainderPos, RemainderSize),
 
-    case parse_hunk_footer(DecodedType, has_md5(DecodedFlags),
-                           BrickNameSize, NumberOfBlobs, FooterBin) of
-        {error, _}=Err ->
-            Err;
-        {ok, Md5, BrickName, BlobIndexBin} ->
-            if
-                DecodedType =:= blob_wal; DecodedType =:= blob_single ->
-                    {ok, #hunk{type=DecodedType,
-                               flags=DecodedFlags,
-                               brick_name=BrickName,
-                               blobs=[BodyBin],
-                               md5=Md5},
-                     Remainder};
-                true ->
-                    case parse_hunk_body(BodyBin, BlobIndexBin) of
-                        {ok, Blobs} ->
-                            {ok, #hunk{type=DecodedType,
-                                       flags=DecodedFlags,
-                                       brick_name=BrickName,
-                                       blobs=Blobs,
-                                       md5=Md5},
+            case parse_hunk_footer(DecodedType, has_md5(DecodedFlags),
+                                   BrickNameSize, NumberOfBlobs, FooterBin) of
+                {error, _}=Err ->
+                    Err;
+                {ok, Md5, BrickName, BlobIndexBin} ->
+                    if
+                        DecodedType =:= blob_single ->
+                            {ok, #hunk{type=DecodedType, flags=DecodedFlags,
+                                       brick_name=BrickName, blobs=[BodyBin], md5=Md5},
                              Remainder};
-                        Err ->
-                            Err
+                        true ->
+                            case parse_hunk_body(BodyBin, BlobIndexBin) of
+                                {ok, Blobs} ->
+                                    {ok, #hunk{type=DecodedType, flags=DecodedFlags,
+                                               brick_name=BrickName, blobs=Blobs, md5=Md5},
+                                     Remainder};
+                                Err ->
+                                    Err
+                            end
                     end
             end
     end;

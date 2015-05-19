@@ -69,9 +69,10 @@
 -record(?MODULE, {
            impl_mod   :: module(),
            brick_name :: brickname(),
-           pid        :: pid()}).
-
+           pid        :: pid()
+          }).
 -type impl() :: #?MODULE{}.
+
 -type brickname() :: atom().
 -type wal_entry() :: term().
 
@@ -93,16 +94,15 @@
 
 
 -spec start_link(module(), [term()])
-                -> {ok, impl()} | ignore | {error, term()}.
+                -> {ok, pid()} | ignore | {error, term()}.
 start_link(ImplMod, Options) ->
     gen_server:start_link({local, ?METADATA_STORE_REG_NAME},
                           ?MODULE, [ImplMod, Options], []).
 
-%% @TODO: It will be better to stop each brick_metadata_store_leveldb when
-%%        brick server is stopped.
 -spec stop() -> ok.
 stop() ->
-    gen_server:cast(?METADATA_STORE_REG_NAME, stop).
+    gen_server:cast(?METADATA_STORE_REG_NAME, stop),
+    ok.
 
 -spec get_metadata_store(brickname()) -> {ok, impl()} | {error, term()}.
 get_metadata_store(BrickName) ->

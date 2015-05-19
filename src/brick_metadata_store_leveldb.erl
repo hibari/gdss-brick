@@ -92,7 +92,8 @@ start_link(BrickName, Options) ->
 
 -spec stop(pid()) -> ok | {error, term()}.
 stop(Pid) ->
-    gen_server:cast(Pid, stop).
+    gen_server:cast(Pid, stop),
+    ok.
 
 %% -spec read_metadata(pid(), key(), impl()) -> storetuple().
 
@@ -191,12 +192,13 @@ reg_name(BrickName) ->
 metadata_dir(BrickName) ->
     %% @TODO: Get the data_dir from #state{}.
     {ok, FileDir} = application:get_env(gdss_brick, brick_default_data_dir),
-    filename:join([FileDir, "metadata2." ++ atom_to_list(BrickName)]).
+    filename:join([FileDir, atom_to_list(BrickName), "metadata"]).
 
 -spec open_metadata_db(brickname()) -> ok | {error, term()}.
 open_metadata_db(BrickName) ->
     MDBDir = metadata_dir(BrickName),
-    catch file:make_dir(MDBDir),
+    _ = (catch filelib:ensure_dir(MDBDir)),
+    _ = (catch file:make_dir(MDBDir)),
 
     %% @TODO Create a function to return the metadata DB path.
     MDBPath = filename:join(MDBDir, "leveldb"),
@@ -210,8 +212,8 @@ open_metadata_db(BrickName) ->
 -spec repair_metadata_db(brickname()) -> ok | {error, term()}.
 repair_metadata_db(BrickName) ->
     MDBDir = metadata_dir(BrickName),
+    _ = (catch file:ensure_dir(MDBDir)),
     MDBPath = filename:join(MDBDir, "leveldb"),
-    catch file:make_dir(MDBDir),
     h2leveldb:repair_db(MDBPath).
 
 -spec close_metadata_db(state()) -> ok.

@@ -70,6 +70,11 @@ init([]) ->
          {brick_metadata_store, start_link, [brick_metadata_store_leveldb, []]},
          permanent, 2000, worker, [brick_metadata_store]},
 
+    BrickBlobStore =
+        {?BRICK_BLOB_STORE_REG_NAME,
+         {brick_blob_store, start_link, [brick_blob_store_hlog, []]},
+         permanent, 2000, worker, [brick_blob_store]},
+
     {ok, MaxMB} = application:get_env(gdss_brick, brick_max_log_size_mb),
     {ok, MinMB} = application:get_env(gdss_brick, brick_min_log_size_mb),
 
@@ -109,6 +114,7 @@ init([]) ->
         %% It's important that all bricks restart if the CommonLog crashes.
                                   H2LevelDB,
                                   BrickMetadataStore,
+                                  BrickBlobStore,
                                   WAL,
                                   WALWriteBack,
                                   BrickBrickSup,
