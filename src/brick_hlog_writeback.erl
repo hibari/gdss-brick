@@ -49,8 +49,10 @@
 
 -type from() :: {pid(), term()}.
 -type prop() :: [].
+-type blocksize() :: non_neg_integer().  %% bytes
 
 -record(state, {
+          writeback_blocksize          :: blocksize(),  %% bytes
           writeback_timer              :: timer:tref(),
           writeback_pid                :: pid(),
           writeback_reqs=[]            :: [from()],  %% requesters of current async writeback
@@ -98,16 +100,18 @@ full_writeback() ->
 %% ====================================================================
 
 init([_Options]) ->
-    WriteBackInterval = 30000,  %% 30 secs.  @TODO: Configurable
-    {ok, TRef} = timer:send_interval(WriteBackInterval, schedule_async_writeback),
-    {ok, #state{writeback_timer=TRef}}.
+    WritebackBlockSize = 20 * 1024 * 1024,  %% 20MB.     @TODO: Configurable
+    WritebackInterval  = 30000,             %% 30 secs.  @TODO: Configurable
+    {ok, TRef} = timer:send_interval(WritebackInterval, schedule_async_writeback),
+    {ok, #state{writeback_blocksize=WritebackBlockSize, writeback_timer=TRef}}.
 
 handle_call(full_writeback, From, #state{writeback_pid=undefined,
+                                         writeback_blocksize=BlockSize,
                                          writeback_reqs=[],
                                          writeback_reqs_next_round=NextRoundReqs,
                                          last_seq=LastSeqNum,
                                          last_pos=LastOffset}=State) ->
-    Pid = schedule_async_writeback(LastSeqNum, LastOffset),
+    Pid = schedule_async_writeback(LastSeqNum, LastOffset, BlockSize),
     {noreply, State#state{writeback_pid=Pid,
                           writeback_reqs=[From | NextRoundReqs],
                           writeback_reqs_next_round=[]
@@ -135,11 +139,12 @@ handle_cast(stop, State) ->
     {stop, normal, State}.
 
 handle_info(schedule_async_writeback, #state{writeback_pid=undefined,
+                                             writeback_blocksize=BlockSize,
                                              writeback_reqs=[],
                                              writeback_reqs_next_round=NextRoundReqs,
                                              last_seq=LastSeqNum,
                                              last_pos=LastOffset}=State) ->
-    Pid = schedule_async_writeback(LastSeqNum, LastOffset),
+    Pid = schedule_async_writeback(LastSeqNum, LastOffset, BlockSize),
     {noreply, State#state{writeback_pid=Pid,
                           writeback_reqs=NextRoundReqs,
                           writeback_reqs_next_round=[]
@@ -154,7 +159,7 @@ terminate(_Reason, #state{writeback_timer=TRef}) ->
     timer:cancel(TRef),
     ok.
 
-code_change(_OldVsn, State, _Extra) ->
+                code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
 
@@ -162,12 +167,12 @@ code_change(_OldVsn, State, _Extra) ->
 %% Internal functions
 %% ====================================================================
 
--spec schedule_async_writeback(seqnum(), offset()) -> pid().
-schedule_async_writeback(LastSeqNum, LastOffset) ->
+-spec schedule_async_writeback(seqnum(), offset(), blocksize()) -> pid().
+schedule_async_writeback(LastSeqNum, LastOffset, BlockSize) ->
     {Pid, _Ref} =
         spawn_monitor(
           fun() ->
-                  case do_writeback(LastSeqNum, LastOffset) of
+                  case do_writeback(LastSeqNum, LastOffset, BlockSize) of
                       {NewSeqNum, NewOffset} ->
                           gen_server:cast(?WRITEBACK_SERVER_REG_NAME,
                                           {writeback_finished, NewSeqNum, NewOffset}),
@@ -176,47 +181,98 @@ schedule_async_writeback(LastSeqNum, LastOffset) ->
           end),
     Pid.
 
--spec do_writeback(seqnum(), offset()) -> {seqnum(), offset()}.
-do_writeback(LastSeqNum, LastOffset) ->
+-spec do_writeback(seqnum(), offset(), blocksize()) -> {seqnum(), offset()}.
+do_writeback(LastSeqNum, LastOffset, BlockSize) ->
     SeqNums0 = ?WAL:get_all_seqnums(),
     {CurSeqNum, CurOffset} = ?WAL:get_current_seqnum_and_offset(),
     if
         LastSeqNum =:= CurSeqNum ->
-            do_writeback_wal(CurSeqNum, LastOffset, CurOffset);
+            do_writeback_wal(CurSeqNum, LastOffset, CurOffset, BlockSize);
         true ->
             SeqNums1 = lists:filter(fun(Seq) ->
                                             LastSeqNum < Seq andalso Seq < CurSeqNum
                                     end, SeqNums0),
             if
                 0 < LastSeqNum ->
-                    do_writeback_wal(LastSeqNum, LastOffset, undefined);
+                    do_writeback_wal(LastSeqNum, LastOffset, undefined, BlockSize);
                 true ->
                     ok
             end,
             lists:foreach(fun(Seq) ->
-                                  do_writeback_wal(Seq, 0, undefined)
+                                  do_writeback_wal(Seq, 0, undefined, BlockSize)
                           end, SeqNums1),
-            do_writeback_wal(CurSeqNum, 0, CurOffset)
+            do_writeback_wal(CurSeqNum, 0, CurOffset, BlockSize)
     end,
+    %% @TODO: Return the actual location from do_writeback_wal.
     {CurSeqNum, CurOffset}.
 
--spec do_writeback_wal(seqnum(), offset(), offset() | undefined) -> ok.
-do_writeback_wal(SeqNum, _StartOffset, _EndOffset) ->
-    %% @TODO Read only a configurable block (e.g. 1MB) at once.
-    BlockSize = 500 * 1024 * 1024,  %% 500MB!
+-spec do_writeback_wal(seqnum(), offset(), offset() | undefined, blocksize()) -> ok.
+do_writeback_wal(SeqNum, StartOffset, EndOffset, BlockSize) ->
     {ok, FH} = ?WAL:open_wal_for_read(SeqNum),
-    try file:read(FH, BlockSize) of
-        {ok, Bin} ->
-            {ok, Hunks, <<>>} = ?HUNK:parse_hunks(Bin),
-            do_writeback_hunks(Hunks),
-            ?ELOG_INFO("Finished writing back HLog seqence: ~w", [SeqNum]),
+    try file:position(FH, StartOffset) of
+        {ok, StartOffset} ->
+            do_writeback_wal_block(SeqNum, FH, StartOffset, EndOffset, BlockSize, <<>>);
+        {ok, OtherOffset} ->
+            ?ELOG_CRITICAL("Different offset. Skipping. expected: ~w, actual: ~w",
+                           [StartOffset, OtherOffset]),
             ok;
-        eof ->
-            ?ELOG_INFO("Skipped writing back HLog seqence: ~w (empty log)", [SeqNum]),
-            ok
+        {error, _}=Err ->
+            throw(Err)
     after
-        catch file:close(FH)
+        _ = (catch file:close(FH))
     end.
+
+-spec do_writeback_wal_block(seqnum(), file:fd(),
+                             offset(), offset() | undefined, blocksize(), binary()) -> ok.
+do_writeback_wal_block(SeqNum, _FH, Offset, EndOffset, _BlockSize, Remainder)
+  when EndOffset =/= undefined, Offset >= EndOffset ->
+    do_writeback_wal_finish(SeqNum, Remainder, maybe_ok);
+do_writeback_wal_block(SeqNum, FH, Offset, EndOffset, BlockSize, Remainder) ->
+    %% @TODO Cleanup the logic
+    case file:read(FH, BlockSize) of
+        {error, Err1} ->
+            do_writeback_wal_finish(SeqNum, Remainder, {error, {Err1, offset, Offset}});
+        eof ->
+            do_writeback_wal_finish(SeqNum, Remainder, maybe_ok);
+        {ok, Bin} ->
+            Bin2 = if Remainder =:= <<>> -> Bin;
+                      true ->               [Remainder, Bin]
+                   end,
+            case ?HUNK:parse_hunks(Bin2) of
+                {ok, Hunks, Remainder2} ->
+                    try
+                        do_writeback_hunks(Hunks),
+                        ReadSize = byte_size(Bin),
+                        if
+                            ReadSize < BlockSize ->
+                                do_writeback_wal_finish(SeqNum, Remainder, maybe_ok);
+                            true ->
+                                do_writeback_wal_block(SeqNum, FH,
+                                                       Offset + ReadSize, EndOffset, BlockSize,
+                                                       Remainder2)
+                        end
+                    catch
+                        error:Err2 ->
+                            do_writeback_wal_finish(SeqNum, Remainder,
+                                                    {error, {Err2, offset, Offset}});
+                        _:_=Err3 ->
+                            do_writeback_wal_finish(SeqNum,  Remainder, Err3)
+                    end
+            end
+    end.
+
+-spec do_writeback_wal_finish(seqnum(), binary(), maybe_ok | {error, term()}) -> ok.
+do_writeback_wal_finish(SeqNum, <<>>, maybe_ok) ->
+    ?ELOG_INFO("Finished writing back HLog seqence: ~w", [SeqNum]),
+    ok;
+do_writeback_wal_finish(SeqNum, Remainder, maybe_ok) ->
+    ?ELOG_CRITICAL("BUG: Finished writing back HLog seqence: ~w, "
+                   "but there is a remainder: ~p",
+                   [SeqNum, Remainder]),
+    ok;
+do_writeback_wal_finish(SeqNum, _Remainder, Err) ->
+    ?ELOG_ERROR("Writeback for HLog sequence ~w failed with ~p", [SeqNum, Err]),
+    ok.
 
 -spec do_writeback_hunks([hunk()]) -> ok.
 do_writeback_hunks(Hunks) ->
