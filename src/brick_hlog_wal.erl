@@ -314,7 +314,9 @@ do_write_hunk(HunkBytes, #state{file_len_min=FileLenMin}=State) ->
     Pos1 = State1#state.cur_pos,
 
     assert_file_position(prewrite, FH, Pos1),     %% @TODO: DEBUG DESABLEME
+    Start = brick_metrics:histogram_timed_begin(wal_write_latencies),
     ok = file:write(FH, HunkBytes),
+    brick_metrics:histogram_timed_notify(Start),
     Pos2 = Pos1 + HunkSize,
     assert_file_position(post_write, FH, Pos2),   %% @TODO: DEBUG DESABLEME
 
@@ -449,8 +451,9 @@ do_open_wal_for_read(Dir, SeqNum) when is_integer(SeqNum), SeqNum =/= 0 ->
     case file:open(Path, [binary, raw, read]) of
         {ok, _}=Res ->
             Res;
+        {error, enoent} ->
+            not_available;
         Res ->
-            %% @TODO (new hlog): Handle not_available case
             ?E_CRITICAL("Couldn't open log file ~s for read by ~w", [Path, Res]),
             Res
     end.
@@ -461,7 +464,7 @@ create_wal(Dir, SeqNum) when is_integer(SeqNum), SeqNum =/= 0 ->
     Path = wal_path(Dir, SeqNum),
     {SeqNum, {error, enoent}} = {SeqNum, file:read_file_info(Path)},  %% sanity
     %% @TODO: write buffer?
-    %% @TODO: CHECKME: Why do we need 'read' flag?
+    %% 'read' option is required otherwise the file will be truncated.
     {ok, FH} = open_wal(Dir, SeqNum, [read, write]),
     try
         %% ok = write_log_header(FH),
@@ -522,7 +525,7 @@ wal_info(Dir, N) ->
 
 -spec wal_path(dirname(), seqnum()) -> filepath().
 wal_path(Dir, SeqNum) ->
-    Dir ++ "/" ++ seqnum2file(SeqNum, "HLOG").
+    filename:join([Dir, seqnum2file(SeqNum, "HLOG")]).
 
 seqnum2file(SeqNum, Suffix) ->
     gmt_util:left_pad(integer_to_list(SeqNum), 12, $0) ++ "." ++ Suffix.

@@ -82,9 +82,10 @@ init([]) ->
                %% do_error_latencies,
                %% do_error_length,
                read_priming_latencies,
-               logging_op_latencies,
+               wal_write_latencies,
                wal_sync_latencies,
-               wal_sync_requests
+               wal_sync_requests,
+               logging_op_latencies
               ],
 
     %% Setup a histogram and counter for each operation -- we only track latencies on
@@ -120,41 +121,38 @@ code_change(_OldVsn, State, _Extra) ->
 %% ====================================================================
 
 process_stats() ->
-    %% {DoOkMedian, DoOkP95} = get_statistics(do_ok_latencies, true),
-    %% {DoOkLenMedian, DoOkLenP95} = get_statistics(do_ok_length, false),
-    %% {DoErrMedian, DoErrP95} = get_statistics(do_error_latencies, true),
-    %% {DoErrLenMedian, DoErrLenP95} = get_statistics(do_error_length, false),
-    {ReadPrimingMedian, ReadPrimingP95} = get_statistics(read_priming_latencies, true),
-    {LoggingOpMedian, LoggingOpP95} = get_statistics(logging_op_latencies, true),
-    {WalSyncMedian, WalSyncP95} = get_statistics(wal_sync_latencies, true),
-    {WalSyncReqsMedian, WalSyncReqsP95} = get_statistics(wal_sync_requests, false),
+    {ReadPrimingMedian, ReadPrimingP95, ReadPrimingP99} = get_statistics(read_priming_latencies, true),
+    {WalWriteMedian, WalWriteP95, WalWriteP99}          = get_statistics(wal_write_latencies, true),
+    {WalSyncMedian, WalSyncP95, WalSyncP99}             = get_statistics(wal_sync_latencies, true),
+    {WalSyncReqsMedian, WalSyncReqsP95, WalSyncReqsP99} = get_statistics(wal_sync_requests, false),
+    {LoggingOpMedian, LoggingOpP95, LoggingOpP99}       = get_statistics(logging_op_latencies, true),
 
     ?E_INFO("statistics report~n"
-            %% "\tdo ok - ~w, ~w, len ~w, ~w~n"
-            %% "\tdo error - ~w, ~w, len ~w, ~w~n"
-            "\t(read)  read prminig  median: ~w ms, 95 percentile: ~w ms~n"
-            "\t(write) logging wait  median: ~w ms, 95 percentile: ~w ms~n"
-            "\t(write) wal sync      median: ~w ms, 95 percentile: ~w ms, reqs ~w, ~w~n",
-            [
-             %% DoOkMedian, DoOkP95, DoOkLenMedian, DoOkLenP95,
-             %% DoErrMedian, DoErrP95, DoErrLenMedian, DoErrLenP95,
-             ReadPrimingMedian, ReadPrimingP95,
-             LoggingOpMedian, LoggingOpP95,
-             WalSyncMedian, WalSyncP95, WalSyncReqsMedian, WalSyncReqsP95
+            "\t                          median           95th     99th percentile~n"
+            "\t(read)  read prminig ~11.3f ms ~11.3f ms ~11.3f ms~n"
+            "\t(write) wal write    ~11.3f ms ~11.3f ms ~11.3f ms~n"
+            "\t(write) wal sync     ~11.3f ms ~11.3f ms ~11.3f ms (reqs ~w, ~w, ~w)~n"
+            "\t(write) logging wait ~11.3f ms ~11.3f ms ~11.3f ms~n",
+            [ReadPrimingMedian, ReadPrimingP95, ReadPrimingP99,
+             WalWriteMedian,    WalWriteP95,    WalWriteP99,
+             WalSyncMedian,     WalSyncP95,     WalSyncP99,
+             WalSyncReqsMedian, WalSyncReqsP95, WalSyncReqsP99,
+             LoggingOpMedian,   LoggingOpP95,   LoggingOpP99
             ]).
 
 %% unit: ms
 -spec get_statistics(metric(), IsTime::boolean())
-                    -> {Median::number(), Percentile95::number()}.
+                    -> {Median::number(), Percentile95::number(), Percentile99::number()}.
 get_statistics(Metric, false) ->
     Stats = folsom_metrics:get_histogram_statistics(Metric),
     Median = proplists:get_value(median, Stats),
     Percentiles = proplists:get_value(percentile, Stats),
     Percentile95 = proplists:get_value(95, Percentiles),
-    {Median, Percentile95};
+    Percentile99 = proplists:get_value(99, Percentiles),
+    {Median, Percentile95, Percentile99};
 get_statistics(Metric, true) ->
-    {Median, Percentile95} = get_statistics(Metric, false),
-    {Median / 1000.0, Percentile95 / 1000.0}.
+    {Median, Percentile95, Percentile99} = get_statistics(Metric, false),
+    {Median / 1000.0, Percentile95 / 1000.0, Percentile99 / 1000.0}.
 
 
  %% {min,28508},
