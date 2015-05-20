@@ -48,12 +48,6 @@
          code_change/3
         ]).
 
-%% DEBUG
--export([test_start_link/0,
-         test1/0,
-         test2/0
-        ]).
-
 
 %% ====================================================================
 %% types and records
@@ -139,11 +133,8 @@
           log_dir                      :: file:directory(),
           head_seqnum                  :: seqnum(),
           head_position                :: offset(),
-          writeback_seqnum             :: seqnum(),
-          writeback_position           :: offset(),
           cur_seqnum_hunk_overhead=0   :: non_neg_integer(),
-          hunk_overhead=dict:new()     :: dict(seqnum(), non_neg_integer()),
-          writeback_pid                :: pid()
+          hunk_overhead=dict:new()     :: dict(seqnum(), non_neg_integer())
          }).
 
 -define(TIMEOUT, 60 * 1000).
@@ -244,16 +235,18 @@ init([BrickName, _Options]) ->
     process_flag(trap_exit, true),
     %% process_flag(priority, high),
 
-    CurSeq = 1,
-    CurPos = 0,
-    WBSeq  = 1,
-    WBPos  = 0,
-
+    Dir = blob_dir(BrickName),
+    CurSeq = case filelib:wildcard("*.hlog", Dir) of
+                 [] ->
+                     1;
+                 HLogFiles ->
+                     LastFile = filename:basename(lists:max(HLogFiles), ".hlog"),
+                     list_to_integer(LastFile) + 1
+             end,
+    Position = create_private_log(BrickName, CurSeq),
     {ok, #state{brick_name=BrickName,
                 head_seqnum=CurSeq,
-                head_position=CurPos,
-                writeback_seqnum=WBSeq,
-                writeback_position=WBPos}}.
+                head_position=Position}}.
 
 handle_call({write_value, Value}, _From,
             #state{brick_name=BrickName, head_seqnum=SeqNum, head_position=Position,
@@ -274,12 +267,16 @@ handle_call({write_value, Value}, _From,
     case ?WAL:write_hunk(WALHunkIOList) of
         {ok, WALSeqNum, WALPosition} ->
             ValLen = byte_size(Value),
-            {_, RawSize, PaddingSize, Overhead} = ?HUNK:calc_hunk_size(Flags, 0, 1, ValLen),
-            StoreLoc = #w{wal_seqnum=WALSeqNum, wal_hunk_pos=WALPosition,
-                          private_seqnum=SeqNum2, private_hunk_pos=Position2,
-                          val_offset=WALValOffset, val_len=ValLen},
-            State1 = State#state{head_seqnum=SeqNum2, head_position=Position2 + RawSize + PaddingSize,
-                                 cur_seqnum_hunk_overhead=HunkOverhead + Overhead},
+            StoreLoc =
+                #w{wal_seqnum=WALSeqNum, wal_hunk_pos=WALPosition,
+                   private_seqnum=SeqNum2, private_hunk_pos=Position2,
+                   val_offset=WALValOffset, val_len=ValLen},
+            {RawSize, _, PaddingSize, Overhead} =
+                ?HUNK:calc_hunk_size(blob_single, Flags, 0, 1, ValLen),
+            State1 =
+                State#state{
+                  head_seqnum=SeqNum2, head_position=Position2 + RawSize + PaddingSize,
+                  cur_seqnum_hunk_overhead=HunkOverhead + Overhead},
             {reply, {ok, StoreLoc}, State1};
         Err ->
             {reply, Err, State}
@@ -304,57 +301,6 @@ code_change(_OldVsn, State, _Extra) ->
 %% Internal functions
 %% ====================================================================
 
--spec blob_dir(brickname()) -> dirname().
-blob_dir(BrickName) ->
-    %% @TODO: Get the data_dir from #state{}.
-    {ok, FileDir} = application:get_env(gdss_brick, brick_default_data_dir),
-    filename:join([FileDir, atom_to_list(BrickName), "blob"]).
-
-open_private_log_for_read(BrickName, SeqNum) ->
-    BlobDir = blob_dir(BrickName),
-    Path = filename:join(BlobDir, seqnum2file(SeqNum, "BLOB")),
-    case file:open(Path, [binary, raw, read]) of
-        {ok, _}=Res ->
-            Res;
-        Res ->
-            ?E_CRITICAL("Couldn't open blob file [read] ~s by ~w", [Path, Res]),
-            Res
-    end.
-
--spec open_private_log_for_append(brickname(), seqnum()) -> {ok, file:fd()} | {error, term()}.
-open_private_log_for_append(BrickName, SeqNum) ->
-    BlobDir = blob_dir(BrickName),
-    Path = filename:join(BlobDir, seqnum2file(SeqNum, "BLOB")),
-    %% 'read' option is required otherwise the file will be truncated.
-    case file:open(Path, [binary, raw, read, write]) of
-        {ok, _FH}=Res ->
-            Res;
-        {error, enoent}=Err ->
-            case filelib:is_dir(BlobDir) of
-                true ->
-                    ?E_CRITICAL("Couldn't open blob file [write] ~s by ~w", [Path, Err]),
-                    Err;
-                false ->
-                    filelib:ensure_dir(BlobDir),
-                    file:make_dir(BlobDir),
-                    %% retry
-                    open_private_log_for_append(BrickName, SeqNum)
-            end;
-        {error, _}=Err ->
-            Err
-    end.
-
-write_value_to_private_log(FH, undefined, HunkBytes) ->
-    file:write(FH, HunkBytes);
-write_value_to_private_log(FH, WBPos, HunkBytes) ->
-    case file:position(FH, WBPos) of
-        {ok, WBPos} ->
-            file:write(FH, HunkBytes);
-        Err ->
-            ?ELOG_ERROR("~p", [Err]),
-            Err
-    end.
-
 -spec writeback_values(brickname(), [hunk()], file:fd(), seqnum(), offset(), non_neg_integer())
                        -> {ok, seqnum(), offset(), non_neg_integer()} | {error, term()}.
 writeback_values(_BrickName, [], FH, CurrentWBSeqNum, CurrentWBPos, SuccessCount) ->
@@ -369,30 +315,10 @@ writeback_values(BrickName, [#hunk{flags=Flags, blobs=[Value, LocationBin]} | WA
                  FH, CurrentWBSeqNum, CurrentWBPos, SuccessCount) ->
     {WBSeqNum, WBPos} = binary_to_term(LocationBin),
     %% ?ELOG_DEBUG("BrickName: ~w, WBSeqNum: ~w, WBPos: ~w", [BrickName, WBSeqNum, WBPos]),
-    if
-        FH =:= undefined; WBSeqNum =/= CurrentWBSeqNum ->
-            if
-                FH =/= undefined ->
-                    _ = (catch file:close(FH));
-                true ->
-                    ok
-            end,
-            case open_private_log_for_append(BrickName, WBSeqNum) of
-                {ok, FH1} ->
-                    ErrorResponse = undefined;
-                {error, Err1} ->
-                    FH1 = undefined,
-                    ErrorResponse = {error, {Err1, CurrentWBSeqNum, CurrentWBPos, SuccessCount}}
-            end;
-        true ->
-            FH1 = FH,
-            ErrorResponse = undefined
-    end,
-
-    if
-        ErrorResponse =/= undefined ->
-            ErrorResponse;
-        true ->
+    case get_private_log_for_writeback(BrickName, FH, WBSeqNum, CurrentWBSeqNum) of
+        {error, Err1} ->
+            {error, {Err1, CurrentWBSeqNum, CurrentWBPos, SuccessCount}};
+        {ok, FH1} ->
             WBPos2 = if
                          WBSeqNum =:= CurrentWBSeqNum, WBPos =:= CurrentWBPos ->
                              undefined;
@@ -401,13 +327,21 @@ writeback_values(BrickName, [#hunk{flags=Flags, blobs=[Value, LocationBin]} | WA
                              WBPos
                      end,
             {HunkIOList, HunkSize, _, _} =
-                ?HUNK:create_hunk_iolist(#hunk{type=blob_single, flags=Flags, blobs=[Value]}),
-            %% ?ELOG_DEBUG("Hunk: ~p", [HunkIOList]),
+                ?HUNK:create_hunk_iolist(#hunk{type=blob_single, flags=Flags,
+                                               blobs=[Value], blob_ages=[0]}),
 
             try write_value_to_private_log(FH1, WBPos2, list_to_binary(HunkIOList)) of
                 ok ->
+                    %% repeat
+                    NewWBPos =
+                        if
+                            WBPos2 =:= undefined ->
+                                CurrentWBPos + HunkSize;
+                            true ->
+                                WBPos2 + HunkSize
+                        end,
                     writeback_values(BrickName, WALEntries, FH1,
-                                     WBSeqNum, WBPos + HunkSize, SuccessCount + 1);
+                                     WBSeqNum, NewWBPos, SuccessCount + 1);
                 {error, Err2} ->
                     _ = (catch file:close(FH1)),
                     {error, {Err2, CurrentWBSeqNum, CurrentWBPos, SuccessCount}}
@@ -418,21 +352,88 @@ writeback_values(BrickName, [#hunk{flags=Flags, blobs=[Value, LocationBin]} | WA
             end
     end.
 
+-spec get_private_log_for_writeback(brickname(), file:fd() | undefined, seqnum(), seqnum()) ->
+                                           {ok, file:fd()} | {error, term()}.
+get_private_log_for_writeback(_BrickName, FH, SeqNum, SeqNum) when FH =/= undefined ->
+    {ok, FH};
+get_private_log_for_writeback(BrickName, undefined, SeqNum, _CurrentWBSeqNum) ->
+    open_private_log_for_write(BrickName, SeqNum);
+get_private_log_for_writeback(BrickName, FH, SeqNum, _CurrentWBSeqNum) ->
+    _ = (catch file:close(FH)),
+    open_private_log_for_write(BrickName, SeqNum).
+
+write_value_to_private_log(FH, undefined, HunkBytes) ->
+    file:write(FH, HunkBytes);
+write_value_to_private_log(FH, WBPos, HunkBytes) ->
+    case file:position(FH, WBPos) of
+        {ok, WBPos} ->
+            file:write(FH, HunkBytes);
+        Err ->
+            ?ELOG_ERROR("~p", [Err]),
+            Err
+    end.
+
+%% @TODO: Better error handling
+-spec create_private_log(brickname(), seqnum()) -> offset().
+create_private_log(BrickName, SeqNum) ->
+    BlobDir = blob_dir(BrickName),
+    Path = filename:join(BlobDir, seqnum2file(SeqNum, "hlog")),
+    {error, enoent} = file:read_file_info(Path),  %% sanity
+    case open_private_log_for_write(BrickName, SeqNum) of
+        {ok, FH} ->
+            _ = (catch file:close(FH)),
+            try
+                %% ok = write_log_header(FH),
+                ?E_INFO("Created brick private log with sequence ~w: ~s", [SeqNum, Path]),
+                {ok, FI} = file:read_file_info(Path),
+                FI#file_info.size
+            catch
+                _:_=Err ->
+                    error(Err)
+            end;
+        Err ->
+            error(Err)
+    end.
+
+open_private_log_for_read(BrickName, SeqNum) ->
+    BlobDir = blob_dir(BrickName),
+    Path = filename:join(BlobDir, seqnum2file(SeqNum, "hlog")),
+    case file:open(Path, [binary, raw, read, read_ahead]) of
+        {ok, _}=Res ->
+            Res;
+        Res ->
+            ?E_CRITICAL("Couldn't open blob file [read] ~s by ~w", [Path, Res]),
+            Res
+    end.
+
+-spec open_private_log_for_write(brickname(), seqnum()) -> {ok, file:fd()} | {error, term()}.
+open_private_log_for_write(BrickName, SeqNum) ->
+    BlobDir = blob_dir(BrickName),
+    Path = filename:join(BlobDir, seqnum2file(SeqNum, "hlog")),
+    %% 'read' option is required otherwise the file will be truncated.
+    case file:open(Path, [binary, raw, read, write, delayed_write]) of
+        {ok, _FH}=Res ->
+            Res;
+        {error, enoent}=Err ->
+            case filelib:is_dir(BlobDir) of
+                true ->
+                    ?E_CRITICAL("Couldn't open blob file [write] ~s by ~w", [Path, Err]),
+                    Err;
+                false ->
+                    filelib:ensure_dir(BlobDir),
+                    file:make_dir(BlobDir),
+                    %% retry
+                    open_private_log_for_write(BrickName, SeqNum)
+            end;
+        {error, _}=Err ->
+            Err
+    end.
+
+-spec blob_dir(brickname()) -> dirname().
+blob_dir(BrickName) ->
+    %% @TODO: Get the data_dir from #state{}.
+    {ok, FileDir} = application:get_env(gdss_brick, brick_default_data_dir),
+    filename:join([FileDir, atom_to_list(BrickName), "blob"]).
+
 seqnum2file(SeqNum, Suffix) ->
     gmt_util:left_pad(integer_to_list(SeqNum), 12, $0) ++ "." ++ Suffix.
-
-
-%% DEBUG
-
-%% -define(BLOBSTORE1, table_ch1_b1_blob_store).
-
-test_start_link() ->
-    {ok, _Pid} = start_link(table1_ch1_b1, []).
-
-test1() ->
-    write_value(blob_store, <<>>).
-
-test2() ->
-    write_value(blob_store, <<"value1">>).
-
-

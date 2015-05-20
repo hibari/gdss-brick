@@ -228,8 +228,8 @@ do_writeback_wal_block(SeqNum, _FH, Offset, EndOffset, _BlockSize, Remainder)
   when EndOffset =/= undefined, Offset >= EndOffset ->
     do_writeback_wal_finish(SeqNum, Remainder, maybe_ok);
 do_writeback_wal_block(SeqNum, FH, Offset, EndOffset, BlockSize, Remainder) ->
-    ?ELOG_DEBUG("SeqNum: ~w, Offset: ~w, EndOffset: ~w, BlockSize: ~w, byte_size(Remainder): ~w",
-                [SeqNum, Offset, EndOffset, BlockSize, byte_size(Remainder)]),
+    %% ?ELOG_DEBUG("SeqNum: ~w, Offset: ~w, EndOffset: ~w, BlockSize: ~w, byte_size(Remainder): ~w",
+    %%             [SeqNum, Offset, EndOffset, BlockSize, byte_size(Remainder)]),
     %% @TODO Cleanup the logic
     case file:read(FH, BlockSize) of
         {error, Err1} ->

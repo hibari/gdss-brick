@@ -45,8 +45,7 @@
         blob_single |  %% value blob, one value per hunk
         blob_multi.    %% value blob, many values per hunk
 
--type hunk_flag() :: deleted  %% Not used for now
-                   | no_md5.
+-type hunk_flag() :: no_md5.
 
 
 %% NOTE: An upper layer (scavenger) should pack multiple values into
@@ -58,9 +57,9 @@
 -record(hunk, {
           type       :: hunk_type() | undefined,
           flags= []  :: [hunk_flag()],
-          brick_name :: atom() | undefined,     %% Do not set this value for
-                                                %% blob_single or blob_multi types
+          brick_name :: atom() | undefined,               %% Only for metadata and blob_wal
           blobs= []  :: [binary()],
+          blob_ages  :: undefined | [non_neg_integer()],  %% Only for blob_single and blob_multi
           md5        :: binary() | undefined
          }).
 -type hunk() :: #hunk{}.

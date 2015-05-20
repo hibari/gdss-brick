@@ -136,8 +136,8 @@ open_wal_for_read(SeqNum) ->
 -spec get_all_seqnums() -> [seqnum()].
 get_all_seqnums() ->
     Dir = gen_server:call(wal_server(), get_wal_dir, ?TIMEOUT),
-    HLogFiles = filelib:wildcard("*.HLOG", Dir),
-    [ list_to_integer(filename:basename(N, ".HLOG")) || N <- lists:sort(HLogFiles) ].
+    HLogFiles = filelib:wildcard("*.hlog", Dir),
+    [ list_to_integer(filename:basename(N, ".hlog")) || N <- lists:sort(HLogFiles) ].
 
 -spec get_current_seqnum_and_offset() -> {seqnum(), offset()}.
 get_current_seqnum_and_offset() ->
@@ -157,11 +157,11 @@ init(PropList) ->
     LenMax = proplists:get_value(file_len_max, PropList, 64 * 1024 * 1024),
     LenMin = proplists:get_value(file_len_min, PropList, LenMax),
 
-    CurSeq = case filelib:wildcard("*.HLOG", Dir) of
+    CurSeq = case filelib:wildcard("*.hlog", Dir) of
                  [] ->
                      1;
                  HLogFiles ->
-                     LastFile = filename:basename(lists:max(HLogFiles), ".HLOG"),
+                     LastFile = filename:basename(lists:max(HLogFiles), ".hlog"),
                      list_to_integer(LastFile) + 1
              end,
     {CurFH, CurPos} = create_wal(Dir, CurSeq),
@@ -448,7 +448,7 @@ do_advance_seqnum(_Incr, #state{sync_proc={Pid, Ref}}) ->
 do_open_wal_for_read(Dir, SeqNum) when is_integer(SeqNum), SeqNum =/= 0 ->
     %% @TODO: read ahead?
     Path = wal_path(Dir, SeqNum),
-    case file:open(Path, [binary, raw, read]) of
+    case file:open(Path, [binary, raw, read, read_ahead]) of
         {ok, _}=Res ->
             Res;
         {error, enoent} ->
@@ -465,7 +465,7 @@ create_wal(Dir, SeqNum) when is_integer(SeqNum), SeqNum =/= 0 ->
     {SeqNum, {error, enoent}} = {SeqNum, file:read_file_info(Path)},  %% sanity
     %% @TODO: write buffer?
     %% 'read' option is required otherwise the file will be truncated.
-    {ok, FH} = open_wal(Dir, SeqNum, [read, write]),
+    {ok, FH} = open_wal(Dir, SeqNum, [read, write, delayed_write]),
     try
         %% ok = write_log_header(FH),
         ?E_INFO("Created WAL with sequence ~w: ~s", [SeqNum, Path]),
@@ -525,7 +525,7 @@ wal_info(Dir, N) ->
 
 -spec wal_path(dirname(), seqnum()) -> filepath().
 wal_path(Dir, SeqNum) ->
-    filename:join([Dir, seqnum2file(SeqNum, "HLOG")]).
+    filename:join([Dir, seqnum2file(SeqNum, "hlog")]).
 
 seqnum2file(SeqNum, Suffix) ->
     gmt_util:left_pad(integer_to_list(SeqNum), 12, $0) ++ "." ++ Suffix.
