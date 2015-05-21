@@ -19,12 +19,8 @@
 
 
 
-
 %% @TODO: Reorganize the sync timer?
-%% @TODO: Store WAL in a separate directory to others (metadata and
-%%        blob stores).
-%% @TODO: Monitor the disk status (free space etc.)
-
+%% @TODO: Monitor the disk status (free space etc.) and adjust the throttles
 
 
 
@@ -75,6 +71,7 @@
 
 -type hunk_iodata() :: iodata().
 
+-type count() :: non_neg_integer().
 -type set(_A) :: term().
 
 %% -type commit_notification() :: {wal_sync, callback_ticket(), ok}
@@ -84,10 +81,12 @@
           wal_dir                       :: dirname(),
           file_len_max                  :: len(),                    % WAL file size max
           file_len_min                  :: len(),                    % WAL file size min
+          hunk_count_min                :: count(),
           cur_seq                       :: seqnum(),                 % current sequence #
           cur_pos                       :: offset(),                 % current position
           cur_fh                        :: file:fd(),                % current file
-          cur_hunk_overhead=0           :: non_neg_integer(),
+          cur_hunk_count=0              :: count(),
+          %% cur_hunk_overhead=0           :: non_neg_integer(),
           sync_listeners=gb_sets:new()  :: set(pid()),
           hunk_count_in_group_commit=0  :: non_neg_integer(),
           callback_ticket               :: callback_ticket(),
@@ -154,8 +153,14 @@ init(PropList) ->
     Dir = "data/wal_hlog",
     catch file:make_dir(Dir),
 
-    LenMax = proplists:get_value(file_len_max, PropList, 64 * 1024 * 1024),
-    LenMin = proplists:get_value(file_len_min, PropList, LenMax),
+    DefaultLenMax = 1.5 * 1024 * 1024 * 1024, %% 1.5GB
+    DefaultLenMin =  64 * 1024 * 1024,        %%  64MB
+    LenMax = proplists:get_value(file_len_max, PropList, DefaultLenMax),
+    LenMin = min(LenMax - 1, proplists:get_value(file_len_min, PropList, DefaultLenMin)),
+    %% Minimum hunk count. If each blob hunk is 10MB and corresponding metadata
+    %% is 100 bytes, the minimum WAL size will be 4.9GB. But it's capped by LenMax
+    %% which is 1.5GB by default.
+    HunkCountMin = proplists:get_value(hunk_count_min, PropList, 1000),
 
     CurSeq = case filelib:wildcard("*.hlog", Dir) of
                  [] ->
@@ -166,13 +171,15 @@ init(PropList) ->
              end,
     {CurFH, CurPos} = create_wal(Dir, CurSeq),
 
-    ?E_INFO("WAL server started. current_seq: ~w, "
-            "file_len_min: ~w bytes, file_len_max: ~w bytes",
-            [CurSeq, LenMin, LenMax]),
+    ?E_INFO("The WAL server ~w started. current sequence: ~w, "
+            "minimum hunk count: ~w hunks, "
+            "minimum file length: ~w bytes, maximum file length: ~w bytes",
+            [?WAL_SERVER_REG_NAME, CurSeq, HunkCountMin, LenMin, LenMax]),
 
     {ok, #state{wal_dir=Dir,
                 file_len_max=LenMax,
                 file_len_min=LenMin,
+                hunk_count_min=HunkCountMin,
                 cur_seq=CurSeq,
                 cur_fh=CurFH,
                 cur_pos=CurPos,
@@ -180,32 +187,32 @@ init(PropList) ->
                }}.
 
 %% @TODO Create batch write request also (write_batch)
-handle_call({write_hunk, Hunks}, _From, #state{wal_dir=Dir}=State) ->
+handle_call({write_hunk, HunkBytes}, _From, State) ->
     %% if
     %%     H_Len > FileLenMax ->
     %%     {{hunk_too_big, H_Len}, S};
 
     Start = os:timestamp(),
     %% @TODO Accumulate hunk overhead
-    case do_write_hunk(Hunks, State) of
+    case do_write_hunk(HunkBytes, State) of
         {sync_in_progress, Seq, Pos, State1} ->
-            _Elapse = timer:now_diff(os:timestamp(), Start),
             %% @TODO: Record metrics
+            %% _Elapse = timer:now_diff(os:timestamp(), Start),
             {reply, {ok, Seq, Pos}, State1};
         {done, Seq, Pos, State1} ->
-            Elapse = timer:now_diff(os:timestamp(), Start),
             %% @TODO: Record metrics
+            Elapse = timer:now_diff(os:timestamp(), Start),
             if
                 Elapse > 50000 ->
                     ?ELOG_INFO("Write to WAL ~p took ~p ms",
-                               [Dir, Elapse div 1000]);
+                               [State1#state.wal_dir, Elapse div 1000]);
                 true ->
                     ok
             end,
             {reply, {ok, Seq, Pos}, State1}
     end;
-handle_call({write_hunk_group_commit, Hunks, Caller},
-            _From, #state{wal_dir=Dir, sync_timer=SyncTimer}=State) ->
+handle_call({write_hunk_group_commit, HunkBytes, Caller}, _From,
+            #state{sync_timer=SyncTimer}=State) ->
     %% if
     %%     H_Len > FileLenMax ->
     %%     {{hunk_too_big, H_Len}, S};
@@ -213,11 +220,10 @@ handle_call({write_hunk_group_commit, Hunks, Caller},
     Start = os:timestamp(),
     {CommitTicket, State1} = do_register_group_commit(Caller, State),
     %% @TODO Accumulate hunk overhead
-    case do_write_hunk(Hunks, State1) of
+    case do_write_hunk(HunkBytes, State1) of
         {sync_in_progress, Seq, Pos, State2} ->
             %% @TODO: Record metrics
-            _Elapse = timer:now_diff(os:timestamp(), Start),
-            %% {CommitTicket, State2} = do_register_group_commit(Caller, State1),
+            %% _Elapse = timer:now_diff(os:timestamp(), Start),
             %% @TODO: Refactoring
             case SyncTimer of
                 undefined ->
@@ -232,11 +238,10 @@ handle_call({write_hunk_group_commit, Hunks, Caller},
             if
                 Elapse > 50000 ->
                     ?ELOG_INFO("Write to WAL ~p took ~p ms",
-                               [wal_path(Dir, Seq), Elapse div 1000]);
+                               [wal_path(State2#state.wal_dir, Seq), Elapse div 1000]);
                 true ->
                     ok
             end,
-            %% {CommitTicket, State2} = do_register_group_commit(Caller, State1),
             %% @TODO: Refactoring
             case SyncTimer of
                 undefined ->
@@ -293,34 +298,36 @@ wal_server() ->
 -spec do_write_hunk(hunk_bytes(), state())
                    -> {sync_in_progress | ok, seqnum(), offset(), state()}.
 do_write_hunk(HunkBytes, #state{write_backlog=Backlog, sync_proc=SyncProcess,
-                                cur_seq=CurSeq, cur_pos=Pos1}=State)
+                                cur_seq=CurSeq, cur_pos=Pos1,
+                                cur_hunk_count=HunkCount}=State)
   when SyncProcess =/= undefined; Backlog =/= [] ->
     %% do_sync_wal/1 or do_sync_done/3 is running. Do not write the hunk to
     %% the file; instead, put the hunk to the waiting list (write_backlog).
     Pos2 = Pos1 + byte_size(HunkBytes),
-    State1 = State#state{cur_pos=Pos2, write_backlog=[HunkBytes | Backlog]},
+    State1 = State#state{cur_pos=Pos2, write_backlog=[HunkBytes | Backlog],
+                         cur_hunk_count=HunkCount + 1},
     {sync_in_progress, CurSeq, Pos1, State1};
-do_write_hunk(HunkBytes, #state{file_len_min=FileLenMin}=State) ->
-    %% Write the hunk to the file.
-    HunkSize = byte_size(HunkBytes),
+do_write_hunk(HunkBytes, State) ->
     State1 =
-        if
-            (HunkSize + State#state.cur_pos) > FileLenMin ->
-                do_advance_seqnum(1, State);
+        case should_advance_seqnum(State) of
             true ->
+                do_advance_seqnum(1, State);
+            false ->
                 State
         end,
-    FH = State1#state.cur_fh,
-    Pos1 = State1#state.cur_pos,
+    FH        = State1#state.cur_fh,
+    Pos1      = State1#state.cur_pos,
+    HunkCount = State1#state.cur_hunk_count,
 
-    assert_file_position(prewrite, FH, Pos1),     %% @TODO: DEBUG DESABLEME
+    HunkSize = byte_size(HunkBytes),
+    assert_file_position(prewrite, FH, Pos1),
     Start = brick_metrics:histogram_timed_begin(wal_write_latencies),
     ok = file:write(FH, HunkBytes),
     brick_metrics:histogram_timed_notify(Start),
     Pos2 = Pos1 + HunkSize,
-    assert_file_position(post_write, FH, Pos2),   %% @TODO: DEBUG DESABLEME
+    %% DEBUG: assert_file_position(post_write, FH, Pos2),
 
-    {done, State1#state.cur_seq, Pos1, State1#state{cur_pos=Pos2}}.
+    {done, State1#state.cur_seq, Pos1, State1#state{cur_pos=Pos2, cur_hunk_count=HunkCount + 1}}.
 
 
 %% -spec assert_file_position(atom(), file:fd(), offset()) -> ok | no_return().
@@ -435,12 +442,21 @@ cancel_sync_wal_timer(TimerRef) ->
     timer:cancel(TimerRef),
     ok.
 
+-spec should_advance_seqnum(state()) -> boolean().
+should_advance_seqnum(#state{cur_pos=Position, file_len_max=MaxLen, file_len_min=MinLen,
+                             cur_hunk_count=HunkCount, hunk_count_min=MinHunkCount}) ->
+    Position >= MaxLen
+        orelse (Position >= MinLen andalso HunkCount >= MinHunkCount).
+
 do_advance_seqnum(Incr, #state{sync_proc=undefined, write_backlog=[],
-                               wal_dir=Dir, cur_seq=CurSeq, cur_fh=CurFH}=State) ->
+                               wal_dir=Dir, cur_seq=CurSeq, cur_fh=CurFH,
+                               cur_pos=Position, cur_hunk_count=HunkCount}=State) ->
+    ?E_INFO("Switching WAL from sequence ~w: ~s (~w hunks, ~w bytes written)",
+            [CurSeq, wal_path(Dir, CurSeq), HunkCount, Position]),
     close_wal(Dir, CurSeq, CurFH),
     NewSeq = CurSeq + Incr,
-    {NewFH, Position} = create_wal(Dir, NewSeq),
-    State#state{cur_seq=NewSeq, cur_fh=NewFH, cur_pos=Position};
+    {NewFH, NewPosition} = create_wal(Dir, NewSeq),
+    State#state{cur_seq=NewSeq, cur_fh=NewFH, cur_pos=NewPosition, cur_hunk_count=0};
 do_advance_seqnum(_Incr, #state{sync_proc={Pid, Ref}}) ->
     error({do_advance_seqnum, {sync_proc, Pid, Ref}}).
 

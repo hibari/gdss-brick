@@ -265,15 +265,16 @@ do_writeback_wal_block(SeqNum, FH, Offset, EndOffset, BlockSize, Remainder) ->
 
 -spec do_writeback_wal_finish(seqnum(), binary(), maybe_ok | {error, term()}) -> ok.
 do_writeback_wal_finish(SeqNum, <<>>, maybe_ok) ->
-    ?ELOG_DEBUG("Finished writing back HLog seqence: ~w", [SeqNum]),
+    ?ELOG_DEBUG("Wrote hunks from WAL sequence ~w to metadata and blob storages", [SeqNum]),
     ok;
 do_writeback_wal_finish(SeqNum, Remainder, maybe_ok) ->
-    ?ELOG_CRITICAL("BUG: Finished writing back HLog seqence: ~w, "
-                   "but there is a remainder: ~p",
+    ?ELOG_CRITICAL("BUG: Wrote hunks from WAL sequence ~w to metadata and blob storages, "
+                   "but there are un-parsed bytes: ~p",
                    [SeqNum, Remainder]),
     ok;
 do_writeback_wal_finish(SeqNum, _Remainder, Err) ->
-    ?ELOG_ERROR("Writeback for HLog sequence ~w failed with ~p", [SeqNum, Err]),
+    ?ELOG_ERROR("Failed to write hunks from WAL sequence ~w to metadata and blob storages (~p)",
+                [SeqNum, Err]),
     ok.
 
 -spec do_writeback_hunks([hunk()]) -> ok.

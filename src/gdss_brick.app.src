@@ -49,8 +49,9 @@
          , {brick_dirty_buffer_wait, 60}
          , {brick_do_op_too_old_timeout, 3000}
          , {brick_expiration_processor, "[]."}
-         , {brick_max_log_size_mb, 100}
-         , {brick_min_log_size_mb, 100}
+         , {brick_max_log_size_mb, 1536}  %% 1.5GB
+         , {brick_min_log_size_mb,   64}  %%  64MB
+         , {brick_min_hunk_count,  1000}
          , {brick_max_primers, 200}
          , {brick_mbox_high_water, 500}
          , {brick_mbox_low_water, 100}
@@ -59,10 +60,10 @@
          , {brick_preprocess_method, ""}
          , {brick_repair_max_bytes, 65000000}
          , {brick_repair_max_primers, 7}
-         , {brick_scavenger_start_time, "3:00"}
-         , {brick_scavenger_suppress, false}
-         , {brick_scavenger_temp_dir, "/tmp/hibari_scavenger"}
-         , {brick_scavenger_throttle_bytes, 600000000}
+         %% , {brick_scavenger_start_time, "3:00"}
+         %% , {brick_scavenger_suppress, false}
+         %% , {brick_scavenger_temp_dir, "/tmp/hibari_scavenger"}
+         , {brick_scavenger_throttle_bytes, 2097152}  %% 2MB
          , {brick_server_default_timeout, 5000}
          , {brick_skip_live_percentage_greater_than, 90}
          , {brick_sync_interval_msec, 500}

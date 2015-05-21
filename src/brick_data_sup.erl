@@ -75,14 +75,17 @@ init([]) ->
          {brick_blob_store, start_link, [brick_blob_store_hlog, []]},
          permanent, 2000, worker, [brick_blob_store]},
 
-    {ok, MaxMB} = application:get_env(gdss_brick, brick_max_log_size_mb),
-    {ok, MinMB} = application:get_env(gdss_brick, brick_min_log_size_mb),
+    MaxMB = get_env(brick_max_log_size_mb),
+    MinMB = get_env(brick_min_log_size_mb),
+    MinHC = get_env(brick_min_hunk_count),
 
-    WALArgs = [[{file_len_max, MaxMB * 1024*1024},
-                {file_len_min, MinMB * 1024*1024}]],
+    WALArgs =
+        [ {file_len_max, MaxMB * 1024*1024} || MaxMB =/= undefined ]
+        ++ [ {file_len_min, MinMB * 1024*1024} || MinMB =/= undefined ]
+        ++ [ {hunk_count_min, MinHC} || MinHC =/= undefined ],
     WAL =
         {?WAL_SERVER_REG_NAME,
-         {brick_hlog_wal, start_link, WALArgs},
+         {brick_hlog_wal, start_link, [WALArgs]},
          permanent, 2000, worker, [brick_hlog_wal]},
 
     WALWriteBack =
@@ -127,3 +130,12 @@ init([]) ->
 %%====================================================================
 %% Internal functions
 %%====================================================================
+
+-spec get_env(atom()) -> undefined | term().
+get_env(PropertyKey) ->
+    case application:get_env(gdss_brick, PropertyKey) of
+        undefined ->
+            undefined;
+        {ok, Value} ->
+            Value
+    end.
