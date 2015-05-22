@@ -147,20 +147,20 @@ get_current_seqnum_and_offset() ->
 %% gen_server callbacks
 %% ====================================================================
 
-init(PropList) ->
+init(Options) ->
     process_flag(priority, high),
 
     Dir = "data/wal_hlog",
-    catch file:make_dir(Dir),
+    _ = (catch file:make_dir(Dir)),
 
     DefaultLenMax = 1.5 * 1024 * 1024 * 1024, %% 1.5GB
     DefaultLenMin =  64 * 1024 * 1024,        %%  64MB
-    LenMax = proplists:get_value(file_len_max, PropList, DefaultLenMax),
-    LenMin = min(LenMax - 1, proplists:get_value(file_len_min, PropList, DefaultLenMin)),
+    LenMax = proplists:get_value(file_len_max, Options, DefaultLenMax),
+    LenMin = min(LenMax - 1, proplists:get_value(file_len_min, Options, DefaultLenMin)),
     %% Minimum hunk count. If each blob hunk is 10MB and corresponding metadata
     %% is 100 bytes, the minimum WAL size will be 4.9GB. But it's capped by LenMax
     %% which is 1.5GB by default.
-    HunkCountMin = proplists:get_value(hunk_count_min, PropList, 1000),
+    HunkCountMin = proplists:get_value(hunk_count_min, Options, 1000),
 
     CurSeq = case filelib:wildcard("*.hlog", Dir) of
                  [] ->
@@ -448,6 +448,7 @@ should_advance_seqnum(#state{cur_pos=Position, file_len_max=MaxLen, file_len_min
     Position >= MaxLen
         orelse (Position >= MinLen andalso HunkCount >= MinHunkCount).
 
+-spec do_advance_seqnum(non_neg_integer(), state()) -> state().
 do_advance_seqnum(Incr, #state{sync_proc=undefined, write_backlog=[],
                                wal_dir=Dir, cur_seq=CurSeq, cur_fh=CurFH,
                                cur_pos=Position, cur_hunk_count=HunkCount}=State) ->

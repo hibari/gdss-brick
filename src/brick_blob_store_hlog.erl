@@ -18,7 +18,6 @@
 %%%-------------------------------------------------------------------
 
 %% One gen_server process per brick_server process.
-%% brick name + alpha is used to identify a process.
 
 -module(brick_blob_store_hlog).
 
@@ -53,7 +52,7 @@
 %% types and records
 %% ====================================================================
 
--type dict(_A, _B) :: term().
+%% -type dict(_A, _B) :: term().
 
 -type wal_entry() :: term().
 
@@ -123,19 +122,25 @@
 %% 21
 %%
 
+-type count() :: non_neg_integer().
 
 -type storage_location_hlog() :: private_hlog() | wal() | no_blob.
 
 -record(state, {
-          name                         :: atom(),
+          %% name                         :: atom(),
           brick_name                   :: brickname(),
-          brick_pid                    :: pid(), %% or reg name?
-          log_dir                      :: file:directory(),
+          %% brick_pid                    :: pid(), %% or reg name?
+          %% log_dir                      :: file:directory(),
+          file_len_max                 :: len(),                    % WAL file size max
+          file_len_min                 :: len(),                    % WAL file size min
+          hunk_count_min               :: count(),
           head_seqnum                  :: seqnum(),
           head_position                :: offset(),
-          cur_seqnum_hunk_overhead=0   :: non_neg_integer(),
-          hunk_overhead=dict:new()     :: dict(seqnum(), non_neg_integer())
+          head_seqnum_hunk_count=0     :: count(),
+          head_seqnum_hunk_overhead=0  :: non_neg_integer()
+          %% hunk_overhead=dict:new()     :: dict(seqnum(), non_neg_integer())
          }).
+-type state() :: #state{}.
 
 -define(TIMEOUT, 60 * 1000).
 -define(HUNK, brick_hlog_hunk).
@@ -203,18 +208,6 @@ write_value(Pid, Value) ->
 %% @TODO CHECKME: Is wal_entry() actually an hunk()?
 -spec writeback_to_stable_storage(pid(), brickname(), [wal_entry()]) -> ok | {error, term()}.
 writeback_to_stable_storage(_Pid, BrickName, WalEntries) ->
-    %% case gen_server:call(Pid, begin_writeback) of
-    %%     {error, _}=Err1 ->
-    %%         Err1;
-    %%     {ok, WBSeqNum, WBPos} ->
-    %%         case catch writeback_value(WALEntries, undefined, WBSeqNum, WBPos, 0) of
-    %%             {ok, NextWBSeqNum, NextWBPos, _SuccessCount} ->
-    %%                 ok;
-    %%             {error, Err2, NextWBSeqNum, NextWBPos, _SuccessCount} ->
-    %%                 {error, Err2}
-    %%         end,
-    %%         gen_server:call(Pid, {end_writeback, NextWBSeqNum, NextWBPos})
-    %% end.
     case writeback_values(BrickName, WalEntries, undefined, -1, -1, 0) of
         {ok, _CurrentWBSeqNum, _CurrentWBPos, _SuccessCount} ->
             ok;
@@ -231,9 +224,20 @@ sync(_Pid) ->
 %% gen_server callbacks
 %% ====================================================================
 
-init([BrickName, _Options]) ->
+init([BrickName, Options]) ->
     process_flag(trap_exit, true),
     %% process_flag(priority, high),
+
+    DefaultLenMax = 1.5 * 1024 * 1024 * 1024, %% 1.5GB
+    %% DefaultLenMin =  64 * 1024 * 1024,        %%  64MB
+    DefaultLenMin =   2 * 1024 * 1024,        %%  2MB
+    LenMax = proplists:get_value(file_len_max, Options, DefaultLenMax),
+    LenMin = min(LenMax - 1, proplists:get_value(file_len_min, Options, DefaultLenMin)),
+    %% Minimum hunk count. If each blob hunk is 10MB and corresponding metadata
+    %% is 100 bytes, the minimum WAL size will be 4.9GB. But it's capped by LenMax
+    %% which is 1.5GB by default.
+    HunkCountMin = proplists:get_value(hunk_count_min, Options, 100),
+    %% HunkCountMin = proplists:get_value(hunk_count_min, Options, 1000),
 
     Dir = blob_dir(BrickName),
     CurSeq = case filelib:wildcard("*.hlog", Dir) of
@@ -245,17 +249,25 @@ init([BrickName, _Options]) ->
              end,
     Position = create_private_log(BrickName, CurSeq),
     {ok, #state{brick_name=BrickName,
+                file_len_max=LenMax,
+                file_len_min=LenMin,
+                hunk_count_min=HunkCountMin,
                 head_seqnum=CurSeq,
                 head_position=Position}}.
 
-handle_call({write_value, Value}, _From,
-            #state{brick_name=BrickName, head_seqnum=SeqNum, head_position=Position,
-                   cur_seqnum_hunk_overhead=HunkOverhead}=State)
+handle_call({write_value, Value}, _From, #state{brick_name=BrickName}=State)
   when is_binary(Value) ->
-    %% @TODO: Advance seq num if necessary
-    %% if
-    SeqNum2 = SeqNum,
-    Position2 = Position,
+    State1 =
+        case should_advance_seqnum(State) of
+            true ->
+                do_advance_seqnum(1, State);
+            false ->
+                State
+        end,
+    SeqNum2      = State1#state.head_seqnum,
+    Position2    = State1#state.head_position,
+    HunkCount    = State1#state.head_seqnum_hunk_count,
+    HunkOverhead = State1#state.head_seqnum_hunk_overhead,
 
     %% @TODO: Maybe store the key as well
     WALBlobs = [Value, term_to_binary({SeqNum2, Position2})],
@@ -273,13 +285,14 @@ handle_call({write_value, Value}, _From,
                    val_offset=WALValOffset, val_len=ValLen},
             {RawSize, _, PaddingSize, Overhead} =
                 ?HUNK:calc_hunk_size(blob_single, Flags, 0, 1, ValLen),
-            State1 =
-                State#state{
+            State2 =
+                State1#state{
                   head_seqnum=SeqNum2, head_position=Position2 + RawSize + PaddingSize,
-                  cur_seqnum_hunk_overhead=HunkOverhead + Overhead},
-            {reply, {ok, StoreLoc}, State1};
+                  head_seqnum_hunk_count=HunkCount + 1,
+                  head_seqnum_hunk_overhead=HunkOverhead + Overhead},
+            {reply, {ok, StoreLoc}, State2};
         Err ->
-            {reply, Err, State}
+            {reply, Err, State1}
     end;
 handle_call(_, _From, State) ->
     {reply, ok, State}.
@@ -314,41 +327,32 @@ writeback_values(_BrickName, [], FH, CurrentWBSeqNum, CurrentWBPos, SuccessCount
 writeback_values(BrickName, [#hunk{flags=Flags, blobs=[Value, LocationBin]} | WALEntries],
                  FH, CurrentWBSeqNum, CurrentWBPos, SuccessCount) ->
     {WBSeqNum, WBPos} = binary_to_term(LocationBin),
-    %% ?ELOG_DEBUG("BrickName: ~w, WBSeqNum: ~w, WBPos: ~w", [BrickName, WBSeqNum, WBPos]),
     case get_private_log_for_writeback(BrickName, FH, WBSeqNum, CurrentWBSeqNum) of
         {error, Err1} ->
-            {error, {Err1, CurrentWBSeqNum, CurrentWBPos, SuccessCount}};
+            {error, {Err1, WBSeqNum, WBPos, SuccessCount}};
         {ok, FH1} ->
-            WBPos2 = if
-                         WBSeqNum =:= CurrentWBSeqNum, WBPos =:= CurrentWBPos ->
-                             undefined;
-                         true ->
-                             %% ?ELOG_DEBUG("WBPos =/= CurrentWBPos: ~w, ~w", [WBPos, CurrentWBPos]),
-                             WBPos
-                     end,
             {HunkIOList, HunkSize, _, _} =
                 ?HUNK:create_hunk_iolist(#hunk{type=blob_single, flags=Flags,
                                                blobs=[Value], blob_ages=[0]}),
+            Pos = if
+                      WBSeqNum =:= CurrentWBSeqNum, WBPos =:= CurrentWBPos ->
+                          undefined;
+                      true ->
+                          WBPos
+                  end,
 
-            try write_value_to_private_log(FH1, WBPos2, list_to_binary(HunkIOList)) of
+            try write_value_to_private_log(FH1, Pos, list_to_binary(HunkIOList)) of
                 ok ->
                     %% repeat
-                    NewWBPos =
-                        if
-                            WBPos2 =:= undefined ->
-                                CurrentWBPos + HunkSize;
-                            true ->
-                                WBPos2 + HunkSize
-                        end,
                     writeback_values(BrickName, WALEntries, FH1,
-                                     WBSeqNum, NewWBPos, SuccessCount + 1);
+                                     WBSeqNum, WBPos + HunkSize, SuccessCount + 1);
                 {error, Err2} ->
                     _ = (catch file:close(FH1)),
-                    {error, {Err2, CurrentWBSeqNum, CurrentWBPos, SuccessCount}}
+                    {error, {Err2, CurrentWBSeqNum, WBPos, SuccessCount}}
             catch
                 _:_ = Err3 ->
                     _ = (catch file:close(FH1)),
-                    {error, {Err3, CurrentWBSeqNum, CurrentWBPos, SuccessCount}}
+                    {error, {Err3, CurrentWBSeqNum, WBPos, SuccessCount}}
             end
     end.
 
@@ -372,6 +376,19 @@ write_value_to_private_log(FH, WBPos, HunkBytes) ->
             ?ELOG_ERROR("~p", [Err]),
             Err
     end.
+
+-spec should_advance_seqnum(state()) -> boolean().
+should_advance_seqnum(#state{head_position=Position, file_len_max=MaxLen, file_len_min=MinLen,
+                             head_seqnum_hunk_count=HunkCount, hunk_count_min=MinHunkCount}) ->
+    Position >= MaxLen
+        orelse (Position >= MinLen andalso HunkCount >= MinHunkCount).
+
+-spec do_advance_seqnum(non_neg_integer(), state()) -> state().
+do_advance_seqnum(Incr, #state{brick_name=BrickName, head_seqnum=SeqNum}=State) ->
+    NewSeqNum = SeqNum + Incr,
+    NewPosition = create_private_log(BrickName, NewSeqNum),
+    State#state{head_seqnum=NewSeqNum, head_position=NewPosition,
+                head_seqnum_hunk_count=0, head_seqnum_hunk_overhead=0}.
 
 %% @TODO: Better error handling
 -spec create_private_log(brickname(), seqnum()) -> offset().
