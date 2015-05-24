@@ -25,7 +25,8 @@
 -include("brick_hlog.hrl").
 
 %% Common API
--export([get_metadata_store/1]).
+-export([get_metadata_store/1,
+         live_keys/2]).
 
 %% API for brick_data_sup Module
 -export([start_link/2,
@@ -39,8 +40,9 @@
          request_group_commit/1
         ]).
 
-%% API for Write-back Module
--export([writeback_to_stable_storage/3
+%% API for Write-back and Compaction Modules
+-export([writeback_to_stable_storage/3,
+         extract_location_info/1
         ]).
 
 %% Temporary API
@@ -109,6 +111,10 @@ get_metadata_store(BrickName) ->
     gen_server:call(?METADATA_STORE_REG_NAME,
                     {get_or_start_metadata_store_impl, BrickName}, ?TIMEOUT).
 
+-spec live_keys([key()], impl()) -> [key()].
+live_keys(Keys, #?MODULE{impl_mod=ImplMod, brick_name=BrickName, pid=Pid}) ->
+    ImplMod:live_keys(Pid, BrickName, Keys).
+
 -spec read_metadata(key(), impl()) -> brick_ets:store_tuple().
 read_metadata(Key, #?MODULE{impl_mod=ImplMod}) ->
     ImplMod:read_metadata(Key).
@@ -134,6 +140,23 @@ request_group_commit(#?MODULE{impl_mod=ImplMod, pid=Pid}) ->
 writeback_to_stable_storage(WalEntries, IsLastBatch,
                             #?MODULE{impl_mod=ImplMod, pid=Pid}) ->
     ImplMod:writeback_to_stable_storage(Pid, WalEntries, IsLastBatch).
+
+-spec extract_location_info([wal_entry()]) -> [{key(), ts(), storage_location()}].
+extract_location_info(WalEntries) ->
+    Locations =
+        lists:foldl(
+          fun(#hunk{blobs=Blobs}, Acc1) ->
+                  lists:foldl(
+                    fun(Blob, Acc2) ->
+                            case get_location_info(binary_to_term(Blob)) of
+                                noop ->
+                                    Acc2;
+                                Location when is_tuple(Location) ->
+                                    [Location | Acc2]
+                            end
+                    end, Acc1, Blobs)
+          end, [], WalEntries),
+    lists:reverse(Locations).
 
 %% Temporary API. Need higher abstruction.
 -spec get_leveldb(impl()) -> {ok, h2leveldb:db()}.
@@ -194,13 +217,47 @@ code_change(_OldVsn, State, _Extra) ->
 
 
 %% ====================================================================
-%% Internal functions
+%% Internal functions - Location Info
 %% ====================================================================
 
+-spec get_location_info(brick_ets:do_mod()) -> {key(), ts(), storage_location()} | noop.
+get_location_info({insert, StoreTuple}) ->
+    {brick_ets:storetuple_key(StoreTuple), brick_ets:storetuple_ts(StoreTuple),
+     brick_ets:storetuple_val(StoreTuple)};
+get_location_info({insert_value_into_ram, StoreTuple}) ->
+    {brick_ets:storetuple_key(StoreTuple), brick_ets:storetuple_ts(StoreTuple),
+     brick_ets:storetuple_val(StoreTuple)};
+get_location_info({insert_constant_value, StoreTuple}) ->
+    {brick_ets:storetuple_key(StoreTuple), brick_ets:storetuple_ts(StoreTuple),
+     brick_ets:storetuple_val(StoreTuple)};
+get_location_info({insert_existing_value, StoreTuple, _OldKey, _OldTimestamp}) ->
+    {brick_ets:storetuple_key(StoreTuple), brick_ets:storetuple_ts(StoreTuple),
+     brick_ets:storetuple_val(StoreTuple)};
+get_location_info({delete, _Key, 0, _ExpTime}=Op) ->
+    error({timestamp_is_zero, Op});
+get_location_info({delete, _Key, _Timestamp, _ExpTime}) ->
+    noop;
+get_location_info({delete_noexptime, _Key, 0}=Op) ->
+    error({timestamp_is_zero, Op});
+get_location_info({delete_noexptime, _Key, _Timestamp}) ->
+    noop;
+get_location_info({delete_all_table_items}=Op) ->
+    error({location_info_not_implemented, Op});
+get_location_info({md_insert, _Tuple}=Op) ->
+    error({location_info_not_implemented, Op});
+get_location_info({md_delete, _Key}=Op) ->
+    error({location_info_not_implemented, Op});
+get_location_info({log_directive, sync_override, false}=Op) ->
+    error({location_info_not_implemented, Op});
+get_location_info({log_directive, map_sleep, _Delay}=Op) ->
+    error({location_inof_not_implemented, Op});
+get_location_info({log_noop}) ->
+    noop. %% noop
 
 
-
+%% ====================================================================
 %% DEBUG (@TODO: eunit / quickcheck cases)
+%% ====================================================================
 
 test1() ->
     StoreTuple1 = {<<"key1">>, brick_server:make_timestamp(), <<"val1">>},

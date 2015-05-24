@@ -33,8 +33,12 @@
          write_value/2
         ]).
 
-%% API for Write-back Module
+%% API for Write-back and Compaction Modules
 -export([writeback_to_stable_storage/3,
+         write_location_info/3,
+         open_location_info_file_for_read/3,
+         read_location_info/5,
+         close_location_info_file/3,
          sync/1
         ]).
 
@@ -205,7 +209,7 @@ write_value(_Pid, <<>>) ->
 write_value(Pid, Value) ->
     gen_server:call(Pid, {write_value, Value}, ?TIMEOUT).
 
-%% @TODO CHECKME: Is wal_entry() actually an hunk()?
+%% @TODO CHECKME: Is wal_entry() actually an hunk()? -> yes
 -spec writeback_to_stable_storage(pid(), brickname(), [wal_entry()]) -> ok | {error, term()}.
 writeback_to_stable_storage(_Pid, BrickName, WalEntries) ->
     case writeback_values(BrickName, WalEntries, undefined, -1, -1, 0) of
@@ -214,6 +218,66 @@ writeback_to_stable_storage(_Pid, BrickName, WalEntries) ->
         Err ->
             Err
     end.
+
+-spec write_location_info(pid(), brickname(), [{key(), ts(), storage_location_hlog()}]) ->
+                                 ok | {error, term()}.
+write_location_info(_Pid, BrickName, Locations) ->
+    LocationsGroupBySeqNum = convert_to_location_tuples(Locations),
+    Result =
+        lists:foldl(
+          fun({SeqNum, LocationsForSeqNum}, {SC1, undefined}) ->
+                  %% @TODO ENHANCEME: Support full write-back
+                  case open_private_location_file_for_write(BrickName, SeqNum) of
+                      {ok, DiskLog} ->
+                          %% ?ELOG_DEBUG("~p", [LocationsForSeqNum]),
+                          try disk_log:log_terms(DiskLog, LocationsForSeqNum) of
+                              ok ->
+                                  {SC1 + 1, undefined};
+                              Err1 ->
+                                  {SC1, Err1}
+                          after
+                              _ = (catch disk_log:close(DiskLog))
+                          end;
+                      Err2 ->
+                          {SC1, Err2}
+                  end;
+             (_, Acc) ->
+                  Acc   %% skip the rest of location info
+          end, {0, undefined}, LocationsGroupBySeqNum),
+    case Result of
+        {_SuccessCount, undefined} ->
+            ok;
+        {_SuccessCount, Err} ->
+            Err
+    end.
+
+-type location_info_file() :: disk_log:log().
+-type continuation() :: disk_log:continuation().
+
+-spec open_location_info_file_for_read(pid(), brickname(), seqnum()) ->
+                                              {ok, location_info_file()} | {err, term()}.
+open_location_info_file_for_read(_Pid, BrickName, SeqNum) ->
+    open_private_location_file_for_read(BrickName, SeqNum).
+
+-spec read_location_info(pid(), brickname(), location_info_file(),
+                         'start' | continuation(), non_neg_integer()) ->
+                                {ok, continuation(), [{key(), ts(), storage_location_hlog()}]}
+                                    | 'eof'
+                                    | {error, term()}.
+read_location_info(_Pid, _BrickName, DiskLog, Cont, MaxRecords) ->
+    case disk_log:chunk(DiskLog, Cont, MaxRecords) of
+        eof ->
+            eof;
+        {error, _}=Err ->
+            Err;
+        {NewCont, Locations} ->
+            {ok, NewCont, Locations}
+        %% @TODO {Cont, Locations, BadTypes} ->
+    end.
+
+-spec close_location_info_file(pid(), brickname(), location_info_file()) -> ok.
+close_location_info_file(_Pid, _BrickName, DiskLog) ->
+    disk_log:close(DiskLog).
 
 -spec sync(pid()) -> ok.
 sync(_Pid) ->
@@ -314,6 +378,7 @@ code_change(_OldVsn, State, _Extra) ->
 %% Internal functions
 %% ====================================================================
 
+%% @TODO: Rewrite like write_location_info/3 (take lists:foldl style rather than recursive calls)?
 -spec writeback_values(brickname(), [hunk()], file:fd(), seqnum(), offset(), non_neg_integer())
                        -> {ok, seqnum(), offset(), non_neg_integer()} | {error, term()}.
 writeback_values(_BrickName, [], FH, CurrentWBSeqNum, CurrentWBPos, SuccessCount) ->
@@ -356,6 +421,27 @@ writeback_values(BrickName, [#hunk{flags=Flags, blobs=[Value, LocationBin]} | WA
             end
     end.
 
+-type location_info_tuple() :: {HunkPos::offset(), ValOffset::offset(), len(), key(), ts()}.
+
+-spec convert_to_location_tuples([{key(), ts(), storage_location_hlog()}]) ->
+                                        {seqnum(), [location_info_tuple()]}.
+convert_to_location_tuples(Locations) ->
+    LocationGroupBySeqNum =
+        lists:foldl(
+          fun({Key, TS, StorageLocation}, Dict) ->
+                  {SeqNum, LocationTuple} = location_tuple(Key, TS, StorageLocation),
+                  dict:append(SeqNum, LocationTuple, Dict)
+          end, dict:new(), Locations),
+    dict:to_list(LocationGroupBySeqNum).
+
+-spec location_tuple(key(), ts(), storage_location()) -> {seqnum(), location_info_tuple()}.
+location_tuple(Key, TS, #w{private_seqnum=SeqNum, private_hunk_pos=HunkPos,
+                           val_offset=ValOffset, val_len=ValLen}) ->
+    {SeqNum, {HunkPos, ValOffset, ValLen, Key, TS}};
+location_tuple(Key, TS, #p{seqnum=SeqNum, hunk_pos=HunkPos,
+                           val_offset=ValOffset, val_len=ValLen}) ->
+    {SeqNum, {HunkPos, ValOffset, ValLen, Key, TS}}.
+
 -spec get_private_log_for_writeback(brickname(), file:fd() | undefined, seqnum(), seqnum()) ->
                                            {ok, file:fd()} | {error, term()}.
 get_private_log_for_writeback(_BrickName, FH, SeqNum, SeqNum) when FH =/= undefined ->
@@ -393,8 +479,7 @@ do_advance_seqnum(Incr, #state{brick_name=BrickName, head_seqnum=SeqNum}=State) 
 %% @TODO: Better error handling
 -spec create_private_log(brickname(), seqnum()) -> offset().
 create_private_log(BrickName, SeqNum) ->
-    BlobDir = blob_dir(BrickName),
-    Path = filename:join(BlobDir, seqnum2file(SeqNum, "hlog")),
+    Path = blob_path(BrickName, blob_dir(BrickName), SeqNum),
     {error, enoent} = file:read_file_info(Path),  %% sanity
     case open_private_log_for_write(BrickName, SeqNum) of
         {ok, FH} ->
@@ -413,8 +498,7 @@ create_private_log(BrickName, SeqNum) ->
     end.
 
 open_private_log_for_read(BrickName, SeqNum) ->
-    BlobDir = blob_dir(BrickName),
-    Path = filename:join(BlobDir, seqnum2file(SeqNum, "hlog")),
+    Path = blob_path(BrickName, blob_dir(BrickName), SeqNum),
     case file:open(Path, [binary, raw, read, read_ahead]) of
         {ok, _}=Res ->
             Res;
@@ -426,7 +510,7 @@ open_private_log_for_read(BrickName, SeqNum) ->
 -spec open_private_log_for_write(brickname(), seqnum()) -> {ok, file:fd()} | {error, term()}.
 open_private_log_for_write(BrickName, SeqNum) ->
     BlobDir = blob_dir(BrickName),
-    Path = filename:join(BlobDir, seqnum2file(SeqNum, "hlog")),
+    Path = blob_path(BrickName, BlobDir, SeqNum),
     %% 'read' option is required otherwise the file will be truncated.
     case file:open(Path, [binary, raw, read, write, delayed_write]) of
         {ok, _FH}=Res ->
@@ -439,8 +523,38 @@ open_private_log_for_write(BrickName, SeqNum) ->
                 false ->
                     filelib:ensure_dir(BlobDir),
                     file:make_dir(BlobDir),
+                    %% @TODO: Add retry count to avoid an infinite loop.
                     %% retry
                     open_private_log_for_write(BrickName, SeqNum)
+            end;
+        {error, _}=Err ->
+            Err
+    end.
+
+-spec open_private_location_file_for_read(brickname(), seqnum()) -> {ok, disk_log:log()} | {error, term()}.
+open_private_location_file_for_read(BrickName, SeqNum) ->
+    BlobDir = blob_dir(BrickName),
+    Path = blob_location_file_path(BrickName, BlobDir, SeqNum),
+    disk_log:open([{name, Path}, {file, Path}, {mode, read_only}]).
+
+-spec open_private_location_file_for_write(brickname(), seqnum()) -> {ok, disk_log:log()} | {error, term()}.
+open_private_location_file_for_write(BrickName, SeqNum) ->
+    BlobDir = blob_dir(BrickName),
+    Path = blob_location_file_path(BrickName, BlobDir, SeqNum),
+    case disk_log:open([{name, Path}, {file, Path}, {mode, read_write}]) of
+        {ok, _FH}=Res ->
+            Res;
+        {error, enoent}=Err ->
+            case filelib:is_dir(BlobDir) of
+                true ->
+                    ?E_CRITICAL("Couldn't open blob location file [write] ~s by ~w", [Path, Err]),
+                    Err;
+                false ->
+                    filelib:ensure_dir(BlobDir),
+                    file:make_dir(BlobDir),
+                    %% @TODO: Add retry count to avoid an infinite loop.
+                    %% retry
+                    open_private_location_file_for_write(BrickName, SeqNum)
             end;
         {error, _}=Err ->
             Err
@@ -452,5 +566,15 @@ blob_dir(BrickName) ->
     {ok, FileDir} = application:get_env(gdss_brick, brick_default_data_dir),
     filename:join([FileDir, atom_to_list(BrickName), "blob"]).
 
-seqnum2file(SeqNum, Suffix) ->
-    gmt_util:left_pad(integer_to_list(SeqNum), 12, $0) ++ "." ++ Suffix.
+-spec blob_path(brickname(), dirname(), seqnum()) -> filepath().
+blob_path(BrickName, Dir, SeqNum) ->
+    filename:join(Dir, seqnum2file(BrickName, SeqNum, ".hlog")).
+
+-spec blob_location_file_path(brickname(), dirname(), seqnum()) -> filepath().
+blob_location_file_path(BrickName, Dir, SeqNum) ->
+    filename:join(Dir, seqnum2file(BrickName, SeqNum, ".hlocation")).
+
+-spec seqnum2file(brickname(), seqnum(), string()) -> string().
+seqnum2file(BrickName, SeqNum, Suffix) ->
+    lists:flatten([atom_to_list(BrickName), "-",
+                   gmt_util:left_pad(integer_to_list(SeqNum), 12, $0), Suffix]).

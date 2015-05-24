@@ -240,9 +240,10 @@ do_writeback_wal_block(SeqNum, FH, Offset, EndOffset, BlockSize, Remainder) ->
             Bin2 = if Remainder =:= <<>> -> Bin;
                       true               -> <<Remainder/binary, Bin/binary>>
                    end,
+            %% @TODO ENHANCEME: Perhaps just parse hunk headers? (to save RAM)
             case ?HUNK:parse_hunks(Bin2) of
                 {ok, Hunks, Remainder2} ->
-                    try
+                    %% try
                         do_writeback_hunks(Hunks),
                         ReadSize = byte_size(Bin),
                         if
@@ -253,13 +254,13 @@ do_writeback_wal_block(SeqNum, FH, Offset, EndOffset, BlockSize, Remainder) ->
                                                        Offset + ReadSize, EndOffset, BlockSize,
                                                        Remainder2)
                         end
-                    catch
-                        error:Err2 ->
-                            do_writeback_wal_finish(SeqNum, Remainder,
-                                                    {error, {Err2, offset, Offset}});
-                        _:_=Err3 ->
-                            do_writeback_wal_finish(SeqNum,  Remainder, Err3)
-                    end
+                    %% catch
+                    %%     error:Err2 ->
+                    %%         do_writeback_wal_finish(SeqNum, Remainder,
+                    %%                                 {error, {Err2, offset, Offset}});
+                    %%     _:_=Err3 ->
+                    %%         do_writeback_wal_finish(SeqNum,  Remainder, Err3)
+                    %% end
             end
     end.
 
@@ -281,16 +282,27 @@ do_writeback_wal_finish(SeqNum, _Remainder, Err) ->
 do_writeback_hunks(Hunks) ->
     %% GBB: Group By Brick-name
     {MetadataHunksGBB, BlobHunksGBB} = group_hunks(Hunks),
+
+    %% write-back metadata
     lists:foreach(fun({BrickName, Hunks1}) ->
                           ?ELOG_DEBUG("metadata: ~w - ~w hunks.", [BrickName, length(Hunks1)]),
                           IsLastBatch = true,
-                          %% @TODO Maintain a cache of MdStores
                           {ok, MdStore} = brick_metadata_store:get_metadata_store(BrickName),
                           ok = MdStore:writeback_to_stable_storage(Hunks1, IsLastBatch)
                   end, MetadataHunksGBB),
+
+    %% write blob location info
+    lists:foreach(fun({BrickName, Hunks1}) ->
+                          Locations = brick_metadata_store:extract_location_info(Hunks1),
+                          ?ELOG_DEBUG("location: ~w - ~w locations.",
+                                      [BrickName, length(Locations)]),
+                          {ok, BlobStore} = brick_blob_store:get_blob_store(BrickName),
+                          ok = BlobStore:write_location_info(Locations)
+                  end, MetadataHunksGBB),
+
+    %% write-back blobs
     lists:foreach(fun({BrickName, Hunks1}) ->
                           ?ELOG_DEBUG("blob:     ~w - ~w hunks.", [BrickName, length(Hunks1)]),
-                          %% @TODO Maintain a cache of BlobStores
                           {ok, BlobStore} = brick_blob_store:get_blob_store(BrickName),
                           ok = BlobStore:writeback_to_stable_storage(Hunks1),
                           ok = BlobStore:sync()

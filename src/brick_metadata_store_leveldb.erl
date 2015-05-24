@@ -25,6 +25,9 @@
 -include("brick_hlog.hrl").
 -include("brick.hrl").      % for ?E_ macros
 
+%% Common API
+-export([live_keys/3]).
+
 %% API for Brick Server
 -export([start_link/2,
          stop/1,
@@ -95,8 +98,36 @@ stop(Pid) ->
     gen_server:cast(Pid, stop),
     ok.
 
-%% -spec read_metadata(pid(), key(), impl()) -> storetuple().
+-spec live_keys(pid(), brickname(), [{key(), ts()}]) -> {ok, [{key(), ts()}]} | {error, term()}.
+live_keys(Pid, _BrickName, Keys) ->
+    {ok, MetadataDB} = gen_server:call(Pid, get_leveldb, ?TIMEOUT),
+    Result =
+        lists:foldl(
+          fun(_Key, {error, _}=Err) ->
+                  Err;
+             ({Key, TS}=KT, LiveKeys) ->
+                  case h2leveldb:get(MetadataDB, metadata_db_key(Key)) of
+                      key_not_exist ->
+                          LiveKeys;
+                      {ok, Bin} ->
+                          case TS =:= brick_ets:storetuple_ts(binary_to_term(Bin)) of
+                              true ->
+                                  [KT | LiveKeys];
+                              false ->
+                                  LiveKeys
+                          end;
+                      {error, _}=Err ->
+                          Err
+                  end
+          end, [], Keys),
+    case Result of
+        {error, _}=Err ->
+            Err;
+        LiveKeys ->
+            {ok, lists:reverse(LiveKeys)}
+    end.
 
+%% -spec read_metadata(pid(), key(), impl()) -> storetuple().
 
 %% Called by brick_ets:write_metadata_term(Term, #state{md_store})
 -spec write_metadata(pid(), brickname(), [brick_ets:store_tuple()])
@@ -317,8 +348,10 @@ add_metadata_db_op({log_noop}, Batch) ->
 
 %% As for Hibari 0.3.0, metadata DB key is {Key, 0}. (The reversed
 %% timestamp is always zero.)
--spec metadata_db_key(brick_ets:store_tuple()) -> binary().
-metadata_db_key(StoreTuple) ->
+-spec metadata_db_key(binary() | brick_ets:store_tuple()) -> binary().
+metadata_db_key(Key) when is_binary(Key) ->
+    metadata_db_key(Key, 0);
+metadata_db_key(StoreTuple) when is_tuple(StoreTuple) ->
     Key = brick_ets:storetuple_key(StoreTuple),
     %% Timestamp = brick_ets:storetuple_ts(StoreTuple),
     %% metadata_db_key(Key, Timestamp).

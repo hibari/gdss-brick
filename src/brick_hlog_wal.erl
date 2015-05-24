@@ -542,11 +542,11 @@ wal_info(Dir, N) ->
 
 -spec wal_path(dirname(), seqnum()) -> filepath().
 wal_path(Dir, SeqNum) ->
-    filename:join([Dir, seqnum2file(SeqNum, "hlog")]).
+    filename:join([Dir, seqnum2file(SeqNum)]).
 
-seqnum2file(SeqNum, Suffix) ->
-    gmt_util:left_pad(integer_to_list(SeqNum), 12, $0) ++ "." ++ Suffix.
-
+-spec seqnum2file(seqnum()) -> string().
+seqnum2file(SeqNum) ->
+    lists:flatten([gmt_util:left_pad(integer_to_list(SeqNum), 12, $0), ".hlog"]).
 
 
 %% DEBUG STUFF (@TODO: eunit / quickcheck cases)

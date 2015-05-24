@@ -126,6 +126,7 @@
         ]).
 -export([externtuple_to_storetuple/1,
          storetuple_key/1,
+         storetuple_val/1,
          storetuple_ts/1
         ]).
 

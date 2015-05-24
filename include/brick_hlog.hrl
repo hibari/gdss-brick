@@ -22,11 +22,11 @@
 
 %% Reg Names
 
--define(WAL_SERVER_REG_NAME,       hibari_wal_server).
--define(WRITEBACK_SERVER_REG_NAME, hibari_writeback_server).
--define(METADATA_STORE_REG_NAME,   hibari_metadata_store_registory).
--define(BRICK_BLOB_STORE_REG_NAME, hibari_blob_store_registory).
-
+-define(WAL_SERVER_REG_NAME,        hibari_wal_server).
+-define(WRITEBACK_SERVER_REG_NAME,  hibari_writeback_server).
+-define(METADATA_STORE_REG_NAME,    hibari_metadata_store_registory).
+-define(BRICK_BLOB_STORE_REG_NAME,  hibari_blob_store_registory).
+-define(COMPACTION_SERVER_REG_NAME, hibari_blog_store_compaction).
 
 %% Types
 
@@ -63,6 +63,8 @@
           md5        :: binary() | undefined
          }).
 -type hunk() :: #hunk{}.
+
+-type storage_location() :: no_blob | tuple().
 
 -type callback_ticket() :: reference().
 

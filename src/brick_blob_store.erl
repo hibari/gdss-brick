@@ -23,6 +23,7 @@
 
 -include("brick_specs.hrl").
 -include("brick_hlog.hrl").
+-include("brick.hrl").      % for ?E_ macros
 
 %% Common API
 -export([get_blob_store/1]).
@@ -37,8 +38,12 @@
          write_value/2
         ]).
 
-%% API for Write-back Module
+%% API for Write-back and Compaction Modules
 -export([writeback_to_stable_storage/2,
+         write_location_info/2,
+         open_location_info_file_for_read/2,
+         read_location_info/4,
+         close_location_info_file/2,
          sync/1
         ]).
 
@@ -64,11 +69,11 @@
           }).
 -type impl() :: #?MODULE{}.
 
--type brickname() :: atom().
--type storage_location() :: term().
 -type wal_entry() :: term().
-
 -type orddict(_A) :: term().  %% orddict in stdlib
+-type location_info_file() :: term().
+-type continuation() :: term().
+
 
 -record(state, {
           impl_mod                :: module(),
@@ -114,6 +119,27 @@ write_value(Value, #?MODULE{impl_mod=ImplMod, pid=Pid}) ->
 -spec writeback_to_stable_storage([wal_entry()], impl()) -> ok | {error, term()}.
 writeback_to_stable_storage(WalEntries, #?MODULE{impl_mod=ImplMod, brick_name=BrickName, pid=Pid}) ->
     ImplMod:writeback_to_stable_storage(Pid, BrickName, WalEntries).
+
+-spec write_location_info([{key(), storage_location()}], impl()) -> ok | {error, term()}.
+write_location_info(Locations, #?MODULE{impl_mod=ImplMod, brick_name=BrickName, pid=Pid}) ->
+    ImplMod:write_location_info(Pid, BrickName, Locations).
+
+-spec open_location_info_file_for_read(seqnum(), impl()) ->
+                                              {ok, location_info_file()} | {err, term()}.
+open_location_info_file_for_read(SeqNum, #?MODULE{impl_mod=ImplMod, brick_name=BrickName, pid=Pid}) ->
+    ImplMod:open_location_info_file_for_read(Pid, BrickName, SeqNum).
+
+-spec read_location_info(location_info_file(),
+                         'start' | continuation(), non_neg_integer(), impl()) ->
+                                {ok, continuation(), [{key(), storage_location()}]}
+                                    | 'eof'
+                                    | {error, term()}.
+read_location_info(DiskLog, Cont, MaxRecords, #?MODULE{impl_mod=ImplMod, brick_name=BrickName, pid=Pid}) ->
+    ImplMod:read_location_info(Pid, BrickName, DiskLog, Cont, MaxRecords).
+
+-spec close_location_info_file(location_info_file(), impl()) -> ok.
+close_location_info_file(DiskLog, #?MODULE{impl_mod=ImplMod, brick_name=BrickName, pid=Pid}) ->
+    ImplMod:close_location_info_file(Pid, BrickName, DiskLog).
 
 -spec sync(impl()) -> ok | {error, term()}.
 sync(#?MODULE{impl_mod=ImplMod, pid=Pid}) ->
