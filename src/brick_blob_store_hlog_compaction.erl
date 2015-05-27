@@ -17,17 +17,36 @@
 %%% Purpose :
 %%%-------------------------------------------------------------------
 
-%% (later) [compaction] freeze the hlog file (prohibit metadata-only copy kv for this file)
-%% (later) [brick] write an acknowledge record to the WAL
-%% (later) [write-back] when find the acknowledge record, notify the compaction
-%% [compaction] on each location info record, check if Hibari {key, timestamp} still exists
-%% [compaction] if it exists, copy it to short-term or long-term hlog files depending on its age
-%% [compaction] write metadata record with updated blob location to the WAL
-%% [write-back] check if Hibari {key, timestamp} still exists
-%% [write-back] if it exists, write the new metadata with the updated blob location
-%% [compaction] when finish processing the hlog file, write delete hlog file command to the WAL
-%% [write-back] when find the delete hlog file command, notify the blob store server
-%% [blob store] delete the hlog file, and notify the hlog table
+
+%% Copy Phase - Copy live blob hunks from an old hlog to the current hlog file
+%%
+%% Brick with on-disk metadata DB
+%%  1. [compaction] Select an hlog file who has live hunk ratio
+%%  2. (later) [compaction] freeze the hlog file (prohibit metadata-only copy kv for this file)
+%%  3. (later) [brick] write an acknowledge record to the WAL
+%%  4. (later) [write-back] when find the acknowledge record, notify the compaction
+%%  5. [compaction] on each location info record, check if {key, timestamp} still exists
+%%  6. [compaction] if it exists, copy it to short-term or long-term hlog files depending on its age
+%%  7. [compaction] write metadata record with updated blob location to the WAL
+%%  8. [write-back] check if {key, timestamp} still exists
+%%  9. [write-back] if it exists, write the new metadata with the updated blob location
+%% 10. [compaction] when finish processing the hlog file, write delete hlog file command to the WAL
+%% 11. [write-back] when find the delete hlog file command, notify the blob store server
+%% 12. [blob store] delete the hlog file
+%%
+%% Brick with in-memory metadata DB (brick_ets)
+%%  1. [compaction] Select an hlog file who has live hunk ratio
+%%  2. (later) [compaction] freeze the hlog file (prohibit metadata-only copy kv for this file)
+%%  3. (later) [brick] write an acknowledge record to the WAL
+%%  4. (later) [write-back] when find the acknowledge record, notify the compaction
+%%  5. [compaction] on each location info record, check if {key, timestamp} still exists
+%%  6. [compaction] if it exists, copy it to short-term or long-term hlog files depending on its age
+%%  7. [compaction] notify brick_ets with updated blob location
+%%  8. [brick_ets] check if {key, timestamp} still exists
+%%  9. [brick_ets] if it exists, write the new metadata with the updated blob location
+%% 10. [compaction] when finish processing the hlog file, notify the blob store server
+%% 11. [blob store] delete the hlog file
+
 
 -module(brick_blob_store_hlog_compaction).
 
@@ -36,13 +55,15 @@
 %% DEBUG
 -compile(export_all).
 
-%% -include("brick_specs.hrl").
+-include("brick_specs.hrl").
 -include("brick_hlog.hrl").
+-include("brick_blob_store_hlog.hrl").
 %% -include("brick.hrl").      % for ?E_ macros
 
 %% API
 -export([start_link/1,
-         stop/0
+         stop/0,
+         compact_hlog_file/2
         ]).
 
 %% gen_server callbacks
@@ -59,12 +80,15 @@
 %% types, specs and records
 %% ====================================================================
 
+-type mdstore() :: tuple().
+-type blobstore() :: tuple().
+
 -type prop() :: {atom(), term()}.
 
 -record(state, {}).
 
-%% -define(HUNK, brick_hlog_hunk).
-%% -define(WAL,  brick_hlog_wal).
+-define(METADATA, brick_metadata_store).
+-define(BLOB,     brick_blob_store).
 
 
 %% ====================================================================
@@ -79,6 +103,10 @@ start_link(PropList) ->
 -spec stop() -> ok | {error, term()}.
 stop() ->
     gen_server:call(?COMPACTION_SERVER_REG_NAME, stop).
+
+-spec compact_hlog_file(brickname(), seqnum()) -> ok | {error, term()}.
+compact_hlog_file(BrickName, SeqNum) ->
+    do_compact_hlog_file(BrickName, SeqNum).
 
 
 %% ====================================================================
@@ -107,6 +135,56 @@ code_change(_OldVsn, State, _Extra) ->
 %% ====================================================================
 %% Internal functions
 %% ====================================================================
+
+-spec do_compact_hlog_file(brickname(), seqnum()) -> ok | {error, term()}.
+do_compact_hlog_file(BrickName, SeqNum) ->
+    MaxLocations = 1000,
+    {ok, MetadataStore} = ?METADATA:get_metadata_store(BrickName),
+    {ok, BlobStore} = ?BLOB:get_blob_store(BrickName),
+
+    %% @TODO: Ensure that the SeqNum is not opened for write.
+
+    {ok, LocationFile} = BlobStore:open_location_info_file_for_read(SeqNum),
+    BlobStoreInfo = BlobStore:get_impl_info(),
+    try
+        find_and_copy_live_hunks(BrickName, MetadataStore,
+                                 BlobStore, BlobStoreInfo, SeqNum,
+                                 LocationFile, start, MaxLocations)
+    after
+        _ = (catch BlobStore:close_location_info_file(LocationFile))
+    end.
+
+-spec find_and_copy_live_hunks(brickname(), mdstore(), blobstore(), tuple(), seqnum(),
+                               location_info_file(), continuation(), non_neg_integer()) -> ok | {error, term()}.
+find_and_copy_live_hunks(BrickName, MetadataStore,
+                         BlobStore, {BlobImplMod, BlobPid}=BlobStoreInfo, SeqNum,
+                         LocationFile, Cont, MaxLocations) ->
+    case BlobStore:read_location_info(LocationFile, Cont, MaxLocations) of
+        {ok, NewCont, Locations} ->
+            %% @TODO: Change this back to 3 when long-term log is implemented.
+            %% AgeThreshold = 3,
+            AgeThreshold = 200,
+            LiveHunkLocations = live_hunk_locations(MetadataStore, Locations),
+            StoreTuples = BlobImplMod:copy_hunks(BlobPid, BrickName, SeqNum,
+                                                 LiveHunkLocations, AgeThreshold),
+            _ = MetadataStore:update_blob_locations(StoreTuples),
+            %% repeat
+            find_and_copy_live_hunks(BrickName, MetadataStore,
+                                     BlobStore, BlobStoreInfo, SeqNum,
+                                     LocationFile, NewCont, MaxLocations);
+        eof ->
+            ok;
+        {error, _}=Err ->
+            Err
+    end.
+
+-spec live_hunk_locations(mdstore(), [location_info()]) -> [location_info()].
+live_hunk_locations(MetadataStore, Locations) ->
+    Keys = [ {Key, TS} || #l{key=Key, timestamp=TS} <- Locations ],
+    {ok, LiveKeys} = MetadataStore:live_keys(Keys),
+    LiveKeysSet = gb_sets:from_list(LiveKeys),
+    [ Location || #l{key=Key, timestamp=TS}=Location <- Locations,
+                  gb_sets:is_member({Key, TS}, LiveKeysSet) ].
 
 
 %% ====================================================================

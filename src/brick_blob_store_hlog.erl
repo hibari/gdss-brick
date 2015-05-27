@@ -25,6 +25,7 @@
 
 -include("brick_specs.hrl").
 -include("brick_hlog.hrl").
+-include("brick_blob_store_hlog.hrl").
 -include("brick.hrl").      % for ?E_ macros
 
 %% API for Brick Server
@@ -39,6 +40,7 @@
          open_location_info_file_for_read/3,
          read_location_info/5,
          close_location_info_file/3,
+         copy_hunks/5,
          sync/1
         ]).
 
@@ -146,6 +148,8 @@
          }).
 -type state() :: #state{}.
 
+-define(SEQNUM_DIGITS, 12).
+
 -define(TIMEOUT, 60 * 1000).
 -define(HUNK, brick_hlog_hunk).
 -define(WAL, brick_hlog_wal).
@@ -251,9 +255,6 @@ write_location_info(_Pid, BrickName, Locations) ->
             Err
     end.
 
--type location_info_file() :: disk_log:log().
--type continuation() :: disk_log:continuation().
-
 -spec open_location_info_file_for_read(pid(), brickname(), seqnum()) ->
                                               {ok, location_info_file()} | {err, term()}.
 open_location_info_file_for_read(_Pid, BrickName, SeqNum) ->
@@ -278,6 +279,20 @@ read_location_info(_Pid, _BrickName, DiskLog, Cont, MaxRecords) ->
 -spec close_location_info_file(pid(), brickname(), location_info_file()) -> ok.
 close_location_info_file(_Pid, _BrickName, DiskLog) ->
     disk_log:close(DiskLog).
+
+-spec copy_hunks(pid(), brickname(), seqnum(), [location_info()], blob_age()) -> [brick_ets:do_mod()].
+copy_hunks(Pid, BrickName, SeqNum, Locations, AgeThreshold) ->
+    {ok, SourceHLog} = open_private_log_for_read(BrickName, SeqNum),
+    try
+        %% @TODO Read only certain bytes (e.g. 20MB)
+        {ok, Hunks} = read_hunks(SourceHLog, Locations),
+        {YoungHunksAndLocations, _OldHunksAndLocations} = group_hunks(Hunks, Locations, AgeThreshold),
+        Metadata1 = write_hunks(Pid, BrickName, short_term, YoungHunksAndLocations, []),
+        %% write_hunks(Pid, BrickName, long_term, OldHunksAndLocations, Metadata1)
+        Metadata1
+    after
+        _ = (catch file:close(SourceHLog))
+    end.
 
 -spec sync(pid()) -> ok.
 sync(_Pid) ->
@@ -309,7 +324,9 @@ init([BrickName, Options]) ->
                      1;
                  HLogFiles ->
                      LastFile = filename:basename(lists:max(HLogFiles), ".hlog"),
-                     list_to_integer(LastFile) + 1
+                     %% substr's start position is 1-based index
+                     LastSeqNumStr = string:substr(LastFile, length(LastFile) - ?SEQNUM_DIGITS + 1),
+                     list_to_integer(LastSeqNumStr) + 1
              end,
     Position = create_private_log(BrickName, CurSeq),
     {ok, #state{brick_name=BrickName,
@@ -358,6 +375,9 @@ handle_call({write_value, Value}, _From, #state{brick_name=BrickName}=State)
         Err ->
             {reply, Err, State1}
     end;
+handle_call({reserve_positions, LogType, Hunks}, _From, State) ->
+    {Positions, State1} = lists:foldl(reserve_position_fun(LogType), {[], State}, Hunks),
+    {reply, lists:reverse(Positions), State1};
 handle_call(_, _From, State) ->
     {reply, ok, State}.
 
@@ -375,7 +395,45 @@ code_change(_OldVsn, State, _Extra) ->
 
 
 %% ====================================================================
-%% Internal functions
+%% Internal functions - supporting functions for gen_server callbacks
+%% ====================================================================
+
+-spec reserve_position_fun('short_term' | 'long_term')
+                          -> fun((hunk(), {[private_hlog()], state()}) -> {[private_hlog()], state()}).
+reserve_position_fun(short_term) ->
+    fun(#hunk{flags=Flags, blobs=[Value]=Blobs}, {StoreLocList, State}) ->
+            State1 =
+                case should_advance_seqnum(State) of
+                    true ->
+                        do_advance_seqnum(1, State);
+                    false ->
+                        State
+                end,
+            SeqNum       = State1#state.head_seqnum,
+            Position     = State1#state.head_position,
+            HunkCount    = State1#state.head_seqnum_hunk_count,
+            HunkOverhead = State1#state.head_seqnum_hunk_overhead,
+
+            ValLen = byte_size(Value),
+            {[ValOffset], _} = ?HUNK:create_blob_index(Blobs),
+            StoreLoc =
+                #p{seqnum=SeqNum, hunk_pos=Position, val_offset=ValOffset, val_len=ValLen},
+            {RawSize, _, PaddingSize, Overhead} =
+                ?HUNK:calc_hunk_size(blob_single, Flags, 0, 1, ValLen),
+            State2 = State1#state{
+                       head_seqnum=SeqNum, head_position=Position + RawSize + PaddingSize,
+                       head_seqnum_hunk_count=HunkCount + 1,
+                       head_seqnum_hunk_overhead=HunkOverhead + Overhead},
+            {[StoreLoc | StoreLocList], State2}
+    end;
+reserve_position_fun(long_term) ->
+    %% @TODO
+    fun(_, Acc) ->
+            Acc
+    end.
+
+%% ====================================================================
+%% Internal functions - write-back
 %% ====================================================================
 
 %% @TODO: Rewrite like write_location_info/3 (take lists:foldl style rather than recursive calls)?
@@ -421,27 +479,6 @@ writeback_values(BrickName, [#hunk{flags=Flags, blobs=[Value, LocationBin]} | WA
             end
     end.
 
--type location_info_tuple() :: {HunkPos::offset(), ValOffset::offset(), len(), key(), ts()}.
-
--spec convert_to_location_tuples([{key(), ts(), storage_location_hlog()}]) ->
-                                        {seqnum(), [location_info_tuple()]}.
-convert_to_location_tuples(Locations) ->
-    LocationGroupBySeqNum =
-        lists:foldl(
-          fun({Key, TS, StorageLocation}, Dict) ->
-                  {SeqNum, LocationTuple} = location_tuple(Key, TS, StorageLocation),
-                  dict:append(SeqNum, LocationTuple, Dict)
-          end, dict:new(), Locations),
-    dict:to_list(LocationGroupBySeqNum).
-
--spec location_tuple(key(), ts(), storage_location()) -> {seqnum(), location_info_tuple()}.
-location_tuple(Key, TS, #w{private_seqnum=SeqNum, private_hunk_pos=HunkPos,
-                           val_offset=ValOffset, val_len=ValLen}) ->
-    {SeqNum, {HunkPos, ValOffset, ValLen, Key, TS}};
-location_tuple(Key, TS, #p{seqnum=SeqNum, hunk_pos=HunkPos,
-                           val_offset=ValOffset, val_len=ValLen}) ->
-    {SeqNum, {HunkPos, ValOffset, ValLen, Key, TS}}.
-
 -spec get_private_log_for_writeback(brickname(), file:fd() | undefined, seqnum(), seqnum()) ->
                                            {ok, file:fd()} | {error, term()}.
 get_private_log_for_writeback(_BrickName, FH, SeqNum, SeqNum) when FH =/= undefined ->
@@ -462,6 +499,96 @@ write_value_to_private_log(FH, WBPos, HunkBytes) ->
             ?ELOG_ERROR("~p", [Err]),
             Err
     end.
+
+
+%% ====================================================================
+%% Internal functions - location info
+%% ====================================================================
+
+-spec convert_to_location_tuples([{key(), ts(), storage_location_hlog()}]) ->
+                                        {seqnum(), [location_info()]}.
+convert_to_location_tuples(Locations) ->
+    LocationGroupBySeqNum =
+        lists:foldl(
+          fun({Key, TS, StorageLocation}, Dict) ->
+                  {SeqNum, LocationTuple} = location_tuple(Key, TS, StorageLocation),
+                  dict:append(SeqNum, LocationTuple, Dict)
+          end, dict:new(), Locations),
+    dict:to_list(LocationGroupBySeqNum).
+
+-spec location_tuple(key(), ts(), storage_location()) -> {seqnum(), location_info()}.
+location_tuple(Key, TS, #w{private_seqnum=SeqNum, private_hunk_pos=HunkPos,
+                           val_offset=ValOffset, val_len=ValLen}) ->
+    {SeqNum, #l{hunk_pos=HunkPos, val_offset=ValOffset, val_len=ValLen,
+                key=Key, timestamp=TS}};
+location_tuple(Key, TS, #p{seqnum=SeqNum, hunk_pos=HunkPos,
+                           val_offset=ValOffset, val_len=ValLen}) ->
+    {SeqNum, #l{hunk_pos=HunkPos, val_offset=ValOffset, val_len=ValLen,
+                key=Key, timestamp=TS}}.
+
+
+%% ====================================================================
+%% Internal functions - compaction (copy hunks)
+%% ====================================================================
+
+%% @TODO: MOVEME: Move to brick_hlog_hunk module
+-spec read_hunks(file:fd(), [location_info()]) -> {ok, [hunk()]} | {error, term()}.
+read_hunks(_FH, []) ->
+    {ok, []};
+read_hunks(FH, Locations) ->
+    #l{hunk_pos=StartOffset} = hd(Locations),
+    #l{hunk_pos=LPos, val_offset=LValOff, val_len=LValLen} = lists:last(Locations),
+    EndOffset = LPos + LValOff + LValLen + 64, %% @TODO: 64 is inacculate
+    {ok, Bin} = file:pread(FH, StartOffset, EndOffset - StartOffset),
+    {ok, Hunks, _Remainder} = ?HUNK:parse_hunks(Bin),
+    Hunks1 = lists:reverse(
+               lists:nthtail(length(Hunks) - length(Locations), lists:reverse(Hunks))),
+    ?ELOG_DEBUG("length(Locations): ~w, length(Hunks): ~w, length(Hunks1): ~w",
+                [length(Locations), length(Hunks), length(Hunks1)]),
+    {ok, Hunks1}.
+
+-spec group_hunks([hunk()], [location_info()], blob_age()) ->
+                         {Young::[{hunk(), location_info()}],
+                          Old::  [{hunk(), location_info()}]}.
+group_hunks(Hunks, Locations, AgeThreshold) ->
+    %% @TODO: Move this to hlog_hunk module and implement in-place age update.
+    %% @TODO: Support blob_multi (e.g. new function hlog_hunk:merge/unmerge_hunks)
+    Hunks1 = lists:map(fun(#hunk{type=blob_single, blob_ages=[Age]}=Hunk) ->
+                               Hunk#hunk{blob_ages=[Age + 1]}
+                       end, Hunks),
+    lists:partition(fun({#hunk{type=blob_single, blob_ages=[Age]}, _Location}) ->
+                            Age < AgeThreshold
+                    end, lists:zip(Hunks1, Locations)).
+
+-spec write_hunks(pid(), brickname(), 'short_term' | 'long_term', [{hunk(), location_info()}],
+                  AppendTo::[location_info()]) -> [brick_ets:store_tuple()].
+write_hunks(Pid, BrickName, HLogType, HunksAndLocations, AppendTo) ->
+    Hunks = [ Hunk || {Hunk, _} <- HunksAndLocations ],
+    Positions = gen_server:call(Pid, {reserve_positions, HLogType, Hunks}, ?TIMEOUT),
+    {StoreTuples, FH, _} =
+        lists:foldl(
+          fun({{Hunk, #l{val_len=ValLen, key=Key, timestamp=TS}},
+               #p{seqnum=SeqNum, hunk_pos=Position}=StoreLoc},
+              {StoreTuples0, FH0, CurSeqNum}) ->
+                  {HunkIOList, _, _, _} = ?HUNK:create_hunk_iolist(Hunk),
+                  {ok, FH1} = get_private_log_for_writeback(BrickName, FH0, SeqNum, CurSeqNum),
+                  ok = write_value_to_private_log(FH1, Position, list_to_binary(HunkIOList)),
+                  StoreTuple = brick_ets:storetuple_make(Key, TS, StoreLoc, ValLen, 0, []),
+                  ?ELOG_DEBUG("~p", [StoreTuple]),
+                  {[StoreTuple | StoreTuples0], FH1, SeqNum}
+          end, {lists:reverse(AppendTo), undefined, -1}, lists:zip(HunksAndLocations, Positions)),
+    if
+        FH =/= undefined ->
+            _ = (catch file:close(FH));
+        true ->
+            ok
+    end,
+    lists:reverse(StoreTuples).
+
+
+%% ====================================================================
+%% Internal functions - files
+%% ====================================================================
 
 -spec should_advance_seqnum(state()) -> boolean().
 should_advance_seqnum(#state{head_position=Position, file_len_max=MaxLen, file_len_min=MinLen,
@@ -497,6 +624,7 @@ create_private_log(BrickName, SeqNum) ->
             error(Err)
     end.
 
+-spec open_private_log_for_read(brickname(), seqnum()) -> {ok, file:fd()} | {error, term()}.
 open_private_log_for_read(BrickName, SeqNum) ->
     Path = blob_path(BrickName, blob_dir(BrickName), SeqNum),
     case file:open(Path, [binary, raw, read, read_ahead]) of
@@ -577,4 +705,4 @@ blob_location_file_path(BrickName, Dir, SeqNum) ->
 -spec seqnum2file(brickname(), seqnum(), string()) -> string().
 seqnum2file(BrickName, SeqNum, Suffix) ->
     lists:flatten([atom_to_list(BrickName), "-",
-                   gmt_util:left_pad(integer_to_list(SeqNum), 12, $0), Suffix]).
+                   gmt_util:left_pad(integer_to_list(SeqNum), ?SEQNUM_DIGITS, $0), Suffix]).

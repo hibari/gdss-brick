@@ -28,7 +28,7 @@
 %% Common API
 -export([live_keys/3]).
 
-%% API for Brick Server
+%% API for brick server
 -export([start_link/2,
          stop/1,
          %% read_metadata/1,
@@ -37,8 +37,9 @@
          request_group_commit/1
         ]).
 
-%% API for Write-back Module
--export([writeback_to_stable_storage/3
+%% API for write-back and compaction modules
+-export([writeback_to_stable_storage/3,
+         update_blob_locations/3
         ]).
 
 %% Temporary API
@@ -130,7 +131,7 @@ live_keys(Pid, _BrickName, Keys) ->
 %% -spec read_metadata(pid(), key(), impl()) -> storetuple().
 
 %% Called by brick_ets:write_metadata_term(Term, #state{md_store})
--spec write_metadata(pid(), brickname(), [brick_ets:store_tuple()])
+-spec write_metadata(pid(), brickname(), [brick_ets:do_mod()])
                     -> ok | {hunk_too_big, len()} | {error, term()}.
 write_metadata(_Pid, BrickName, MetadataList) ->
     Blobs = [ term_to_binary(Metadata) || Metadata <- MetadataList ],
@@ -144,7 +145,7 @@ write_metadata(_Pid, BrickName, MetadataList) ->
             Err
     end.
 
--spec write_metadata_group_commit(pid(), brickname(), [brick_ets:store_tuple()])
+-spec write_metadata_group_commit(pid(), brickname(), [brick_ets:do_mod()])
                                  -> {ok, callback_ticket()}
                                         | {hunk_too_big, len()}
                                         | {error, term()}.
@@ -171,6 +172,11 @@ writeback_to_stable_storage(Pid, WalEntries, IsLastBatch) ->
     {ok, MetadataDB} = gen_server:call(Pid, get_leveldb, ?TIMEOUT),
     writeback_to_leveldb(MetadataDB, WalEntries, IsLastBatch),
     ok.
+
+-spec update_blob_locations(pid(), brickname(), [brick_ets:store_tuple()]) -> ok | {error, term()}.
+update_blob_locations(_Pid, BrickName, MetadataList) ->
+    %% @TODO: For now, only support brick_ets
+    do_update_blob_locations_ets(BrickName, MetadataList).
 
 %% Temporary API. Need higher abstruction.
 -spec get_leveldb(pid()) -> {ok, h2leveldb:db()}.
@@ -368,6 +374,53 @@ metadata_db_key(Key, _Timestamp) ->
 %% -spec make_delete_marker(key(), ts()) -> tuple().
 %% make_delete_marker(Key, Timestamp) ->
 %%     {Key, Timestamp, delete_marker}.
+
+
+%% ====================================================================
+%% Internal functions -- compaction
+%% ====================================================================
+
+-spec do_update_blob_locations_ets(brickname(), [brick_ets:store_tuple()]) -> ok | {error, term()}.
+do_update_blob_locations_ets(BrickName, StoreTuples) ->
+    DoOperations = [make_update_location(ST) || ST <- StoreTuples],
+    DoOptions = [ignore_role, {sync_override, false}, local_op_only_do_not_forward],
+    DoRes = brick_server:do(BrickName, node(), DoOperations, DoOptions, 60 * 1000),
+    AnyError = lists:any(fun({ok, _})       -> false;
+                            (key_not_exist) -> false;
+                            ({ts_error, _}) -> false;
+                            (_X)            -> true
+                         end, DoRes),
+    if AnyError ->
+            Keys = [brick_ets:storetuple_key(ST) || ST <- StoreTuples],
+            ?ELOG_ERROR("Failed to update locations. brick: ~p~n"
+                        "keys: ~p~nresponse: ~p~n",
+                        [BrickName, Keys, DoRes]),
+            {error, failed_to_update_locations};
+       true ->
+            ok
+    end.
+
+-spec make_update_location(brick_ets:storetuple()) -> fun().
+make_update_location(StoreTuple) ->
+    Key    = brick_ets:storetuple_key(StoreTuple),
+    OrigTS = brick_ets:storetuple_ts(StoreTuple),
+    NewVal = brick_ets:storetuple_val(StoreTuple),
+    F = fun(Key0, _DoOp, _DoFlags, S0) ->
+                O2 = case brick_server:ssf_peek(Key0, false, S0) of
+                         [] ->
+                             key_not_exist;
+                         [{_Key, OrigTS, OrigVal, OldExp, OldFlags}] ->  %% OrigTS is bound variable.
+                             {ImplMod, ImplState} = brick_server:ssf_impl_details(S0),
+                             Val0 = ImplMod:bcb_val_switcharoo(OrigVal, NewVal, ImplState),
+                             Fs = [{testset, OrigTS} | OldFlags],
+                             %% make_replace doesn't allow custom TS.
+                             brick_server:make_op6(replace, Key0, OrigTS, Val0, OldExp, Fs);
+                         [{_Key, RaceTS, _RaceVal, _RaceExp, _RaceFlags}] ->
+                             {ts_error, RaceTS}
+                     end,
+                {ok, [O2]}
+        end,
+    brick_server:make_ssf(Key, F).
 
 
 %% ====================================================================

@@ -129,6 +129,7 @@
 -export([calc_hunk_size/1,
          calc_hunk_size/5,
          create_hunk_iolist/1,
+         create_blob_index/1,
          parse_hunks/1,
          parse_hunk_iodata/1,
          %% read_hunk/2,
@@ -256,6 +257,20 @@ create_hunk_iolist(#hunk{type=blob_multi, brick_name=undefined,
   when length(Blobs) =:= length(Ages) ->
     create_hunk_iolist1(Hunk).
 
+-spec create_blob_index([binary()]) -> {BlobIndex::[non_neg_integer()],
+                                        NumberOfBlobs::non_neg_integer()}.
+create_blob_index(Blobs) ->
+    NumberOfBlobs = length(Blobs),
+    Sizes = [ byte_size(Blob) || Blob <- Blobs ],
+    {SizesWithoutLastBlob, _} = lists:split(NumberOfBlobs - 1, Sizes),
+    {_, BlobIndex} =
+        lists:foldl(
+          fun(Size, {Offset, Index}) ->
+                  Offset1 = Offset + Size,
+                  {Offset1, [Offset1 | Index]}
+          end, {?HUNK_HEADER_SIZE, []}, [0|SizesWithoutLastBlob]),
+    {lists:reverse(BlobIndex), NumberOfBlobs}.
+
 -spec parse_hunks(binary()) -> {ok, [hunk()], Remainder::binary()}
                                    | {error, Reason::term(), [hunk()]}.
 parse_hunks(Hunks) when is_binary(Hunks) ->
@@ -372,20 +387,6 @@ create_hunk_footer(Type, Flags, EncodedBrickName, Blobs, BlobIndex, BlobAges, Pa
         ++ [ <<Age:1/unit:8>> || Age <- BlobAges,
                                  Type =:= blob_single orelse Type =:= blob_multi ]
         ++ [<<0:PaddingSize/unit:8>>].
-
--spec create_blob_index([binary()]) -> {BlobIndex::[non_neg_integer()],
-                                        NumberOfBlobs::non_neg_integer()}.
-create_blob_index(Blobs) ->
-    NumberOfBlobs = length(Blobs),
-    Sizes = [ byte_size(Blob) || Blob <- Blobs ],
-    {SizesWithoutLastBlob, _} = lists:split(NumberOfBlobs - 1, Sizes),
-    {_, BlobIndex} =
-        lists:foldl(
-          fun(Size, {Offset, Index}) ->
-                  Offset1 = Offset + Size,
-                  {Offset1, [Offset1 | Index]}
-          end, {?HUNK_HEADER_SIZE, []}, [0|SizesWithoutLastBlob]),
-    {lists:reverse(BlobIndex), NumberOfBlobs}.
 
 -spec parse_hunks1(binary(), [hunk()])
                   -> {ok, [hunk()], Remainder::binary()}

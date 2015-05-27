@@ -1,5 +1,5 @@
 %%%----------------------------------------------------------------------
-%%% Copyright (c) 2008-2014 Hibari developers. All rights reserved.
+%%% Copyright (c) 2014-2015 Hibari developers. All rights reserved.
 %%%
 %%% Licensed under the Apache License, Version 2.0 (the "License");
 %%% you may not use this file except in compliance with the License.
@@ -47,6 +47,7 @@
 
 -type hunk_flag() :: no_md5.
 
+-type blob_age() :: non_neg_integer().
 
 %% NOTE: An upper layer (scavenger) should pack multiple values into
 %% one blob_multi hunk (e.g. nearly 4KB) so that it can avoid the
@@ -57,9 +58,9 @@
 -record(hunk, {
           type       :: hunk_type() | undefined,
           flags= []  :: [hunk_flag()],
-          brick_name :: atom() | undefined,               %% Only for metadata and blob_wal
+          brick_name :: atom() | undefined,        %% Only for metadata and blob_wal
           blobs= []  :: [binary()],
-          blob_ages  :: undefined | [non_neg_integer()],  %% Only for blob_single and blob_multi
+          blob_ages  :: undefined | [blob_age()],  %% Only for blob_single and blob_multi
           md5        :: binary() | undefined
          }).
 -type hunk() :: #hunk{}.

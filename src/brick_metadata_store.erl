@@ -42,7 +42,8 @@
 
 %% API for Write-back and Compaction Modules
 -export([writeback_to_stable_storage/3,
-         extract_location_info/1
+         extract_location_info/1,
+         update_blob_locations/2
         ]).
 
 %% Temporary API
@@ -119,12 +120,12 @@ live_keys(Keys, #?MODULE{impl_mod=ImplMod, brick_name=BrickName, pid=Pid}) ->
 read_metadata(Key, #?MODULE{impl_mod=ImplMod}) ->
     ImplMod:read_metadata(Key).
 
--spec write_metadata([brick_ets:store_tuple()], impl())
+-spec write_metadata([brick_ets:do_mod()], impl())
                     -> ok | {hunk_too_big, len()} | {error, term()}.
 write_metadata(MetadataList, #?MODULE{impl_mod=ImplMod, brick_name=BrickName, pid=Pid}) ->
     ImplMod:write_metadata(Pid, BrickName, MetadataList).
 
--spec write_metadata_group_commit([brick_ets:store_tuple()], impl())
+-spec write_metadata_group_commit([brick_ets:do_mod()], impl())
                                  -> {ok, callback_ticket()}
                                         | {hunk_too_big, len()}
                                         | {error, term()}.
@@ -157,6 +158,10 @@ extract_location_info(WalEntries) ->
                     end, Acc1, Blobs)
           end, [], WalEntries),
     lists:reverse(Locations).
+
+-spec update_blob_locations([brick_ets:storetuple()], impl()) -> ok | {error, term()}.
+update_blob_locations(StoreTuples, #?MODULE{impl_mod=ImplMod, brick_name=BrickName, pid=Pid}) ->
+    ImplMod:update_blob_locations(Pid, BrickName, StoreTuples).
 
 %% Temporary API. Need higher abstruction.
 -spec get_leveldb(impl()) -> {ok, h2leveldb:db()}.

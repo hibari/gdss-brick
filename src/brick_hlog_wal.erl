@@ -96,6 +96,8 @@
          }).
 -type state() :: #state{}.
 
+-define(SEQNUM_DIGITS, 12).
+
 
 %% ====================================================================
 %% API
@@ -148,6 +150,7 @@ get_current_seqnum_and_offset() ->
 %% ====================================================================
 
 init(Options) ->
+    %% @TODO CHECKME: Shall we remove this? It could lead an unexpected behavior.
     process_flag(priority, high),
 
     Dir = "data/wal_hlog",
@@ -546,7 +549,7 @@ wal_path(Dir, SeqNum) ->
 
 -spec seqnum2file(seqnum()) -> string().
 seqnum2file(SeqNum) ->
-    lists:flatten([gmt_util:left_pad(integer_to_list(SeqNum), 12, $0), ".hlog"]).
+    lists:flatten([gmt_util:left_pad(integer_to_list(SeqNum), ?SEQNUM_DIGITS, $0), ".hlog"]).
 
 
 %% DEBUG STUFF (@TODO: eunit / quickcheck cases)

@@ -1578,20 +1578,35 @@ my_insert2(#state{thisdo_mods=Mods, max_log_size=MaxLogSize}=S, Key, TStamp, Val
             [ST] = my_lookup(S, Key, false),
             CurVal = storetuple_val(ST),
             CurValLen = storetuple_vallen(ST),
-            {OldSeq, _} = OldVal,
-            {CurSeq, _} = CurVal,
-            Mod =
-                if abs(OldSeq) =:= abs(CurSeq) ->
-                        {insert_constant_value,
-                         storetuple_make(Key, TStamp, NewVal, CurValLen,
-                                         ExpTime, Flags)};
-                   true ->
-                        %% Someone else won an honest race for this
-                        %% key.  Here, we can't change the value
-                        %% returned to the client.  However, we can
-                        %% change what we scribble to the local log.
-                        {log_noop}
-                end,
+
+            case OldVal of
+                {OldSeq, _} ->  %% old format
+                    ?E_WARNING("value (storage location) is in old format. key: ~p, value: ~p",
+                               [Key, OldVal]),
+                    {CurSeq, _} = CurVal,
+                    Mod =
+                        if abs(OldSeq) =:= abs(CurSeq) ->
+                                {insert_constant_value,
+                                 storetuple_make(Key, TStamp, NewVal, CurValLen,
+                                                 ExpTime, Flags)};
+                           true ->
+                                %% Someone else won an honest race for this
+                                %% key.  Here, we can't change the value
+                                %% returned to the client.  However, we can
+                                %% change what we scribble to the local log.
+                                {log_noop}
+                        end;
+                _ ->
+                    CurTS = storetuple_ts(ST),
+                    Mod =
+                        if CurTS =:= TStamp -> %% @TODO: CHECKME: Do I need this check?
+                                {insert_constant_value,
+                                 storetuple_make(Key, TStamp, NewVal, CurValLen,
+                                                 ExpTime, Flags)};
+                           true ->
+                                {log_noop}
+                        end
+            end,
             {{ok, TStamp}, S#state{thisdo_mods = [Mod|Mods]}};
         {?KEY_SWITCHAROO, NewKey} ->
             %% This clause should never match in Hibair v0.1.x

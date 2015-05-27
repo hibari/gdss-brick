@@ -26,7 +26,9 @@
 -include("brick.hrl").      % for ?E_ macros
 
 %% Common API
--export([get_blob_store/1]).
+-export([get_blob_store/1,
+         get_impl_info/1
+        ]).
 
 %% API for brick_data_sup Module
 -export([start_link/2,
@@ -104,6 +106,10 @@ stop() ->
 get_blob_store(BrickName) ->
     gen_server:call(?BRICK_BLOB_STORE_REG_NAME,
                     {get_or_start_blob_store_impl, BrickName}, ?TIMEOUT).
+
+-spec get_impl_info(impl()) -> {module(), pid()}.
+get_impl_info(#?MODULE{impl_mod=ImplMod, pid=Pid}) ->
+    {ImplMod, Pid}.
 
 %% Called by brick_ets:bigdata_dir_get_val(Key, Loc, Len, ...)
 -spec read_value(storage_location(), impl()) -> val().
