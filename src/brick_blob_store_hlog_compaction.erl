@@ -63,6 +63,7 @@
 %% API
 -export([start_link/1,
          stop/0,
+         estimate_live_hunk_ratio/2,
          compact_hlog_file/2
         ]).
 
@@ -104,6 +105,10 @@ start_link(PropList) ->
 stop() ->
     gen_server:call(?COMPACTION_SERVER_REG_NAME, stop).
 
+-spec estimate_live_hunk_ratio(brickname(), seqnum()) -> {ok, float()} | {error, term()}.
+estimate_live_hunk_ratio(BrickName, SeqNum) ->
+    do_estimate_live_hunk_ratio(BrickName, SeqNum).
+
 -spec compact_hlog_file(brickname(), seqnum()) -> ok | {error, term()}.
 compact_hlog_file(BrickName, SeqNum) ->
     do_compact_hlog_file(BrickName, SeqNum).
@@ -135,6 +140,49 @@ code_change(_OldVsn, State, _Extra) ->
 %% ====================================================================
 %% Internal functions
 %% ====================================================================
+
+-spec do_estimate_live_hunk_ratio(brickname(), seqnum()) -> {ok, float()} | {error, term()}.
+do_estimate_live_hunk_ratio(BrickName, SeqNum) ->
+    MaxKeys = 1000,
+    {ok, MetadataStore} = ?METADATA:get_metadata_store(BrickName),
+    {ok, BlobStore} = ?BLOB:get_blob_store(BrickName),
+    {BlobImplMod, BlobPid}=BlobStoreInfo = BlobStore:get_impl_info(),
+    {ok, KeySampleFile} = BlobImplMod:open_key_sample_file_for_read(BlobPid, BrickName, SeqNum),
+    try
+        {ok, SampleCount, LiveCount} =
+            count_live_hunks(BrickName, MetadataStore,
+                             BlobStoreInfo, SeqNum,
+                             KeySampleFile, start, MaxKeys,
+                             0, 0),
+        {ok, LiveCount / SampleCount}
+    after
+        _ = (catch BlobImplMod:close_key_sample_file(BlobPid, BrickName, KeySampleFile))
+    end.
+
+-spec count_live_hunks(brickname(), mdstore(), tuple(), seqnum(),
+                       key_sample_file(), continuation(), non_neg_integer(),
+                       non_neg_integer(), non_neg_integer()) ->
+                              {ok,
+                               SampleCount::non_neg_integer(),
+                               LiveCount::non_neg_integer()}
+                                  | {error, term()}.
+count_live_hunks(BrickName, MetadataStore,
+                 {BlobImplMod, BlobPid}=BlobStoreInfo, SeqNum,
+                 KeySampleFile, Cont, MaxKeys,
+                 SampleCount, LiveCount) ->
+    case BlobImplMod:read_key_samples(BlobPid, BrickName, KeySampleFile, Cont, MaxKeys) of
+        {ok, NewCont, Keys} ->
+            {ok, LiveKeys} = MetadataStore:live_keys(Keys),
+            %% repeat
+            count_live_hunks(BrickName, MetadataStore,
+                             BlobStoreInfo, SeqNum,
+                             KeySampleFile, NewCont, MaxKeys,
+                             SampleCount + length(Keys), LiveCount + length(LiveKeys));
+        eof ->
+            {ok, SampleCount, LiveCount};
+        {error, _}=Err ->
+            Err
+    end.
 
 -spec do_compact_hlog_file(brickname(), seqnum()) -> ok | {error, term()}.
 do_compact_hlog_file(BrickName, SeqNum) ->

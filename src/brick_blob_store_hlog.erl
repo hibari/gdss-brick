@@ -40,8 +40,14 @@
          open_location_info_file_for_read/3,
          read_location_info/5,
          close_location_info_file/3,
-         copy_hunks/5,
          sync/1
+        ]).
+
+%% brick_blob_store_hlog only API
+-export([open_key_sample_file_for_read/3,
+         read_key_samples/5,
+         close_key_sample_file/3,
+         copy_hunks/5
         ]).
 
 %% gen_server callbacks
@@ -148,6 +154,7 @@
          }).
 -type state() :: #state{}.
 
+-define(SAMPLING_RATE, 0.05).
 -define(SEQNUM_DIGITS, 12).
 
 -define(TIMEOUT, 60 * 1000).
@@ -227,23 +234,30 @@ writeback_to_stable_storage(_Pid, BrickName, WalEntries) ->
                                  ok | {error, term()}.
 write_location_info(_Pid, BrickName, Locations) ->
     LocationsGroupBySeqNum = convert_to_location_tuples(Locations),
+    %% @TODO ENHANCEME: Support full write-back
     Result =
         lists:foldl(
           fun({SeqNum, LocationsForSeqNum}, {SC1, undefined}) ->
-                  %% @TODO ENHANCEME: Support full write-back
-                  case open_private_location_file_for_write(BrickName, SeqNum) of
-                      {ok, DiskLog} ->
-                          %% ?ELOG_DEBUG("~p", [LocationsForSeqNum]),
-                          try disk_log:log_terms(DiskLog, LocationsForSeqNum) of
+                  case open_private_location_files_for_write(BrickName, SeqNum) of
+                      {ok, LocationFile, KeySampleFile} ->
+                          KeySamples = key_samples(LocationsForSeqNum, ?SAMPLING_RATE),
+                          try disk_log:log_terms(KeySampleFile, KeySamples) of
                               ok ->
-                                  {SC1 + 1, undefined};
-                              Err1 ->
-                                  {SC1, Err1}
+                                  case disk_log:log_terms(LocationFile, LocationsForSeqNum) of
+                                      ok ->
+                                          %% {SC1 + length(LocationsForSeqNum), undefined};
+                                          {0, undefined};
+                                      Err1 ->
+                                          {SC1, Err1}
+                                  end;
+                              Err2 ->
+                                  {SC1, Err2}
                           after
-                              _ = (catch disk_log:close(DiskLog))
+                              _ = (catch disk_log:close(LocationFile)),
+                              _ = (catch disk_log:close(KeySampleFile))
                           end;
-                      Err2 ->
-                          {SC1, Err2}
+                      Err3 ->
+                          {SC1, Err3}
                   end;
              (_, Acc) ->
                   Acc   %% skip the rest of location info
@@ -278,6 +292,32 @@ read_location_info(_Pid, _BrickName, DiskLog, Cont, MaxRecords) ->
 
 -spec close_location_info_file(pid(), brickname(), location_info_file()) -> ok.
 close_location_info_file(_Pid, _BrickName, DiskLog) ->
+    disk_log:close(DiskLog).
+
+-spec open_key_sample_file_for_read(pid(), brickname(), seqnum()) ->
+                                              {ok, key_sample_file()} | {err, term()}.
+open_key_sample_file_for_read(_Pid, BrickName, SeqNum) ->
+    open_private_key_sample_file_for_read(BrickName, SeqNum).
+
+-spec read_key_samples(pid(), brickname(), key_sample_file(),
+                       'start' | continuation(), non_neg_integer()) ->
+                              {ok, continuation(), [{key(), ts()}]}
+                                  | 'eof'
+                                  | {error, term()}.
+read_key_samples(_Pid, _BrickName, DiskLog, Cont, MaxRecords) ->
+    %% @TODO: Exact same to read_location_info/4.
+    case disk_log:chunk(DiskLog, Cont, MaxRecords) of
+        eof ->
+            eof;
+        {error, _}=Err ->
+            Err;
+        {NewCont, Locations} ->
+            {ok, NewCont, Locations}
+        %% @TODO {Cont, Locations, BadTypes} ->
+    end.
+
+-spec close_key_sample_file(pid(), brickname(), key_sample_file()) -> ok.
+close_key_sample_file(_Pid, _BrickName, DiskLog) ->
     disk_log:close(DiskLog).
 
 -spec copy_hunks(pid(), brickname(), seqnum(), [location_info()], blob_age()) -> [brick_ets:store_tuple()].
@@ -526,6 +566,20 @@ location_tuple(Key, TS, #p{seqnum=SeqNum, hunk_pos=HunkPos,
     {SeqNum, #l{hunk_pos=HunkPos, val_offset=ValOffset, val_len=ValLen,
                 key=Key, timestamp=TS}}.
 
+-spec key_samples([location_info()], float()) -> [{key(), ts()}].
+key_samples(Locations, SamplingRate) ->
+    %% Returns keys in reverse order
+    lists:foldl(
+      fun(Location, Acc) ->
+              case random:uniform() =< SamplingRate of
+                  true ->
+                      #l{key=Key, timestamp=TS} = Location,
+                      [{Key, TS} | Acc];
+                  false ->
+                      Acc
+              end
+      end, [], Locations).
+
 
 %% ====================================================================
 %% Internal functions - compaction (copy hunks)
@@ -677,33 +731,50 @@ open_private_log_for_write(BrickName, SeqNum) ->
             Err
     end.
 
--spec open_private_location_file_for_read(brickname(), seqnum()) -> {ok, disk_log:log()} | {error, term()}.
+-spec open_private_location_file_for_read(brickname(), seqnum()) ->
+                                                 {ok, disk_log:log()} | {error, term()}.
 open_private_location_file_for_read(BrickName, SeqNum) ->
     BlobDir = blob_dir(BrickName),
     Path = blob_location_file_path(BrickName, BlobDir, SeqNum),
     disk_log:open([{name, Path}, {file, Path}, {mode, read_only}]).
 
--spec open_private_location_file_for_write(brickname(), seqnum()) -> {ok, disk_log:log()} | {error, term()}.
-open_private_location_file_for_write(BrickName, SeqNum) ->
+-spec open_private_key_sample_file_for_read(brickname(), seqnum()) ->
+                                                   {ok, disk_log:log()} | {error, term()}.
+open_private_key_sample_file_for_read(BrickName, SeqNum) ->
     BlobDir = blob_dir(BrickName),
-    Path = blob_location_file_path(BrickName, BlobDir, SeqNum),
-    case disk_log:open([{name, Path}, {file, Path}, {mode, read_write}]) of
-        {ok, _FH}=Res ->
-            Res;
+    Path = blob_key_sample_file_path(BrickName, BlobDir, SeqNum),
+    disk_log:open([{name, Path}, {file, Path}, {mode, read_only}]).
+
+-spec open_private_location_files_for_write(brickname(), seqnum()) ->
+                                                   {ok,
+                                                    LocationInfoFile::disk_log:log(),
+                                                    KeySampleFile::disk_log:log()}
+                                                       | {error, term()}.
+open_private_location_files_for_write(BrickName, SeqNum) ->
+    BlobDir = blob_dir(BrickName),
+    {LPath, SPath} = blob_location_and_key_sample_paths(BrickName, BlobDir, SeqNum),
+    case disk_log:open([{name, LPath}, {file, LPath}, {mode, read_write}]) of
+        {ok, FH1} ->
+            case disk_log:open([{name, SPath}, {file, SPath}, {mode, read_write}]) of
+                {ok, FH2} ->
+                    {ok, FH1, FH2};
+                {error, Err} ->
+                    {error, {key_sample_file, SPath, Err}}
+            end;
         {error, enoent}=Err ->
             case filelib:is_dir(BlobDir) of
                 true ->
-                    ?E_CRITICAL("Couldn't open blob location file [write] ~s by ~w", [Path, Err]),
+                    ?E_CRITICAL("Couldn't open blob location file [write] ~s by ~w", [LPath, Err]),
                     Err;
                 false ->
                     filelib:ensure_dir(BlobDir),
                     file:make_dir(BlobDir),
                     %% @TODO: Add retry count to avoid an infinite loop.
                     %% retry
-                    open_private_location_file_for_write(BrickName, SeqNum)
+                    open_private_location_files_for_write(BrickName, SeqNum)
             end;
-        {error, _}=Err ->
-            Err
+        {error, Err} ->
+            {error, {location_info_file, LPath, Err}}
     end.
 
 -spec blob_dir(brickname()) -> dirname().
@@ -718,9 +789,24 @@ blob_path(BrickName, Dir, SeqNum) ->
 
 -spec blob_location_file_path(brickname(), dirname(), seqnum()) -> filepath().
 blob_location_file_path(BrickName, Dir, SeqNum) ->
-    filename:join(Dir, seqnum2file(BrickName, SeqNum, ".hlocation")).
+    filename:join(Dir, seqnum2file(BrickName, SeqNum, ".location")).
+
+-spec blob_key_sample_file_path(brickname(), dirname(), seqnum()) -> filepath().
+blob_key_sample_file_path(BrickName, Dir, SeqNum) ->
+    filename:join(Dir, seqnum2file(BrickName, SeqNum, ".keysample")).
+
+-spec blob_location_and_key_sample_paths(brickname(), dirname(), seqnum()) -> filepath().
+blob_location_and_key_sample_paths(BrickName, Dir, SeqNum) ->
+    {P1, P2} = seqnum2files(BrickName, SeqNum, ".location", ".keysample"),
+    {filename:join(Dir, P1), filename:join(Dir, P2)}.
 
 -spec seqnum2file(brickname(), seqnum(), string()) -> string().
 seqnum2file(BrickName, SeqNum, Suffix) ->
     lists:flatten([atom_to_list(BrickName), "-",
                    gmt_util:left_pad(integer_to_list(SeqNum), ?SEQNUM_DIGITS, $0), Suffix]).
+
+-spec seqnum2files(brickname(), seqnum(), string(), string()) -> {string(), string()}.
+seqnum2files(BrickName, SeqNum, Suffix1, Suffix2) ->
+    BaseName = lists:flatten([atom_to_list(BrickName), "-",
+                              gmt_util:left_pad(integer_to_list(SeqNum), ?SEQNUM_DIGITS, $0)]),
+    {BaseName ++ Suffix1, BaseName ++ Suffix2}.

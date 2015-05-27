@@ -34,6 +34,7 @@
 -type location_info() :: #l{}.
 
 -type location_info_file() :: disk_log:log().
+-type key_sample_file() :: disk_log:log().
 -type continuation() :: disk_log:continuation().
 
 -endif. % -ifndef(brick_blob_store_hlog_hrl).
