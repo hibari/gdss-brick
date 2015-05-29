@@ -63,6 +63,7 @@
 %% API
 -export([start_link/1,
          stop/0,
+         list_hlog_files/0,
          estimate_live_hunk_ratio/2,
          compact_hlog_file/2
         ]).
@@ -105,7 +106,33 @@ start_link(PropList) ->
 stop() ->
     gen_server:call(?COMPACTION_SERVER_REG_NAME, stop).
 
--spec estimate_live_hunk_ratio(brickname(), seqnum()) -> {ok, float()} | {error, term()}.
+%% @TODO: This is a temporary API
+-spec list_hlog_files() -> [{brickname(), {seqnum(), LiveHunkRatio::float()}}].
+list_hlog_files() ->
+    BlobImpls = [ {BrickName, ?BLOB:get_impl_info(BlobStore)}
+                  || {BrickName, BlobStore} <- ?BLOB:list_blob_stores() ],
+    Result =
+        lists:map(
+          fun({BrickName, {ImplMod, Pid}}) ->
+                  SeqNums = ImplMod:list_seqnums(Pid, BrickName),
+                  lists:reverse(lists:foldl(
+                                  fun(SeqNum, Acc) ->
+                                          case estimate_live_hunk_ratio(BrickName, SeqNum) of
+                                              {ok, Ratio} ->
+                                                  [{BrickName, SeqNum, Ratio} | Acc];
+                                              unknown ->
+                                                  [{BrickName, SeqNum, unknown} | Acc];
+                                              _Err ->
+                                                  Acc
+                                          end
+                                  end, [], SeqNums))
+          end, BlobImpls),
+    lists:flatten(Result).
+
+-spec estimate_live_hunk_ratio(brickname(), seqnum()) ->
+                                      {ok, file:path(), float()}
+                                          | {unknown, file:path()}
+                                          | {error, term()}.
 estimate_live_hunk_ratio(BrickName, SeqNum) ->
     do_estimate_live_hunk_ratio(BrickName, SeqNum).
 
@@ -141,22 +168,30 @@ code_change(_OldVsn, State, _Extra) ->
 %% Internal functions
 %% ====================================================================
 
--spec do_estimate_live_hunk_ratio(brickname(), seqnum()) -> {ok, float()} | {error, term()}.
+-spec do_estimate_live_hunk_ratio(brickname(), seqnum()) ->
+                                         {ok, float()} | unknown | {error, term()}.
 do_estimate_live_hunk_ratio(BrickName, SeqNum) ->
     MaxKeys = 1000,
     {ok, MetadataStore} = ?METADATA:get_metadata_store(BrickName),
     {ok, BlobStore} = ?BLOB:get_blob_store(BrickName),
     {BlobImplMod, BlobPid}=BlobStoreInfo = BlobStore:get_impl_info(),
-    {ok, KeySampleFile} = BlobImplMod:open_key_sample_file_for_read(BlobPid, BrickName, SeqNum),
-    try
-        {ok, SampleCount, LiveCount} =
-            count_live_hunks(BrickName, MetadataStore,
-                             BlobStoreInfo, SeqNum,
-                             KeySampleFile, start, MaxKeys,
-                             0, 0),
-        {ok, LiveCount / SampleCount}
-    after
-        _ = (catch BlobImplMod:close_key_sample_file(BlobPid, BrickName, KeySampleFile))
+
+    case BlobImplMod:open_key_sample_file_for_read(BlobPid, BrickName, SeqNum) of
+        {ok, KeySampleFile} ->
+            try
+                {ok, SampleCount, LiveCount} =
+                    count_live_hunks(BrickName, MetadataStore,
+                                     BlobStoreInfo, SeqNum,
+                                     KeySampleFile, start, MaxKeys,
+                                     0, 0),
+                {ok, LiveCount / SampleCount}
+            after
+                _ = (catch BlobImplMod:close_key_sample_file(BlobPid, BrickName, KeySampleFile))
+            end;
+        {error, {file_error, _FileName, enoent}} ->
+            unknown;
+        Err ->
+            Err
     end.
 
 -spec count_live_hunks(brickname(), mdstore(), tuple(), seqnum(),
@@ -268,3 +303,12 @@ test1_check_live_keys(MetadataStore, BlobStore, LocationFile, Cont, MaxLocations
         {error, _}=Err ->
             Err
     end.
+
+
+%% F = fun() -> lists:foreach(
+%%                fun({B, S, unknown}) ->
+%%                        io:format("~s (~w): unknown~n", [B, S]);
+%%                   ({B, S, R}) ->
+%%                        io:format("~s (~w): ~.2f%~n", [B, S, R * 100])
+%%                end, brick_blob_store_hlog_compaction:list_hlog_files())
+%%     end.

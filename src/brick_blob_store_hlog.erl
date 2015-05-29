@@ -28,13 +28,13 @@
 -include("brick_blob_store_hlog.hrl").
 -include("brick.hrl").      % for ?E_ macros
 
-%% API for Brick Server
+%% API for brick server
 -export([start_link/2,
          read_value/2,
          write_value/2
         ]).
 
-%% API for Write-back and Compaction Modules
+%% API for write-back and compaction modules
 -export([writeback_to_stable_storage/3,
          write_location_info/3,
          open_location_info_file_for_read/3,
@@ -44,7 +44,8 @@
         ]).
 
 %% brick_blob_store_hlog only API
--export([open_key_sample_file_for_read/3,
+-export([list_seqnums/2,
+         open_key_sample_file_for_read/3,
          read_key_samples/5,
          close_key_sample_file/3,
          copy_hunks/5
@@ -153,6 +154,11 @@
           %% hunk_overhead=dict:new()     :: dict(seqnum(), non_neg_integer())
          }).
 -type state() :: #state{}.
+
+-define(DIR_NAME,           "blob").
+-define(FILE_EXT_HLOG,      ".hlog").
+-define(FILE_EXT_LOCATION,  ".location").
+-define(FILE_EXT_KEYSAMPLE, ".keysample").
 
 -define(SAMPLING_RATE, 0.05).
 -define(SEQNUM_DIGITS, 12).
@@ -294,6 +300,22 @@ read_location_info(_Pid, _BrickName, DiskLog, Cont, MaxRecords) ->
 close_location_info_file(_Pid, _BrickName, DiskLog) ->
     disk_log:close(DiskLog).
 
+-spec list_seqnums(pid(), brickname()) -> [seqnum()].
+list_seqnums(_Pid, BrickName) ->
+    Dir = blob_dir(BrickName),
+    HLogFiles = filelib:wildcard("*" ++ ?FILE_EXT_HLOG, Dir),
+    %% @TODO: Exclude seqnums that are scheduled for deletion.
+    %%        But watch out; init/1 also calls this function (list_seqnum/2).
+    SeqNums = lists:map(
+                fun(Path) ->
+                        BaseName = filename:basename(Path, ?FILE_EXT_HLOG),
+                        %% substr's start position is 1-based index
+                        SeqNumStr = string:substr(BaseName, length(BaseName) - ?SEQNUM_DIGITS + 1),
+                        list_to_integer(SeqNumStr)
+                end, HLogFiles),
+    %% Not sure if wildcard/2 will always sort the paths. So sort them here.
+    lists:sort(SeqNums).
+
 -spec open_key_sample_file_for_read(pid(), brickname(), seqnum()) ->
                                               {ok, key_sample_file()} | {err, term()}.
 open_key_sample_file_for_read(_Pid, BrickName, SeqNum) ->
@@ -358,15 +380,11 @@ init([BrickName, Options]) ->
     HunkCountMin = proplists:get_value(hunk_count_min, Options, 100),
     %% HunkCountMin = proplists:get_value(hunk_count_min, Options, 1000),
 
-    Dir = blob_dir(BrickName),
-    CurSeq = case filelib:wildcard("*.hlog", Dir) of
+    CurSeq = case list_seqnums(undefined, BrickName) of
                  [] ->
                      1;
-                 HLogFiles ->
-                     LastFile = filename:basename(lists:max(HLogFiles), ".hlog"),
-                     %% substr's start position is 1-based index
-                     LastSeqNumStr = string:substr(LastFile, length(LastFile) - ?SEQNUM_DIGITS + 1),
-                     list_to_integer(LastSeqNumStr) + 1
+                 SeqNums ->
+                     lists:max(SeqNums) + 1
              end,
     Position = create_private_log(BrickName, CurSeq),
     {ok, #state{brick_name=BrickName,
@@ -781,23 +799,23 @@ open_private_location_files_for_write(BrickName, SeqNum) ->
 blob_dir(BrickName) ->
     %% @TODO: Get the data_dir from #state{}.
     {ok, FileDir} = application:get_env(gdss_brick, brick_default_data_dir),
-    filename:join([FileDir, atom_to_list(BrickName), "blob"]).
+    filename:join([FileDir, atom_to_list(BrickName), ?DIR_NAME]).
 
 -spec blob_path(brickname(), dirname(), seqnum()) -> filepath().
 blob_path(BrickName, Dir, SeqNum) ->
-    filename:join(Dir, seqnum2file(BrickName, SeqNum, ".hlog")).
+    filename:join(Dir, seqnum2file(BrickName, SeqNum, ?FILE_EXT_HLOG)).
 
 -spec blob_location_file_path(brickname(), dirname(), seqnum()) -> filepath().
 blob_location_file_path(BrickName, Dir, SeqNum) ->
-    filename:join(Dir, seqnum2file(BrickName, SeqNum, ".location")).
+    filename:join(Dir, seqnum2file(BrickName, SeqNum, ?FILE_EXT_LOCATION)).
 
 -spec blob_key_sample_file_path(brickname(), dirname(), seqnum()) -> filepath().
 blob_key_sample_file_path(BrickName, Dir, SeqNum) ->
-    filename:join(Dir, seqnum2file(BrickName, SeqNum, ".keysample")).
+    filename:join(Dir, seqnum2file(BrickName, SeqNum, ?FILE_EXT_KEYSAMPLE)).
 
 -spec blob_location_and_key_sample_paths(brickname(), dirname(), seqnum()) -> filepath().
 blob_location_and_key_sample_paths(BrickName, Dir, SeqNum) ->
-    {P1, P2} = seqnum2files(BrickName, SeqNum, ".location", ".keysample"),
+    {P1, P2} = seqnum2files(BrickName, SeqNum, ?FILE_EXT_LOCATION, ?FILE_EXT_KEYSAMPLE),
     {filename:join(Dir, P1), filename:join(Dir, P2)}.
 
 -spec seqnum2file(brickname(), seqnum(), string()) -> string().

@@ -26,21 +26,22 @@
 -include("brick.hrl").      % for ?E_ macros
 
 %% Common API
--export([get_blob_store/1,
+-export([list_blob_stores/0,
+         get_blob_store/1,
          get_impl_info/1
         ]).
 
-%% API for brick_data_sup Module
+%% API for brick_data_sup module
 -export([start_link/2,
          stop/0
         ]).
 
-%% API for Brick Server
+%% API for brick server
 -export([read_value/2,
          write_value/2
         ]).
 
-%% API for Write-back and Compaction Modules
+%% API for write-back and compaction modules
 -export([writeback_to_stable_storage/2,
          write_location_info/2,
          open_location_info_file_for_read/2,
@@ -102,6 +103,10 @@ stop() ->
     gen_server:cast(?BRICK_BLOB_STORE_REG_NAME, stop),
     ok.
 
+-spec list_blob_stores() -> [{brickname(), impl()}].
+list_blob_stores() ->
+    gen_server:call(?BRICK_BLOB_STORE_REG_NAME, list_blob_store_impls, ?TIMEOUT).
+
 -spec get_blob_store(brickname()) -> {ok, impl()} | {error, term()}.
 get_blob_store(BrickName) ->
     gen_server:call(?BRICK_BLOB_STORE_REG_NAME,
@@ -161,6 +166,8 @@ init([ImplMod, _Options]) ->
     %% process_flag(priority, high),
     {ok, #state{impl_mod=ImplMod}}.
 
+handle_call(list_blob_store_impls, _From, #state{registory=Registory}=State) ->
+    {reply, orddict:to_list(Registory), State};
 handle_call({get_or_start_blob_store_impl, BrickName}, _From,
             #state{impl_mod=ImplMod, registory=Registory}=State) ->
     case orddict:find(BrickName, Registory) of
