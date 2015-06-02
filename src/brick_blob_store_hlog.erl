@@ -48,7 +48,8 @@
          open_key_sample_file_for_read/3,
          read_key_samples/5,
          close_key_sample_file/3,
-         copy_hunks/5
+         copy_hunks/5,
+         live_keys_filter_fun/1
         ]).
 
 %% gen_server callbacks
@@ -354,6 +355,16 @@ copy_hunks(Pid, BrickName, SeqNum, Locations, AgeThreshold) ->
         StoreTuples1   %% @TODO: DELETEME
     after
         _ = (catch file:close(SourceHLog))
+    end.
+
+-spec live_keys_filter_fun(seqnum()) -> live_keys_filter_function().
+live_keys_filter_fun(SeqNum) ->
+    fun(StoreTuple) ->
+            case brick_ets:storetuple_val(StoreTuple) of
+                #p{seqnum=SeqNum}         -> true;
+                #w{private_seqnum=SeqNum} -> true;
+                _                         -> false
+            end
     end.
 
 -spec sync(pid()) -> ok.
@@ -825,6 +836,7 @@ seqnum2file(BrickName, SeqNum, Suffix) ->
 
 -spec seqnum2files(brickname(), seqnum(), string(), string()) -> {string(), string()}.
 seqnum2files(BrickName, SeqNum, Suffix1, Suffix2) ->
+    %% @TODO: Use io_lib:format("~12.12.0w", [SeqNum])
     BaseName = lists:flatten([atom_to_list(BrickName), "-",
                               gmt_util:left_pad(integer_to_list(SeqNum), ?SEQNUM_DIGITS, $0)]),
     {BaseName ++ Suffix1, BaseName ++ Suffix2}.

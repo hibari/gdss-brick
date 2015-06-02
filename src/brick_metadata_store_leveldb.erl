@@ -26,7 +26,7 @@
 -include("brick.hrl").      % for ?E_ macros
 
 %% Common API
--export([live_keys/3]).
+-export([live_keys/4]).
 
 %% API for brick server
 -export([start_link/2,
@@ -99,8 +99,9 @@ stop(Pid) ->
     gen_server:cast(Pid, stop),
     ok.
 
--spec live_keys(pid(), brickname(), [{key(), ts()}]) -> {ok, [{key(), ts()}]} | {error, term()}.
-live_keys(Pid, _BrickName, Keys) ->
+-spec live_keys(pid(), brickname(), [{key(), ts()}], live_keys_filter_function()) ->
+                       {ok, [{key(), ts()}]} | {error, term()}.
+live_keys(Pid, _BrickName, Keys, FilterFun) ->
     {ok, MetadataDB} = gen_server:call(Pid, get_leveldb, ?TIMEOUT),
     Result =
         lists:foldl(
@@ -111,7 +112,9 @@ live_keys(Pid, _BrickName, Keys) ->
                       key_not_exist ->
                           LiveKeys;
                       {ok, Bin} ->
-                          case TS =:= brick_ets:storetuple_ts(binary_to_term(Bin)) of
+                          StoreTuple = binary_to_term(Bin),
+                          case TS =:= brick_ets:storetuple_ts(StoreTuple)
+                              andalso FilterFun(StoreTuple) of
                               true ->
                                   [KT | LiveKeys];
                               false ->

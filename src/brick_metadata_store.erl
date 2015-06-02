@@ -26,7 +26,7 @@
 
 %% Common API
 -export([get_metadata_store/1,
-         live_keys/2]).
+         live_keys/3]).
 
 %% API for brick_data_sup Module
 -export([start_link/2,
@@ -112,9 +112,9 @@ get_metadata_store(BrickName) ->
     gen_server:call(?METADATA_STORE_REG_NAME,
                     {get_or_start_metadata_store_impl, BrickName}, ?TIMEOUT).
 
--spec live_keys([key()], impl()) -> [key()].
-live_keys(Keys, #?MODULE{impl_mod=ImplMod, brick_name=BrickName, pid=Pid}) ->
-    ImplMod:live_keys(Pid, BrickName, Keys).
+-spec live_keys([key()], live_keys_filter_function(), impl()) -> [key()].
+live_keys(Keys, FilterFun, #?MODULE{impl_mod=ImplMod, brick_name=BrickName, pid=Pid}) ->
+    ImplMod:live_keys(Pid, BrickName, Keys, FilterFun).
 
 -spec read_metadata(key(), impl()) -> brick_ets:store_tuple().
 read_metadata(Key, #?MODULE{impl_mod=ImplMod}) ->

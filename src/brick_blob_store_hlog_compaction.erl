@@ -107,7 +107,7 @@ stop() ->
     gen_server:call(?COMPACTION_SERVER_REG_NAME, stop).
 
 %% @TODO: This is a temporary API
--spec list_hlog_files() -> [{brickname(), {seqnum(), LiveHunkRatio::float()}}].
+-spec list_hlog_files() -> [{brickname(), seqnum(), LiveHunkRatio::float()}].
 list_hlog_files() ->
     BlobImpls = [ {BrickName, ?BLOB:get_impl_info(BlobStore)}
                   || {BrickName, BlobStore} <- ?BLOB:list_blob_stores() ],
@@ -130,9 +130,7 @@ list_hlog_files() ->
     lists:flatten(Result).
 
 -spec estimate_live_hunk_ratio(brickname(), seqnum()) ->
-                                      {ok, file:path(), float()}
-                                          | {unknown, file:path()}
-                                          | {error, term()}.
+                                      {ok, float()} | unknown | {error, term()}.
 estimate_live_hunk_ratio(BrickName, SeqNum) ->
     do_estimate_live_hunk_ratio(BrickName, SeqNum).
 
@@ -178,13 +176,19 @@ do_estimate_live_hunk_ratio(BrickName, SeqNum) ->
 
     case BlobImplMod:open_key_sample_file_for_read(BlobPid, BrickName, SeqNum) of
         {ok, KeySampleFile} ->
+            FilterFun = BlobImplMod:live_keys_filter_fun(SeqNum),
             try
                 {ok, SampleCount, LiveCount} =
                     count_live_hunks(BrickName, MetadataStore,
-                                     BlobStoreInfo, SeqNum,
+                                     BlobStoreInfo, FilterFun,
                                      KeySampleFile, start, MaxKeys,
                                      0, 0),
-                {ok, LiveCount / SampleCount}
+                if
+                    SampleCount =:= 0 ->
+                        unknown;
+                    true ->
+                        {ok, LiveCount / SampleCount}
+                end
             after
                 _ = (catch BlobImplMod:close_key_sample_file(BlobPid, BrickName, KeySampleFile))
             end;
@@ -194,7 +198,9 @@ do_estimate_live_hunk_ratio(BrickName, SeqNum) ->
             Err
     end.
 
--spec count_live_hunks(brickname(), mdstore(), tuple(), seqnum(),
+%% @TODO: Add throttle
+-spec count_live_hunks(brickname(), mdstore(),
+                       tuple(), live_keys_filter_function(),
                        key_sample_file(), continuation(), non_neg_integer(),
                        non_neg_integer(), non_neg_integer()) ->
                               {ok,
@@ -202,15 +208,15 @@ do_estimate_live_hunk_ratio(BrickName, SeqNum) ->
                                LiveCount::non_neg_integer()}
                                   | {error, term()}.
 count_live_hunks(BrickName, MetadataStore,
-                 {BlobImplMod, BlobPid}=BlobStoreInfo, SeqNum,
+                 {BlobImplMod, BlobPid}=BlobStoreInfo, FilterFun,
                  KeySampleFile, Cont, MaxKeys,
                  SampleCount, LiveCount) ->
     case BlobImplMod:read_key_samples(BlobPid, BrickName, KeySampleFile, Cont, MaxKeys) of
         {ok, NewCont, Keys} ->
-            {ok, LiveKeys} = MetadataStore:live_keys(Keys),
+            {ok, LiveKeys} = MetadataStore:live_keys(Keys, FilterFun),
             %% repeat
             count_live_hunks(BrickName, MetadataStore,
-                             BlobStoreInfo, SeqNum,
+                             BlobStoreInfo, FilterFun,
                              KeySampleFile, NewCont, MaxKeys,
                              SampleCount + length(Keys), LiveCount + length(LiveKeys));
         eof ->
@@ -219,6 +225,7 @@ count_live_hunks(BrickName, MetadataStore,
             Err
     end.
 
+%% @TODO: Add throttle
 -spec do_compact_hlog_file(brickname(), seqnum()) -> ok | {error, term()}.
 do_compact_hlog_file(BrickName, SeqNum) ->
     MaxLocations = 1000,
@@ -228,32 +235,34 @@ do_compact_hlog_file(BrickName, SeqNum) ->
     %% @TODO: Ensure that the SeqNum is not opened for write.
 
     {ok, LocationFile} = BlobStore:open_location_info_file_for_read(SeqNum),
-    BlobStoreInfo = BlobStore:get_impl_info(),
+    {BlobImplMod, _}=BlobStoreInfo = BlobStore:get_impl_info(),
+    FilterFun = BlobImplMod:live_keys_filter_fun(SeqNum),
     try
         find_and_copy_live_hunks(BrickName, MetadataStore,
-                                 BlobStore, BlobStoreInfo, SeqNum,
+                                 BlobStore, BlobStoreInfo, SeqNum, FilterFun,
                                  LocationFile, start, MaxLocations)
     after
         _ = (catch BlobStore:close_location_info_file(LocationFile))
     end.
 
--spec find_and_copy_live_hunks(brickname(), mdstore(), blobstore(), tuple(), seqnum(),
+-spec find_and_copy_live_hunks(brickname(), mdstore(),
+                               blobstore(), tuple(), seqnum(), live_keys_filter_function(),
                                location_info_file(), continuation(), non_neg_integer()) -> ok | {error, term()}.
 find_and_copy_live_hunks(BrickName, MetadataStore,
-                         BlobStore, {BlobImplMod, BlobPid}=BlobStoreInfo, SeqNum,
+                         BlobStore, {BlobImplMod, BlobPid}=BlobStoreInfo, SeqNum, FilterFun,
                          LocationFile, Cont, MaxLocations) ->
     case BlobStore:read_location_info(LocationFile, Cont, MaxLocations) of
         {ok, NewCont, Locations} ->
             %% @TODO: Change this back to 3 when long-term log is implemented.
             %% AgeThreshold = 3,
             AgeThreshold = 200,
-            LiveHunkLocations = live_hunk_locations(MetadataStore, Locations),
+            LiveHunkLocations = live_hunk_locations(MetadataStore, Locations, FilterFun),
             StoreTuples = BlobImplMod:copy_hunks(BlobPid, BrickName, SeqNum,
                                                  LiveHunkLocations, AgeThreshold),
             _ = MetadataStore:update_blob_locations(StoreTuples),
             %% repeat
             find_and_copy_live_hunks(BrickName, MetadataStore,
-                                     BlobStore, BlobStoreInfo, SeqNum,
+                                     BlobStore, BlobStoreInfo, SeqNum, FilterFun,
                                      LocationFile, NewCont, MaxLocations);
         eof ->
             ok;
@@ -261,10 +270,11 @@ find_and_copy_live_hunks(BrickName, MetadataStore,
             Err
     end.
 
--spec live_hunk_locations(mdstore(), [location_info()]) -> [location_info()].
-live_hunk_locations(MetadataStore, Locations) ->
+-spec live_hunk_locations(mdstore(), [location_info()],
+                          live_keys_filter_function()) -> [location_info()].
+live_hunk_locations(MetadataStore, Locations, FilterFun) ->
     Keys = [ {Key, TS} || #l{key=Key, timestamp=TS} <- Locations ],
-    {ok, LiveKeys} = MetadataStore:live_keys(Keys),
+    {ok, LiveKeys} = MetadataStore:live_keys(Keys, FilterFun),
     LiveKeysSet = gb_sets:from_list(LiveKeys),
     [ Location || #l{key=Key, timestamp=TS}=Location <- Locations,
                   gb_sets:is_member({Key, TS}, LiveKeysSet) ].
@@ -274,41 +284,11 @@ live_hunk_locations(MetadataStore, Locations) ->
 %% Internal functions - tests and debug
 %% ====================================================================
 
-test1() ->
-    BrickName = bootstrap_copy1,
-    SeqNum = 1,
-    MaxLocations = 1000,
-    {ok, MetadataStore} = brick_metadata_store:get_metadata_store(BrickName),
-    {ok, BlobStore} = brick_blob_store:get_blob_store(BrickName),
-    {ok, LocationFile} = BlobStore:open_location_info_file_for_read(SeqNum),
-    try
-        test1_check_live_keys(MetadataStore, BlobStore, LocationFile, start, MaxLocations)
-    after
-        _ = (catch BlobStore:close_location_info_file(LocationFile))
-    end.
-
-test1_check_live_keys(MetadataStore, BlobStore, LocationFile, Cont, MaxLocations) ->
-    case BlobStore:read_location_info(LocationFile, Cont, MaxLocations) of
-        {ok, NewCont, Locations} ->
-            Keys = [ {Key, TS} || {_, _, _, Key, TS} <- Locations ],
-            {ok, LiveKeys} = MetadataStore:live_keys(Keys),
-            FormatKey = fun({Key, TS}) -> io:format("~p (~w)~n", [binary_to_term(Key), TS]) end,
-            io:format("Keys::::~n"),
-            lists:foreach(FormatKey, Keys),
-            io:format("LiveKeys::::~n"),
-            lists:foreach(FormatKey, LiveKeys),
-            test1_check_live_keys(MetadataStore, BlobStore, LocationFile, NewCont, MaxLocations);
-        eof ->
-            ok;
-        {error, _}=Err ->
-            Err
-    end.
-
-
-%% F = fun() -> lists:foreach(
-%%                fun({B, S, unknown}) ->
-%%                        io:format("~s (~w): unknown~n", [B, S]);
-%%                   ({B, S, R}) ->
-%%                        io:format("~s (~w): ~.2f%~n", [B, S, R * 100])
-%%                end, brick_blob_store_hlog_compaction:list_hlog_files())
+%% F = fun() ->
+%%             lists:foreach(
+%%               fun({B, S, unknown}) ->
+%%                       io:format("~s (~w): unknown~n", [B, S]);
+%%                  ({B, S, R}) ->
+%%                       io:format("~s (~w): ~.2f%~n", [B, S, R * 100])
+%%               end, brick_blob_store_hlog_compaction:list_hlog_files())
 %%     end.

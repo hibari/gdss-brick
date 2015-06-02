@@ -69,4 +69,6 @@
 
 -type callback_ticket() :: reference().
 
+-type live_keys_filter_function() :: fun((brick_ets:store_tuple()) -> boolean()).
+
 -endif. % -ifndef(brick_hlog_hrl).
