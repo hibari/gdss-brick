@@ -33,7 +33,8 @@
          request_group_commit/1,
          open_wal_for_read/1,
          get_all_seqnums/0,
-         get_current_seqnum_and_offset/0
+         get_current_seqnum_and_offset/0,
+         schedule_wal_deletion/2
         ]).
 
 %% gen_server callbacks
@@ -72,6 +73,7 @@
 -type hunk_iodata() :: iodata().
 
 -type count() :: non_neg_integer().
+-type byte_size() :: non_neg_integer().
 -type set(_A) :: term().
 
 %% -type commit_notification() :: {wal_sync, callback_ticket(), ok}
@@ -110,39 +112,66 @@ start_link(PropList) ->
 -spec write_hunk(hunk_iodata())
                 -> {ok, seqnum(), offset()} | {hunk_too_big, len()} | {error, term()}.
 write_hunk(HunkBytes) when is_binary(HunkBytes) ->
-    gen_server:call(wal_server(), {write_hunk, HunkBytes}, ?TIMEOUT);
+    gen_server:call(?WAL_SERVER_REG_NAME, {write_hunk, HunkBytes}, ?TIMEOUT);
 write_hunk(HunkBytes) when is_list(HunkBytes) ->
-    gen_server:call(wal_server(), {write_hunk, list_to_binary(HunkBytes)}, ?TIMEOUT).
+    gen_server:call(?WAL_SERVER_REG_NAME, {write_hunk, list_to_binary(HunkBytes)}, ?TIMEOUT).
 
 -spec write_hunk_group_commit(hunk_iodata(), pid())
                 -> {ok, seqnum(), offset(), callback_ticket()}
                        | {hunk_too_big, len()}
                        | {error, term()}.
 write_hunk_group_commit(HunkBytes, Caller) when is_binary(HunkBytes) ->
-    gen_server:call(wal_server(),
+    gen_server:call(?WAL_SERVER_REG_NAME,
                     {write_hunk_group_commit, HunkBytes, Caller}, ?TIMEOUT);
 write_hunk_group_commit(HunkBytes, Caller) when is_list(HunkBytes) ->
-    gen_server:call(wal_server(),
+    gen_server:call(?WAL_SERVER_REG_NAME,
                     {write_hunk_group_commit, list_to_binary(HunkBytes), Caller}, ?TIMEOUT).
 
 -spec request_group_commit(pid()) -> callback_ticket().
 request_group_commit(Requester) ->
-    gen_server:call(wal_server(), {request_group_commit, Requester}, ?TIMEOUT).
+    gen_server:call(?WAL_SERVER_REG_NAME, {request_group_commit, Requester}, ?TIMEOUT).
 
 -spec open_wal_for_read(seqnum()) -> {ok, file:fd()} | {error, term()} | not_available.
 open_wal_for_read(SeqNum) ->
-    Dir = gen_server:call(wal_server(), get_wal_dir, ?TIMEOUT),
+    Dir = gen_server:call(?WAL_SERVER_REG_NAME, get_wal_dir, ?TIMEOUT),
     do_open_wal_for_read(Dir, SeqNum).
 
 -spec get_all_seqnums() -> [seqnum()].
 get_all_seqnums() ->
-    Dir = gen_server:call(wal_server(), get_wal_dir, ?TIMEOUT),
+    Dir = gen_server:call(?WAL_SERVER_REG_NAME, get_wal_dir, ?TIMEOUT),
     HLogFiles = filelib:wildcard("*.hlog", Dir),
     [ list_to_integer(filename:basename(N, ".hlog")) || N <- lists:sort(HLogFiles) ].
 
 -spec get_current_seqnum_and_offset() -> {seqnum(), offset()}.
 get_current_seqnum_and_offset() ->
-    gen_server:call(wal_server(), get_current_seqnum_and_offset, ?TIMEOUT).
+    gen_server:call(?WAL_SERVER_REG_NAME, get_current_seqnum_and_offset, ?TIMEOUT).
+
+-spec schedule_wal_deletion(seqnum(), non_neg_integer()) -> pid() | ignore.
+schedule_wal_deletion(SeqNum, SleepTimeSec) ->
+    Dir = gen_server:call(?WAL_SERVER_REG_NAME, get_wal_dir, ?TIMEOUT),
+    case wal_info(Dir, SeqNum) of
+        {error, {Path, enoent}} ->
+            ?ELOG_INFO("Ignoring a deletion request for WAL with sequence ~w: ~s. "
+                       "The file does not exist.",
+                       [SeqNum, Path]),
+            ignore;
+        {ok, _, _} ->
+            %% @TODO: Register WAL to the deleting list
+            spawn(
+              fun() ->
+                      timer:sleep(SleepTimeSec * 1000),
+                      case delete_wal(Dir, SeqNum) of
+                          {ok, Path, Size} ->
+                              ?ELOG_INFO("Deleted WAL with sequence ~w: ~s (~w bytes)",
+                                         [SeqNum, Path, Size]),
+                              ok;
+                          {error, {Path, Reason}}=Err ->
+                              ?ELOG_ERROR("Error deleting WAL with sequence ~w ~s: (~p)",
+                                          [SeqNum, Path, Reason]),
+                              Err
+                      end
+              end)
+    end.
 
 
 %% ====================================================================
@@ -174,10 +203,10 @@ init(Options) ->
              end,
     {CurFH, CurPos} = create_wal(Dir, CurSeq),
 
-    ?E_INFO("The WAL server ~w started. current sequence: ~w, "
-            "minimum hunk count: ~w hunks, "
-            "minimum file length: ~w bytes, maximum file length: ~w bytes",
-            [?WAL_SERVER_REG_NAME, CurSeq, HunkCountMin, LenMin, LenMax]),
+    ?ELOG_INFO("The WAL server ~w started. current sequence: ~w, "
+               "minimum hunk count: ~w hunks, "
+               "minimum file length: ~w bytes, maximum file length: ~w bytes",
+               [?WAL_SERVER_REG_NAME, CurSeq, HunkCountMin, LenMin, LenMax]),
 
     {ok, #state{wal_dir=Dir,
                 file_len_max=LenMax,
@@ -295,9 +324,6 @@ code_change(_OldVsn, State, _Extra) ->
 %% Internal functions
 %% ====================================================================
 
-wal_server() ->
-    ?WAL_SERVER_REG_NAME.
-
 -spec do_write_hunk(hunk_bytes(), state())
                    -> {sync_in_progress | ok, seqnum(), offset(), state()}.
 do_write_hunk(HunkBytes, #state{write_backlog=Backlog, sync_proc=SyncProcess,
@@ -389,7 +415,7 @@ spawn_sync_wal(Ticket, ListenerList, Count, Dir, CurSeq) ->
                   %% This code block was copied from gmt_hlog.erl.
                   {ok, #file_info{size=Size}} = file:read_file_info(Path),
                   if Size =:= 0 ->
-                          ?E_ERROR("fsync ~s, size 0", [Path]);
+                          ?ELOG_ERROR("fsync ~s, size 0", [Path]);
                      true ->
                           ok
                   end,
@@ -445,6 +471,11 @@ cancel_sync_wal_timer(TimerRef) ->
     timer:cancel(TimerRef),
     ok.
 
+
+%% ====================================================================
+%% Internal functions - file
+%% ====================================================================
+
 -spec should_advance_seqnum(state()) -> boolean().
 should_advance_seqnum(#state{cur_pos=Position, file_len_max=MaxLen, file_len_min=MinLen,
                              cur_hunk_count=HunkCount, hunk_count_min=MinHunkCount}) ->
@@ -455,8 +486,8 @@ should_advance_seqnum(#state{cur_pos=Position, file_len_max=MaxLen, file_len_min
 do_advance_seqnum(Incr, #state{sync_proc=undefined, write_backlog=[],
                                wal_dir=Dir, cur_seq=CurSeq, cur_fh=CurFH,
                                cur_pos=Position, cur_hunk_count=HunkCount}=State) ->
-    ?E_INFO("Switching WAL from sequence ~w: ~s (~w hunks, ~w bytes written)",
-            [CurSeq, wal_path(Dir, CurSeq), HunkCount, Position]),
+    ?ELOG_INFO("Switching WAL from sequence ~w: ~s (~w hunks, ~w bytes written)",
+               [CurSeq, wal_path(Dir, CurSeq), HunkCount, Position]),
     close_wal(Dir, CurSeq, CurFH),
     NewSeq = CurSeq + Incr,
     {NewFH, NewPosition} = create_wal(Dir, NewSeq),
@@ -474,7 +505,7 @@ do_open_wal_for_read(Dir, SeqNum) when is_integer(SeqNum), SeqNum =/= 0 ->
         {error, enoent} ->
             not_available;
         Res ->
-            ?E_CRITICAL("Couldn't open log file ~s for read by ~w", [Path, Res]),
+            ?ELOG_CRITICAL("Couldn't open WAL ~s for read by ~w", [Path, Res]),
             Res
     end.
 
@@ -488,7 +519,7 @@ create_wal(Dir, SeqNum) when is_integer(SeqNum), SeqNum =/= 0 ->
     {ok, FH} = open_wal(Dir, SeqNum, [read, write, delayed_write]),
     try
         %% ok = write_log_header(FH),
-        ?E_INFO("Created WAL with sequence ~w: ~s", [SeqNum, Path]),
+        ?ELOG_INFO("Created WAL with sequence ~w: ~s", [SeqNum, Path]),
         {ok, FI} = file:read_file_info(Path),
         {FH, FI#file_info.size}
     catch
@@ -504,7 +535,7 @@ open_wal(Dir, SeqNum, Options) ->
         {ok, _}=Res ->
             Res;
         Res ->
-            ?E_CRITICAL("Couldn't open log file ~w ~s by ~w", [Options, Path, Res]),
+            ?ELOG_CRITICAL("Couldn't open WAL ~w ~s by ~w", [Options, Path, Res]),
             Res
     end.
 
@@ -520,39 +551,59 @@ close_wal(Dir, SeqNum, FH) ->
         end,
     try file:close(FH) of
         ok ->
-            ?E_INFO("Closed WAL with sequence ~w: ~s ~s",
-                    [SeqNum, Path, SizeStr]),
+            ?ELOG_INFO("Closed WAL with sequence ~w: ~s ~s",
+                       [SeqNum, Path, SizeStr]),
             ok;
         {error, Reason}=Err1 ->
-            ?E_ERROR("Failed to close WAL with sequence ~w: ~s (error ~p)",
-                     [SeqNum, Path, Reason]),
+            ?ELOG_ERROR("Failed to close WAL with sequence ~w: ~s (error ~p)",
+                        [SeqNum, Path, Reason]),
             Err1
     catch E0:E1 ->
-            ?E_ERROR("Failed to close WAL with sequence ~w: ~s (~p ~p)",
-                     [SeqNum, Path, E0, E1]),
+            ?ELOG_ERROR("Failed to close WAL with sequence ~w: ~s (~p ~p)",
+                        [SeqNum, Path, E0, E1]),
             {error, E1}
     end.
 
--spec wal_info(dirname(), seqnum()) -> {ok, filepath(), file:file_info()} | {error, atom()}.
-wal_info(Dir, N) ->
-    Path = wal_path(Dir, N),
+-spec delete_wal(dirname(), seqnum()) ->
+                        {ok, file:name(), FileSize::byte_size()}
+                            | {error, {file:name(), term()}}.
+delete_wal(Dir, SeqNum) ->
+    case wal_info(Dir, SeqNum) of
+        {ok, Path, #file_info{size=Size}} ->
+            case file:delete(Path) of
+                ok ->
+                    {ok, Path, Size};
+                {error, Err} ->
+                    {error, {Path, Err}}
+            end;
+        {error, _}=Err ->
+            Err
+    end.
+
+-spec wal_info(dirname(), seqnum()) -> {ok, file:name(), file:file_info()}
+                                           | {error, {file:name(), term()}}.
+wal_info(Dir, SeqNum) ->
+    Path = wal_path(Dir, SeqNum),
     case file:read_file_info(Path) of
         {ok, FI} ->
             {ok, Path, FI};
-        Res ->
-            Res
+        {error, Err} ->
+            {error, {Path, Err}}
     end.
 
--spec wal_path(dirname(), seqnum()) -> filepath().
+-spec wal_path(dirname(), seqnum()) -> file:name().
 wal_path(Dir, SeqNum) ->
     filename:join([Dir, seqnum2file(SeqNum)]).
 
 -spec seqnum2file(seqnum()) -> string().
 seqnum2file(SeqNum) ->
+    %% @TODO: Use io_lib:format("~12.12.0w", [SeqNum])
     lists:flatten([gmt_util:left_pad(integer_to_list(SeqNum), ?SEQNUM_DIGITS, $0), ".hlog"]).
 
 
-%% DEBUG STUFF (@TODO: eunit / quickcheck cases)
+%% ====================================================================
+%% Internal functions - DEBUG STUFF (@TODO: eunit / quickcheck cases)
+%% ====================================================================
 
 test1() ->
     Brick = table1_ch1_b1,

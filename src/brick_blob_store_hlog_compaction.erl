@@ -21,30 +21,46 @@
 %% Copy Phase - Copy live blob hunks from an old hlog to the current hlog file
 %%
 %% Brick with on-disk metadata DB
-%%  1. [compaction] Select an hlog file who has live hunk ratio
-%%  2. (later) [compaction] freeze the hlog file (prohibit metadata-only copy kv for this file)
+%%  1. [compaction] Select an hlog file who has a low live hunk ratio
+%%  2. (later) [compaction] freeze the hlog file (prohibit
+%%     metadata-only copy kv for this file)
 %%  3. (later) [brick] write an acknowledge record to the WAL
-%%  4. (later) [write-back] when find the acknowledge record, notify the compaction
-%%  5. [compaction] on each location info record, check if {key, timestamp} still exists
-%%  6. [compaction] if it exists, copy it to short-term or long-term hlog files depending on its age
-%%  7. [compaction] write metadata record with updated blob location to the WAL
+%%  4. (later) [write-back] when find the acknowledge record, notify
+%%     the compaction
+%%  5. [compaction] on each location info record, check if {key,
+%%     timestamp} still exists and also its storage-location is
+%%     pointing to the hlog file being compacted.
+%%  6. [compaction] if it exists, copy it to short-term or long-term
+%%     hlog files depending on its age
+%%  7. [compaction] write metadata record with updated blob location
+%%     to the WAL
 %%  8. [write-back] check if {key, timestamp} still exists
-%%  9. [write-back] if it exists, write the new metadata with the updated blob location
-%% 10. [compaction] when finish processing the hlog file, write delete hlog file command to the WAL
-%% 11. [write-back] when find the delete hlog file command, notify the blob store server
+%%  9. [write-back] if it exists, write the new metadata with the
+%%     updated blob location
+%% 10. [compaction] when finish processing the hlog file, write delete
+%%     hlog file command to the WAL
+%% 11. [write-back] when find the delete hlog file command, notify the
+%%     blob store server
 %% 12. [blob store] delete the hlog file
 %%
 %% Brick with in-memory metadata DB (brick_ets)
-%%  1. [compaction] Select an hlog file who has live hunk ratio
-%%  2. (later) [compaction] freeze the hlog file (prohibit metadata-only copy kv for this file)
+%%  1. [compaction] Select an hlog file who has a low live hunk ratio
+%%  2. (later) [compaction] freeze the hlog file (prohibit
+%%     metadata-only copy kv for this file)
 %%  3. (later) [brick] write an acknowledge record to the WAL
-%%  4. (later) [write-back] when find the acknowledge record, notify the compaction
-%%  5. [compaction] on each location info record, check if {key, timestamp} still exists
-%%  6. [compaction] if it exists, copy it to short-term or long-term hlog files depending on its age
+%%  4. (later) [write-back] when find the acknowledge record, notify
+%%     the compaction
+%%  5. [compaction] on each location info record, check if {key,
+%%     timestamp} still exists and also its storage-location is
+%%     pointing to the hlog file being compacted.
+%%  6. [compaction] if it exists, copy it to short-term or long-term
+%%     hlog files depending on its age
 %%  7. [compaction] notify brick_ets with updated blob location
 %%  8. [brick_ets] check if {key, timestamp} still exists
-%%  9. [brick_ets] if it exists, write the new metadata with the updated blob location
-%% 10. [compaction] when finish processing the hlog file, notify the blob store server
+%%  9. [brick_ets] if it exists, write the new metadata with the
+%%     updated blob location
+%% 10. [compaction] when finish processing the hlog file, notify the
+%%     blob store server
 %% 11. [blob store] delete the hlog file
 
 
@@ -58,12 +74,13 @@
 -include("brick_specs.hrl").
 -include("brick_hlog.hrl").
 -include("brick_blob_store_hlog.hrl").
-%% -include("brick.hrl").      % for ?E_ macros
+-include("brick.hrl").      % for ?E_ macros
 
 %% API
 -export([start_link/1,
          stop/0,
-         list_hlog_files/0,
+         show_hlog_files/0,  %% temporary API
+         list_hlog_files/0,  %% temporary API
          estimate_live_hunk_ratio/2,
          compact_hlog_file/2
         ]).
@@ -82,8 +99,9 @@
 %% types, specs and records
 %% ====================================================================
 
--type mdstore() :: tuple().
--type blobstore() :: tuple().
+-type mdstore() :: term().
+-type blobstore() :: term().
+-type blobstore_impl_info() :: {module(), pid()}.
 
 -type prop() :: {atom(), term()}.
 
@@ -105,6 +123,16 @@ start_link(PropList) ->
 -spec stop() -> ok | {error, term()}.
 stop() ->
     gen_server:call(?COMPACTION_SERVER_REG_NAME, stop).
+
+%% @TODO: This is a temporary API
+-spec show_hlog_files() -> ok.
+show_hlog_files() ->
+    lists:foreach(
+      fun({B, S, unknown}) ->
+              io:format("~s (~w): unknown~n", [B, S]);
+         ({B, S, R}) ->
+              io:format("~s (~w): ~.2f%~n", [B, S, R * 100])
+      end, brick_blob_store_hlog_compaction:list_hlog_files()).
 
 %% @TODO: This is a temporary API
 -spec list_hlog_files() -> [{brickname(), seqnum(), LiveHunkRatio::float()}].
@@ -134,9 +162,44 @@ list_hlog_files() ->
 estimate_live_hunk_ratio(BrickName, SeqNum) ->
     do_estimate_live_hunk_ratio(BrickName, SeqNum).
 
--spec compact_hlog_file(brickname(), seqnum()) -> ok | {error, term()}.
+-spec compact_hlog_file(brickname(), seqnum()) -> ok | ignore | {error, term()}.
 compact_hlog_file(BrickName, SeqNum) ->
-    do_compact_hlog_file(BrickName, SeqNum).
+    {ok, BlobStore} = ?BLOB:get_blob_store(BrickName),
+    {BlobImplMod, BlobImplPid}=BlobStoreInfo = BlobStore:get_impl_info(),
+    case BlobImplMod:current_writeback_seqnum(BlobImplPid, BrickName) of
+        WBSeqNum when SeqNum >= WBSeqNum ->
+            ?ELOG_INFO("Ignoring a compaction request for brick private blob file "
+                       "~w with sequence ~w. The file might be still opened for write.",
+                       [BrickName, SeqNum]),
+            ignore;
+        WBSeqNum when SeqNum < WBSeqNum ->
+            case BlobImplMod:get_blob_file_info(BlobImplPid, BrickName, SeqNum) of
+                {ok, _Path, #file_info{size=Size}} ->
+                    case do_compact_hlog_file(BrickName, BlobStore, BlobStoreInfo, SeqNum) of
+                        ok ->
+                            %% @TODO: Enhance this check. Maybe send a signal to blob store
+                            %% to tell the seqnum is being compactied.
+                            case BlobImplMod:get_blob_file_info(BlobImplPid, BrickName, SeqNum) of
+                                {ok, _Path, #file_info{size=Size}} -> %% Size is a bound variable
+                                    SleepTimeSec = 30,  %% @TODO: Use the configuration value
+                                    _Pid = BlobImplMod:schedule_blob_file_deletion(
+                                             BlobImplPid, BrickName, SeqNum, SleepTimeSec),
+                                    ok;
+                                {ok, _Path, #file_info{size=NewSize}} ->
+                                    ?ELOG_NOTICE("Brick private blob file ~w with sequence ~w "
+                                                 "might be still opened for write. "
+                                                 "Not deleting for now. "
+                                                 "(old size: ~w, new size: ~w)",
+                                                 [BrickName, SeqNum, Size, NewSize]),
+                                    skip
+                            end;
+                        {error, _}=Err ->
+                            Err
+                    end;
+                {error, _}=Err ->
+                    Err
+            end
+    end.
 
 
 %% ====================================================================
@@ -177,22 +240,22 @@ do_estimate_live_hunk_ratio(BrickName, SeqNum) ->
     case BlobImplMod:open_key_sample_file_for_read(BlobPid, BrickName, SeqNum) of
         {ok, KeySampleFile} ->
             FilterFun = BlobImplMod:live_keys_filter_fun(SeqNum),
-            try
-                {ok, SampleCount, LiveCount} =
-                    count_live_hunks(BrickName, MetadataStore,
-                                     BlobStoreInfo, FilterFun,
-                                     KeySampleFile, start, MaxKeys,
-                                     0, 0),
-                if
-                    SampleCount =:= 0 ->
-                        unknown;
-                    true ->
-                        {ok, LiveCount / SampleCount}
-                end
+            try count_live_hunks(BrickName, MetadataStore,
+                                 BlobStoreInfo, FilterFun,
+                                 KeySampleFile, start, MaxKeys,
+                                 0, 0) of
+                 {ok, 0, 0} ->
+                    %% There are no key samples yet.
+                    unknown;
+                 {ok, SampleCount, LiveCount} ->
+                    %% @TODO: Return unknown when SampleCount is too small (e.g. < 10).
+                    %% In such a condition, the ratio will get very low accuracy.
+                    {ok, LiveCount / SampleCount}
             after
                 _ = (catch BlobImplMod:close_key_sample_file(BlobPid, BrickName, KeySampleFile))
             end;
         {error, {file_error, _FileName, enoent}} ->
+            %% Key sample file is not created yet.
             unknown;
         Err ->
             Err
@@ -200,7 +263,7 @@ do_estimate_live_hunk_ratio(BrickName, SeqNum) ->
 
 %% @TODO: Add throttle
 -spec count_live_hunks(brickname(), mdstore(),
-                       tuple(), live_keys_filter_function(),
+                       blobstore_impl_info(), live_keys_filter_function(),
                        key_sample_file(), continuation(), non_neg_integer(),
                        non_neg_integer(), non_neg_integer()) ->
                               {ok,
@@ -226,16 +289,12 @@ count_live_hunks(BrickName, MetadataStore,
     end.
 
 %% @TODO: Add throttle
--spec do_compact_hlog_file(brickname(), seqnum()) -> ok | {error, term()}.
-do_compact_hlog_file(BrickName, SeqNum) ->
+-spec do_compact_hlog_file(brickname(), blobstore(),
+                           blobstore_impl_info(), seqnum()) -> ok | {error, term()}.
+do_compact_hlog_file(BrickName, BlobStore, {BlobImplMod, _}=BlobStoreInfo, SeqNum) ->
     MaxLocations = 1000,
     {ok, MetadataStore} = ?METADATA:get_metadata_store(BrickName),
-    {ok, BlobStore} = ?BLOB:get_blob_store(BrickName),
-
-    %% @TODO: Ensure that the SeqNum is not opened for write.
-
     {ok, LocationFile} = BlobStore:open_location_info_file_for_read(SeqNum),
-    {BlobImplMod, _}=BlobStoreInfo = BlobStore:get_impl_info(),
     FilterFun = BlobImplMod:live_keys_filter_fun(SeqNum),
     try
         find_and_copy_live_hunks(BrickName, MetadataStore,
@@ -246,11 +305,15 @@ do_compact_hlog_file(BrickName, SeqNum) ->
     end.
 
 -spec find_and_copy_live_hunks(brickname(), mdstore(),
-                               blobstore(), tuple(), seqnum(), live_keys_filter_function(),
-                               location_info_file(), continuation(), non_neg_integer()) -> ok | {error, term()}.
+                               blobstore(), blobstore_impl_info(),
+                               seqnum(), live_keys_filter_function(),
+                               location_info_file(), continuation(),
+                               non_neg_integer()) -> ok | {error, term()}.
 find_and_copy_live_hunks(BrickName, MetadataStore,
-                         BlobStore, {BlobImplMod, BlobPid}=BlobStoreInfo, SeqNum, FilterFun,
-                         LocationFile, Cont, MaxLocations) ->
+                         BlobStore, {BlobImplMod, BlobPid}=BlobStoreInfo,
+                         SeqNum, FilterFun,
+                         LocationFile, Cont,
+                         MaxLocations) ->
     case BlobStore:read_location_info(LocationFile, Cont, MaxLocations) of
         {ok, NewCont, Locations} ->
             %% @TODO: Change this back to 3 when long-term log is implemented.
@@ -284,11 +347,3 @@ live_hunk_locations(MetadataStore, Locations, FilterFun) ->
 %% Internal functions - tests and debug
 %% ====================================================================
 
-%% F = fun() ->
-%%             lists:foreach(
-%%               fun({B, S, unknown}) ->
-%%                       io:format("~s (~w): unknown~n", [B, S]);
-%%                  ({B, S, R}) ->
-%%                       io:format("~s (~w): ~.2f%~n", [B, S, R * 100])
-%%               end, brick_blob_store_hlog_compaction:list_hlog_files())
-%%     end.

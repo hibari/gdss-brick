@@ -185,6 +185,7 @@ handle_call({get_or_start_metadata_store_impl, BrickName}, _From,
             {reply, Res, State};
         error ->
             Options = [],
+            %% @TODO: Manage this process under the supervisor tree
             case ImplMod:start_link(BrickName, Options) of
                 {ok, Pid} ->
                     Impl = #?MODULE{

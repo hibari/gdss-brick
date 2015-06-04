@@ -82,9 +82,9 @@
 %% API
 %% ====================================================================
 
--spec start_link(brickname(), [term()])
-                -> {ok, pid()} | ignore | {error, term()}.
-start_link(BrickName, Options) ->
+-spec start_link(brickname(), [term()]) -> {ok, pid()} | ignore | {error, term()}.
+start_link(BrickName, Options) when is_atom(BrickName) ->
+    %% @TODO: Check if brick server with the BrickName exists
     RegName = reg_name(BrickName),
     case gen_server:start_link({local, RegName}, ?MODULE, [BrickName, Options], []) of
         {ok, _Pid}=Res ->
@@ -92,7 +92,9 @@ start_link(BrickName, Options) ->
             Res;
         ErrorOrIgnore ->
             ErrorOrIgnore
-    end.
+    end;
+start_link(BrickName, _Options) ->
+    {error, {brick_name_is_not_atom, BrickName}}.
 
 -spec stop(pid()) -> ok | {error, term()}.
 stop(Pid) ->

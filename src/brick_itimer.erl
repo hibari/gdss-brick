@@ -20,10 +20,10 @@
 %% @doc To replace the use of timer:send_interval().
 %%
 %% The OTP timer server doesn't scale to many hundreds of timers in the
-%% send_interval style, which GDSS uses extensively.
+%% send_interval style, which Hibari uses extensively.
 %%
-%% Using 1/2 the tables of the NTT-R app, with 54 chains of length 3 each,
-%% the timer servier is an obvious bottleneck, roughly 1.5 orders of magnitude
+%% Using 1/2 the tables of our test environment, with 54 chains of length 3 each,
+%% the timer server is an obvious bottleneck, roughly 1.5 orders of magnitude
 %% more reductions than the next process.
 %%
 

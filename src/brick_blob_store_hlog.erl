@@ -45,11 +45,14 @@
 
 %% brick_blob_store_hlog only API
 -export([list_seqnums/2,
+         current_writeback_seqnum/2,
          open_key_sample_file_for_read/3,
          read_key_samples/5,
          close_key_sample_file/3,
          copy_hunks/5,
-         live_keys_filter_fun/1
+         live_keys_filter_fun/1,
+         get_blob_file_info/3,
+         schedule_blob_file_deletion/4
         ]).
 
 %% gen_server callbacks
@@ -136,7 +139,9 @@
 %% 21
 %%
 
+-type prop() :: {atom(), term()}.
 -type count() :: non_neg_integer().
+-type byte_size() :: non_neg_integer().
 
 -type storage_location_hlog() :: private_hlog() | wal() | no_blob.
 
@@ -173,10 +178,13 @@
 %% API
 %% ====================================================================
 
-%% -spec start_link() ->
-start_link(BrickName, Options) ->
+-spec start_link(brickname(), [prop()]) -> {ok,pid()} | ignore | {error,term()}.
+start_link(BrickName, Options) when is_atom(BrickName) ->
+    %% @TODO: Check if brick server with the BrickName exists
     RegName = list_to_atom(atom_to_list(BrickName) ++ "_blob_store"),
-    gen_server:start_link({local, RegName}, ?MODULE, [BrickName, Options], []).
+    gen_server:start_link({local, RegName}, ?MODULE, [BrickName, Options], []);
+start_link(BrickName, _Options) ->
+    {error, {brick_name_is_not_atom, BrickName}}.
 
 -spec read_value(brickname(), storage_location_hlog()) ->
                         {ok, val()} | eof | {error, term()}.
@@ -195,7 +203,7 @@ read_value(BrickName,
         {error, _}=Err ->
             Err;
         not_available ->
-            case open_private_log_for_read(BrickName, PrivateSeqNum) of
+            case open_log_for_read(BrickName, PrivateSeqNum) of
                 {ok, FH} ->
                     %% ?E_DBG("Private log opened for read. SeqNum: ~w, FH: ~p", [PrivateSeqNum, FH]),
                     try
@@ -210,7 +218,7 @@ read_value(BrickName,
 read_value(BrickName,
            #p{seqnum=SeqNum, hunk_pos=HunkPos,
               val_offset=ValOffset, val_len=ValLen}) ->
-    case open_private_log_for_read(BrickName, SeqNum) of
+    case open_log_for_read(BrickName, SeqNum) of
         {ok, FH} ->
             try
                 ?HUNK:read_blob_directly(FH, HunkPos, ValOffset, ValLen)
@@ -245,7 +253,7 @@ write_location_info(_Pid, BrickName, Locations) ->
     Result =
         lists:foldl(
           fun({SeqNum, LocationsForSeqNum}, {SC1, undefined}) ->
-                  case open_private_location_files_for_write(BrickName, SeqNum) of
+                  case open_location_files_for_write(BrickName, SeqNum) of
                       {ok, LocationFile, KeySampleFile} ->
                           KeySamples = key_samples(LocationsForSeqNum, ?SAMPLING_RATE),
                           try disk_log:log_terms(KeySampleFile, KeySamples) of
@@ -279,7 +287,7 @@ write_location_info(_Pid, BrickName, Locations) ->
 -spec open_location_info_file_for_read(pid(), brickname(), seqnum()) ->
                                               {ok, location_info_file()} | {err, term()}.
 open_location_info_file_for_read(_Pid, BrickName, SeqNum) ->
-    open_private_location_file_for_read(BrickName, SeqNum).
+    open_location_file_for_read(BrickName, SeqNum).
 
 -spec read_location_info(pid(), brickname(), location_info_file(),
                          'start' | continuation(), non_neg_integer()) ->
@@ -317,10 +325,14 @@ list_seqnums(_Pid, BrickName) ->
     %% Not sure if wildcard/2 will always sort the paths. So sort them here.
     lists:sort(SeqNums).
 
+-spec current_writeback_seqnum(pid(), brickname()) -> seqnum().
+current_writeback_seqnum(Pid, _BrickName) ->
+    gen_server:call(Pid, current_writeback_seqnum, ?TIMEOUT).
+
 -spec open_key_sample_file_for_read(pid(), brickname(), seqnum()) ->
-                                              {ok, key_sample_file()} | {err, term()}.
+                                           {ok, key_sample_file()} | {err, term()}.
 open_key_sample_file_for_read(_Pid, BrickName, SeqNum) ->
-    open_private_key_sample_file_for_read(BrickName, SeqNum).
+    do_open_key_sample_file_for_read(BrickName, SeqNum).
 
 -spec read_key_samples(pid(), brickname(), key_sample_file(),
                        'start' | continuation(), non_neg_integer()) ->
@@ -345,14 +357,16 @@ close_key_sample_file(_Pid, _BrickName, DiskLog) ->
 
 -spec copy_hunks(pid(), brickname(), seqnum(), [location_info()], blob_age()) -> [brick_ets:store_tuple()].
 copy_hunks(Pid, BrickName, SeqNum, Locations, AgeThreshold) ->
-    {ok, SourceHLog} = open_private_log_for_read(BrickName, SeqNum),
+    {ok, SourceHLog} = open_log_for_read(BrickName, SeqNum),
     try
         %% @TODO Read only certain bytes (e.g. 20MB)
-        {ok, HunksAndLocations} = read_hunks(SourceHLog, Locations),
-        {YoungHunksAndLocations, _OldHunksAndLocations} = group_hunks(HunksAndLocations, AgeThreshold),
-        StoreTuples1 = write_hunks(Pid, BrickName, short_term, YoungHunksAndLocations, []),
-        %% write_hunks(Pid, BrickName, long_term, OldHunksAndLocations, StoreTuples1)
-        StoreTuples1   %% @TODO: DELETEME
+        {ok, HunksAndLocs} = read_hunks(SourceHLog, Locations),
+        %% group_hunks/2 also updates blob age in hunks.
+        {YoungHunksAndLocs, _OldHunksAndLocs} = group_hunks(HunksAndLocs, AgeThreshold),
+        StoreTuples1 = write_hunks(Pid, BrickName, short_term, YoungHunksAndLocs, []),
+        %% @TODO: Enable long-term hlog files
+        %% write_hunks(Pid, BrickName, long_term, OldHunksAndLocs, StoreTuples1)
+        StoreTuples1
     after
         _ = (catch file:close(SourceHLog))
     end.
@@ -365,6 +379,69 @@ live_keys_filter_fun(SeqNum) ->
                 #w{private_seqnum=SeqNum} -> true;
                 _                         -> false
             end
+    end.
+
+-spec get_blob_file_info(pid(), brickname(), seqnum()) ->
+                                {ok, file:name(), file:file_info()}
+                                    | {error, {file:name(), term()}}.
+get_blob_file_info(_Pid, BrickName, SeqNum) ->
+    Path = blob_path(BrickName, blob_dir(BrickName), SeqNum),
+    case file:read_file_info(Path) of
+        {ok, FI} ->
+            {ok, Path, FI};
+        {error, Err} ->
+            {error, {Path, Err}}
+    end.
+
+-spec schedule_blob_file_deletion(pid(), brickname(), seqnum(), non_neg_integer()) -> pid() | ignore.
+schedule_blob_file_deletion(_Pid, BrickName, SeqNum, SleepTimeSec) ->
+    Path = blob_path(BrickName, blob_dir(BrickName), SeqNum),
+    case file:read_file_info(Path) of
+        {error, enoent} ->
+            ?ELOG_INFO("Ignoring a deletion request for brick private log with sequence ~w: ~s. "
+                       "The file does not exist.",
+                       [SeqNum, Path]),
+            ignore;
+        {ok, _} ->
+            %% @TODO: Register seqnum to the deleting list
+            spawn(
+              fun() ->
+                      timer:sleep(SleepTimeSec * 1000),
+                      Result =
+                          case delete_blob_file(BrickName, SeqNum) of
+                              {ok, Path, Size}=OkRes ->
+                                  ?ELOG_INFO("Deleted brick private log "
+                                             "with sequence ~w: ~s (~w bytes)",
+                                             [SeqNum, Path, Size]),
+                                  OkRes;
+                              {error, {Path, Err1}}=ErrRes ->
+                                  ?ELOG_ERROR("Error deleting brick private log "
+                                              "with sequence ~w: ~s (~p)",
+                                              [SeqNum, Path, Err1]),
+                                  ErrRes
+                      end,
+                      BlobDir = blob_dir(BrickName),
+                      {LPath, SPath} = blob_location_and_key_sample_paths(BrickName, BlobDir, SeqNum),
+                      case file:delete(LPath) of
+                          ok ->
+                              ok;
+                          {error, enoent} ->
+                              ok;
+                          {error, _}=Err2 ->
+                              ?ELOG_ERROR("Error deleting blob location file ~w: ~s (~p)",
+                                          [SeqNum, LPath, Err2])
+                      end,
+                      case file:delete(SPath) of
+                          ok ->
+                              ok;
+                          {error, enoent} ->
+                              ok;
+                          {error, _}=Err3 ->
+                              ?ELOG_ERROR("Error deleting key sample file ~w: ~s (~p)",
+                                          [SeqNum, SPath, Err3])
+                      end,
+                      Result
+              end)
     end.
 
 -spec sync(pid()) -> ok.
@@ -397,7 +474,7 @@ init([BrickName, Options]) ->
                  SeqNums ->
                      lists:max(SeqNums) + 1
              end,
-    Position = create_private_log(BrickName, CurSeq),
+    Position = create_log(BrickName, CurSeq),
     {ok, #state{brick_name=BrickName,
                 file_len_max=LenMax,
                 file_len_min=LenMin,
@@ -447,6 +524,9 @@ handle_call({write_value, Value}, _From, #state{brick_name=BrickName}=State)
 handle_call({reserve_positions, LogType, Hunks}, _From, State) ->
     {Positions, State1} = lists:foldl(reserve_position_fun(LogType), {[], State}, Hunks),
     {reply, lists:reverse(Positions), State1};
+handle_call(current_writeback_seqnum, _From, #state{head_seqnum=SeqNum}=State) ->
+    %% @TODO: This is a quick inacculate implementation
+    {reply, max(0, SeqNum - 1), State};
 handle_call(_, _From, State) ->
     {reply, ok, State}.
 
@@ -519,7 +599,7 @@ writeback_values(_BrickName, [], FH, CurrentWBSeqNum, CurrentWBPos, SuccessCount
 writeback_values(BrickName, [#hunk{flags=Flags, blobs=[Value, LocationBin]} | WALEntries],
                  FH, CurrentWBSeqNum, CurrentWBPos, SuccessCount) ->
     {WBSeqNum, WBPos} = binary_to_term(LocationBin),
-    case get_private_log_for_writeback(BrickName, FH, WBSeqNum, CurrentWBSeqNum) of
+    case get_log_for_writeback(BrickName, FH, WBSeqNum, CurrentWBSeqNum) of
         {error, Err1} ->
             {error, {Err1, WBSeqNum, WBPos, SuccessCount}};
         {ok, FH1} ->
@@ -533,7 +613,7 @@ writeback_values(BrickName, [#hunk{flags=Flags, blobs=[Value, LocationBin]} | WA
                           WBPos
                   end,
 
-            try write_value_to_private_log(FH1, Pos, list_to_binary(HunkIOList)) of
+            try write_value_to_log(FH1, Pos, list_to_binary(HunkIOList)) of
                 ok ->
                     %% repeat
                     writeback_values(BrickName, WALEntries, FH1,
@@ -548,19 +628,19 @@ writeback_values(BrickName, [#hunk{flags=Flags, blobs=[Value, LocationBin]} | WA
             end
     end.
 
--spec get_private_log_for_writeback(brickname(), file:fd() | undefined, seqnum(), seqnum()) ->
+-spec get_log_for_writeback(brickname(), file:fd() | undefined, seqnum(), seqnum()) ->
                                            {ok, file:fd()} | {error, term()}.
-get_private_log_for_writeback(_BrickName, FH, SeqNum, SeqNum) when FH =/= undefined ->
+get_log_for_writeback(_BrickName, FH, SeqNum, SeqNum) when FH =/= undefined ->
     {ok, FH};
-get_private_log_for_writeback(BrickName, undefined, SeqNum, _CurrentWBSeqNum) ->
-    open_private_log_for_write(BrickName, SeqNum);
-get_private_log_for_writeback(BrickName, FH, SeqNum, _CurrentWBSeqNum) ->
+get_log_for_writeback(BrickName, undefined, SeqNum, _CurrentWBSeqNum) ->
+    open_log_for_write(BrickName, SeqNum);
+get_log_for_writeback(BrickName, FH, SeqNum, _CurrentWBSeqNum) ->
     _ = (catch file:close(FH)),
-    open_private_log_for_write(BrickName, SeqNum).
+    open_log_for_write(BrickName, SeqNum).
 
-write_value_to_private_log(FH, undefined, HunkBytes) ->
+write_value_to_log(FH, undefined, HunkBytes) ->
     file:write(FH, HunkBytes);
-write_value_to_private_log(FH, WBPos, HunkBytes) ->
+write_value_to_log(FH, WBPos, HunkBytes) ->
     case file:position(FH, WBPos) of
         {ok, WBPos} ->
             file:write(FH, HunkBytes);
@@ -630,11 +710,13 @@ read_hunks(FH, Locations) ->
           end, Locations),
     {ok, HunksAndLocations}.
 
+%% @doc This also updates blob age in hunks.
 -spec group_hunks([{hunk(), location_info()}], blob_age()) ->
                          {Young::[{hunk(), location_info()}],
                           Old::  [{hunk(), location_info()}]}.
 group_hunks(HunksAndLocations, AgeThreshold) ->
     %% @TODO: Move this to hlog_hunk module and implement in-place age update.
+    %% @TODO: Check age overflow. (age is 8-bit, unsigned integer)
     %% @TODO: Support blob_multi (e.g. new function hlog_hunk:merge/unmerge_hunks)
     HunksAndLocations1 =
         lists:map(fun({#hunk{type=blob_single, blob_ages=[Age]}=Hunk, Location}) ->
@@ -655,8 +737,8 @@ write_hunks(Pid, BrickName, HLogType, HunksAndLocations, AppendTo) ->
                #p{seqnum=SeqNum, hunk_pos=Position}=StoreLoc},
               {StoreTuples0, FH0, CurSeqNum}) ->
                   {HunkIOList, _, _, _} = ?HUNK:create_hunk_iolist(Hunk),
-                  {ok, FH1} = get_private_log_for_writeback(BrickName, FH0, SeqNum, CurSeqNum),
-                  ok = write_value_to_private_log(FH1, Position, list_to_binary(HunkIOList)),
+                  {ok, FH1} = get_log_for_writeback(BrickName, FH0, SeqNum, CurSeqNum),
+                  ok = write_value_to_log(FH1, Position, list_to_binary(HunkIOList)),
                   StoreTuple = brick_ets:storetuple_make(Key, TS, StoreLoc, ValLen, 0, []),
                   %% ?ELOG_DEBUG("~n~s", [storetuple_to_display_iolist(StoreTuple)]),
                   {[StoreTuple | StoreTuples0], FH1, SeqNum}
@@ -700,21 +782,21 @@ should_advance_seqnum(#state{head_position=Position, file_len_max=MaxLen, file_l
 -spec do_advance_seqnum(non_neg_integer(), state()) -> state().
 do_advance_seqnum(Incr, #state{brick_name=BrickName, head_seqnum=SeqNum}=State) ->
     NewSeqNum = SeqNum + Incr,
-    NewPosition = create_private_log(BrickName, NewSeqNum),
+    NewPosition = create_log(BrickName, NewSeqNum),
     State#state{head_seqnum=NewSeqNum, head_position=NewPosition,
                 head_seqnum_hunk_count=0, head_seqnum_hunk_overhead=0}.
 
 %% @TODO: Better error handling
--spec create_private_log(brickname(), seqnum()) -> offset().
-create_private_log(BrickName, SeqNum) ->
+-spec create_log(brickname(), seqnum()) -> offset().
+create_log(BrickName, SeqNum) ->
     Path = blob_path(BrickName, blob_dir(BrickName), SeqNum),
     {error, enoent} = file:read_file_info(Path),  %% sanity
-    case open_private_log_for_write(BrickName, SeqNum) of
+    case open_log_for_write(BrickName, SeqNum) of
         {ok, FH} ->
             _ = (catch file:close(FH)),
             try
                 %% ok = write_log_header(FH),
-                ?E_INFO("Created brick private log with sequence ~w: ~s", [SeqNum, Path]),
+                ?ELOG_INFO("Created brick private log with sequence ~w: ~s", [SeqNum, Path]),
                 {ok, FI} = file:read_file_info(Path),
                 FI#file_info.size
             catch
@@ -725,19 +807,20 @@ create_private_log(BrickName, SeqNum) ->
             error(Err)
     end.
 
--spec open_private_log_for_read(brickname(), seqnum()) -> {ok, file:fd()} | {error, term()}.
-open_private_log_for_read(BrickName, SeqNum) ->
+-spec open_log_for_read(brickname(), seqnum()) -> {ok, file:fd()} | {error, term()}.
+open_log_for_read(BrickName, SeqNum) ->
     Path = blob_path(BrickName, blob_dir(BrickName), SeqNum),
     case file:open(Path, [binary, raw, read, read_ahead]) of
         {ok, _}=Res ->
             Res;
         Res ->
-            ?E_CRITICAL("Couldn't open blob file [read] ~s by ~w", [Path, Res]),
+            ?ELOG_CRITICAL("Couldn't open brick private blob file [read] ~s by ~w",
+                           [Path, Res]),
             Res
     end.
 
--spec open_private_log_for_write(brickname(), seqnum()) -> {ok, file:fd()} | {error, term()}.
-open_private_log_for_write(BrickName, SeqNum) ->
+-spec open_log_for_write(brickname(), seqnum()) -> {ok, file:fd()} | {error, term()}.
+open_log_for_write(BrickName, SeqNum) ->
     BlobDir = blob_dir(BrickName),
     Path = blob_path(BrickName, BlobDir, SeqNum),
     %% 'read' option is required otherwise the file will be truncated.
@@ -747,39 +830,58 @@ open_private_log_for_write(BrickName, SeqNum) ->
         {error, enoent}=Err ->
             case filelib:is_dir(BlobDir) of
                 true ->
-                    ?E_CRITICAL("Couldn't open blob file [write] ~s by ~w", [Path, Err]),
+                    ?ELOG_CRITICAL("Couldn't open brick private blob file [write] ~s by ~w",
+                                   [Path, Err]),
                     Err;
                 false ->
                     filelib:ensure_dir(BlobDir),
                     file:make_dir(BlobDir),
                     %% @TODO: Add retry count to avoid an infinite loop.
                     %% retry
-                    open_private_log_for_write(BrickName, SeqNum)
+                    open_log_for_write(BrickName, SeqNum)
             end;
         {error, _}=Err ->
             Err
     end.
 
--spec open_private_location_file_for_read(brickname(), seqnum()) ->
-                                                 {ok, disk_log:log()} | {error, term()}.
-open_private_location_file_for_read(BrickName, SeqNum) ->
+-spec delete_blob_file(brickname(), seqnum()) ->
+                              {ok, file:name(), FileSize::byte_size()}
+                                  | {error, {file:name(), term()}}.
+delete_blob_file(BrickName, SeqNum) ->
+    BlobDir = blob_dir(BrickName),
+    Path = blob_path(BrickName, BlobDir, SeqNum),
+    case file:read_file_info(Path) of
+        {ok, #file_info{size=Size}} ->
+            case file:delete(Path) of
+                ok ->
+                    {ok, Path, Size};
+                {error, Err} ->
+                    {error, {Path, Err}}
+            end;
+        {error, Err} ->
+            {error, {Path, Err}}
+    end.
+
+-spec open_location_file_for_read(brickname(), seqnum()) ->
+                                         {ok, disk_log:log()} | {error, term()}.
+open_location_file_for_read(BrickName, SeqNum) ->
     BlobDir = blob_dir(BrickName),
     Path = blob_location_file_path(BrickName, BlobDir, SeqNum),
     disk_log:open([{name, Path}, {file, Path}, {mode, read_only}]).
 
--spec open_private_key_sample_file_for_read(brickname(), seqnum()) ->
-                                                   {ok, disk_log:log()} | {error, term()}.
-open_private_key_sample_file_for_read(BrickName, SeqNum) ->
+-spec do_open_key_sample_file_for_read(brickname(), seqnum()) ->
+                                              {ok, disk_log:log()} | {error, term()}.
+do_open_key_sample_file_for_read(BrickName, SeqNum) ->
     BlobDir = blob_dir(BrickName),
     Path = blob_key_sample_file_path(BrickName, BlobDir, SeqNum),
     disk_log:open([{name, Path}, {file, Path}, {mode, read_only}]).
 
--spec open_private_location_files_for_write(brickname(), seqnum()) ->
-                                                   {ok,
-                                                    LocationInfoFile::disk_log:log(),
-                                                    KeySampleFile::disk_log:log()}
-                                                       | {error, term()}.
-open_private_location_files_for_write(BrickName, SeqNum) ->
+-spec open_location_files_for_write(brickname(), seqnum()) ->
+                                           {ok,
+                                            LocationInfoFile::disk_log:log(),
+                                            KeySampleFile::disk_log:log()}
+                                               | {error, term()}.
+open_location_files_for_write(BrickName, SeqNum) ->
     BlobDir = blob_dir(BrickName),
     {LPath, SPath} = blob_location_and_key_sample_paths(BrickName, BlobDir, SeqNum),
     case disk_log:open([{name, LPath}, {file, LPath}, {mode, read_write}]) of
@@ -793,14 +895,15 @@ open_private_location_files_for_write(BrickName, SeqNum) ->
         {error, enoent}=Err ->
             case filelib:is_dir(BlobDir) of
                 true ->
-                    ?E_CRITICAL("Couldn't open blob location file [write] ~s by ~w", [LPath, Err]),
+                    ?ELOG_CRITICAL("Couldn't open blob location file [write] ~s by ~w",
+                                   [LPath, Err]),
                     Err;
                 false ->
                     filelib:ensure_dir(BlobDir),
                     file:make_dir(BlobDir),
                     %% @TODO: Add retry count to avoid an infinite loop.
                     %% retry
-                    open_private_location_files_for_write(BrickName, SeqNum)
+                    open_location_files_for_write(BrickName, SeqNum)
             end;
         {error, Err} ->
             {error, {location_info_file, LPath, Err}}

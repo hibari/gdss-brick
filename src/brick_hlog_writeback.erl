@@ -293,11 +293,15 @@ do_writeback_hunks(Hunks) ->
 
     %% write blob location info
     lists:foreach(fun({BrickName, Hunks1}) ->
-                          Locations = brick_metadata_store:extract_location_info(Hunks1),
-                          ?ELOG_DEBUG("location: ~w - ~w locations.",
-                                      [BrickName, length(Locations)]),
-                          {ok, BlobStore} = brick_blob_store:get_blob_store(BrickName),
-                          ok = BlobStore:write_location_info(Locations)
+                          case brick_metadata_store:extract_location_info(Hunks1) of
+                              [] ->
+                                  ok;
+                              Locations ->
+                                  ?ELOG_DEBUG("location: ~w - ~w locations.",
+                                              [BrickName, length(Locations)]),
+                                  {ok, BlobStore} = brick_blob_store:get_blob_store(BrickName),
+                                  ok = BlobStore:write_location_info(Locations)
+                          end
                   end, MetadataHunksGBB),
 
     %% write-back blobs
