@@ -5307,7 +5307,7 @@ get_debug_chain_props() ->
     end.
 
 start_chain_admin_periodic_timer(S) ->
-    ?E_INFO("DEBUG: start_chain_admin_periodic_timer: ~p", [S#state.name]),
+    ?ELOG_DEBUG("start_chain_admin_periodic_timer: ~p", [S#state.name]),
     {ok, T} = brick_itimer:send_interval(?ADMIN_PERIODIC, chain_admin_periodic),
     T.
 
