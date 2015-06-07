@@ -36,8 +36,9 @@
          set_blob_file_info/1,
          get_blob_file_info/2,
          delete_blob_file_info/2,
-         update_score/3,
-         get_top_scores/1
+         update_score_and_scan_time/4,
+         get_top_scores/1,
+         get_live_hunk_scan_time_records/1
         ]).
 
 %% gen_server callbacks
@@ -60,7 +61,7 @@
 
 -type prop() :: {atom(), term()}.
 -type count() :: non_neg_integer().
--type erlang_monotonic_time() :: integer().
+-type system_time_seconds() :: integer().
 
 -record(state, {
           leveldb :: h2leveldb:db()
@@ -75,8 +76,8 @@
           total_hunks                   :: non_neg_integer(),
           estimated_live_hunk_ratio=1.0 :: float(),
           score=0.0                     :: float(),
-          last_live_hunk_scan           :: undefined | erlang_monotonic_time(),
-          last_scrub_scan               :: undefined | erlang_monotonic_time()
+          live_hunk_scaned              :: undefined | system_time_seconds(),
+          scrub_scaned                  :: undefined | system_time_seconds()
          }).
 -type blob_file_info() :: #blob_file_info{}.
 
@@ -87,7 +88,26 @@
          }).
 -type score() :: #score{}.
 
--define(SCORE_FIRST_KEY, {r, 0, 0, 0}).
+-record(live_hunk_scan_time, {
+          live_hunk_scaned :: undefined | system_time_seconds(),
+          brick_name       :: brickname(),
+          seqnum           :: seqnum()
+         }).
+-type live_hunk_scan_time() :: #live_hunk_scan_time{}.
+
+%% sext-encoded binaries are ordered by number of tuple elements, first element of tuple.
+%%
+%% i  blob_file_info         3 elements  {i, brickname(), seqnum()}
+%% h  live_hunk_scan_time    4 elements  {h, system_time_seconds(), brickname(), seqnum()}
+%% m  scrub_scan_time (md5)  4 elements  {m, system_time_seconds(), brickname(), seqnum()}
+%% s  score:                 4 elements  {s, -(float()), brickname(), seqnum()}
+
+-define(LIVE_HUNK_SCAN_TIME_FIRST_KEY, {g, 0, 0, 0}).
+-define(LIVE_HUNK_SCAN_TIME_LAST_KEY,  {i, 0, 0, 0}).
+%% -define(SCRUB_SCAN_TIME_FIRST_KEY,     {l, 0, 0, 0}).
+%% -define(SCRUB_SCAN_TIME_LAST_KEY,      {n, 0, 0, 0}).
+-define(SCORE_FIRST_KEY,               {r, 0, 0, 0}).
+
 -define(TIMEOUT, 60 * 1000).
 %% -define(METADATA, brick_metadata_store).
 %% -define(BLOB,     brick_blob_store).
@@ -120,10 +140,13 @@ get_blob_file_info_for_brick(BrickName, MaxRecords) ->
                             MaxRecords).
 
 -spec set_blob_file_info(blob_file_info()) -> ok | {error, term()}.
+set_blob_file_info(#blob_file_info{live_hunk_scaned=undefined}=BlobFileInfo) ->
+    set_blob_file_info(BlobFileInfo#blob_file_info{live_hunk_scaned=-1});
 set_blob_file_info(BlobFileInfo) when is_record(BlobFileInfo, blob_file_info) ->
     {ok, DB} = gen_server:call(?HLOG_REGISTORY_SERVER_REG_NAME, get_leveldb, ?TIMEOUT),
     Mutations = [h2leveldb:make_put(blob_file_info_key(BlobFileInfo), term_to_binary(BlobFileInfo)),
-                 h2leveldb:make_put(score_key(BlobFileInfo), <<>>)],
+                 h2leveldb:make_put(score_key(BlobFileInfo), <<>>),
+                 h2leveldb:make_put(live_hunk_scan_time_key(BlobFileInfo), <<>>)],
     h2leveldb:write(DB, Mutations).
 
 -spec get_blob_file_info(brickname(), seqnum()) ->
@@ -147,7 +170,8 @@ delete_blob_file_info(BrickName, SeqNum) ->
         {ok, Bin} ->
             BlobFileInfo = binary_to_term(Bin),
             Mutations = [h2leveldb:make_delete(BIKey),
-                         h2leveldb:make_delete(score_key(BlobFileInfo))],
+                         h2leveldb:make_delete(score_key(BlobFileInfo)),
+                         h2leveldb:make_delete(live_hunk_scan_time_key(BlobFileInfo))],
             h2leveldb:write(DB, Mutations);
         key_not_exist ->
             ok;
@@ -155,16 +179,23 @@ delete_blob_file_info(BrickName, SeqNum) ->
             Err
     end.
 
--spec update_score(brickname(), seqnum(), float()) -> ok | key_not_exist | {error, term()}.
-update_score(BrickName, SeqNum, Score) ->
+-spec update_score_and_scan_time(brickname(), seqnum(), float(), system_time_seconds()) ->
+                                        ok | key_not_exist | {error, term()}.
+update_score_and_scan_time(BrickName, SeqNum, Score, undefined) ->
+    update_score_and_scan_time(BrickName, SeqNum, Score, -1);
+update_score_and_scan_time(BrickName, SeqNum, Score, LiveHunkScaned) ->
     {ok, DB} = gen_server:call(?HLOG_REGISTORY_SERVER_REG_NAME, get_leveldb, ?TIMEOUT),
     BIKey = blob_file_info_key(BrickName, SeqNum),
     case h2leveldb:get(DB, BIKey) of
         {ok, Bin} ->
             BlobFileInfo0 = binary_to_term(Bin),
-            BlobFileInfo1 = BlobFileInfo0#blob_file_info{score=Score},
+            BlobFileInfo1 = BlobFileInfo0#blob_file_info{
+                              score=Score,
+                              live_hunk_scaned=LiveHunkScaned
+                             },
             Mutations = [h2leveldb:make_put(BIKey), term_to_binary(BlobFileInfo1),
-                         h2leveldb:make_put(score_key(BlobFileInfo1), <<>>)],
+                         h2leveldb:make_put(score_key(BlobFileInfo1), <<>>),
+                         h2leveldb:make_put(live_hunk_scan_time_key(BlobFileInfo1), <<>>)],
             h2leveldb:write(DB, Mutations);
         key_not_exist ->
             key_not_exist;
@@ -185,6 +216,27 @@ get_top_scores(MaxScores) when MaxScores > 0 ->
     case h2leveldb:fold_keys(DB, Fun, [], first_key_for_score(), undefined, MaxScores) of
         {ok, Scores, _IsTruncated} ->
             {ok, Scores};
+        Other ->
+            Other
+    end.
+
+-spec get_live_hunk_scan_time_records(count()) -> {ok, [live_hunk_scan_time()]} | {error, term()}.
+get_live_hunk_scan_time_records(MaxRecords) ->
+    {ok, DB} = gen_server:call(?HLOG_REGISTORY_SERVER_REG_NAME, get_leveldb, ?TIMEOUT),
+    Fun = fun(Key, Records) ->
+                  {h, TS, BrickName, SeqNum} = sext:decode(Key),
+                  Record = #live_hunk_scan_time{
+                              live_hunk_scaned=TS,
+                              brick_name=BrickName,
+                              seqnum=SeqNum},
+                  [Record | Records]
+          end,
+    case h2leveldb:fold_keys(DB, Fun, [],
+                             first_key_for_live_hunk_scan_time(),
+                             last_key_for_live_hunk_scan_time(),
+                             MaxRecords) of
+        {ok, Records, _IsTruncated} ->
+            {ok, Records};
         Other ->
             Other
     end.
@@ -243,35 +295,20 @@ score_key(#blob_file_info{brick_name=BrickName, seqnum=SeqNum, score=Score}) ->
 
 -spec first_key_for_score() -> binary().
 first_key_for_score() ->
-    sext:encode(?SCORE_FIRST_KEY).  %% 'r' is bigger than 'i' and smaller than 's'.
+    sext:encode(?SCORE_FIRST_KEY).
 
+-spec live_hunk_scan_time_key(blob_file_info()) -> binary().
+live_hunk_scan_time_key(#blob_file_info{brick_name=BrickName, seqnum=SeqNum,
+                                        live_hunk_scaned=TS}) ->
+    sext:encode({h, TS, BrickName, SeqNum}).
 
-%% ====================================================================
-%% Internal functions
-%% ====================================================================
+-spec first_key_for_live_hunk_scan_time() -> binary().
+first_key_for_live_hunk_scan_time() ->
+    sext:encode(?LIVE_HUNK_SCAN_TIME_FIRST_KEY).
 
-%% get_top_scores1(_, _, MaxScores, Scores) when MaxScores =< 0 ->
-%%     {ok, lists:reverse(Scores)};
-%% get_top_scores1(_, end_of_table, _, Scores) ->
-%%     {ok, lists:reverse(Scores)};
-%% get_top_scores1(_, {error, _}=Err, _, _) ->
-%%     Err;
-%% get_top_scores1(DB, {ok, Key}, MaxScores, Scores) ->
-%%     %% We can safely omit case clauses for ?SCORE_FIRST_KEY and {i, _, _}
-%%     %% because they should never come from h2leveldb:next_key(DB, ?SCORE_FIRST_KEY).
-%%     case sext:decode(Key) of
-%%         {s, NegativeScore, BrickName, SeqNum} ->
-%%             Score = #score{
-%%                        score=-(NegativeScore),
-%%                        brick_name=BrickName,
-%%                        seqnum=SeqNum
-%%                       },
-%%             Scores2 = [Score | Scores],
-%%             NextKey = h2leveldb:next_key(DB, Key),
-%%             get_top_scores1(DB, NextKey, MaxScores - 1, Scores2);
-%%         {error, _}=Err ->
-%%             Err
-%%     end.
+-spec last_key_for_live_hunk_scan_time() -> binary().
+last_key_for_live_hunk_scan_time() ->
+    sext:encode(?LIVE_HUNK_SCAN_TIME_LAST_KEY).
 
 
 %% ====================================================================
@@ -343,8 +380,8 @@ test1() ->
              total_hunks=10000,
              estimated_live_hunk_ratio=0.28,
              score=192.3
-             %% last_live_hunk_scan=time_compat:sytem_time(),
-             %% last_scrub_scan=time_compat:system_time(),
+             %% last_live_hunk_scan=time_compat:sytem_time_seconds(),
+             %% last_scrub_scan=time_compat:system_time_seconds(),
             },
     BI2 = #blob_file_info{
              brick_name=BrickName1,
@@ -354,8 +391,8 @@ test1() ->
              total_hunks=10000,
              estimated_live_hunk_ratio=0.85,
              score=54.8
-             %% last_live_hunk_scan=time_compat:sytem_time(),
-             %% last_scrub_scan=time_compat:system_time(),
+             %% last_live_hunk_scan=time_compat:sytem_time_seconds(),
+             %% last_scrub_scan=time_compat:system_time_seconds(),
             },
     BI3 = #blob_file_info{
              brick_name=BrickName2,
@@ -365,8 +402,8 @@ test1() ->
              total_hunks=10000,
              estimated_live_hunk_ratio=0.54,
              score=100.0
-             %% last_live_hunk_scan=time_compat:sytem_time(),
-             %% last_scrub_scan=time_compat:system_time(),
+             %% last_live_hunk_scan=time_compat:sytem_time_seconds(),
+             %% last_scrub_scan=time_compat:system_time_seconds(),
             },
 
     %% Set in random order
@@ -381,4 +418,7 @@ test1() ->
     {ok, Top1Score} = ?BLOB_HLOG_REG:get_top_scores(1),
     {ok, Top2Scores} = ?BLOB_HLOG_REG:get_top_scores(2),
     io:format("Top1Score: ~p~nTop2Scores: ~p~n", [Top1Score, Top2Scores]),
+
+    {ok, Top2LiveHunkScanTime} = ?BLOB_HLOG_REG:get_live_hunk_scan_time_records(2),
+    io:format("Top2LiveHunkScanTime: ~p~n", [Top2LiveHunkScanTime]),
     ok.
