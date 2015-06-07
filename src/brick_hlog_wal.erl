@@ -73,7 +73,6 @@
 -type hunk_iodata() :: iodata().
 
 -type count() :: non_neg_integer().
--type byte_size() :: non_neg_integer().
 -type set(_A) :: term().
 
 %% -type commit_notification() :: {wal_sync, callback_ticket(), ok}

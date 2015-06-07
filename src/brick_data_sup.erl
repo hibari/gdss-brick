@@ -70,10 +70,20 @@ init([]) ->
          {brick_metadata_store, start_link, [brick_metadata_store_leveldb, []]},
          permanent, 2000, worker, [brick_metadata_store]},
 
+    BrickBlobStoreRegistory =
+        {?HLOG_REGISTORY_SERVER_REG_NAME,
+         {brick_blob_store_hlog_registory, start_link, [[]]},
+         permanent, 2000, worker, [brick_blob_store_hlog_registory]},
+
     BrickBlobStore =
         {?BRICK_BLOB_STORE_REG_NAME,
          {brick_blob_store, start_link, [brick_blob_store_hlog, []]},
          permanent, 2000, worker, [brick_blob_store]},
+
+    BrickBlobStoreCompaction =
+        {?COMPACTION_SERVER_REG_NAME,
+         {brick_blob_store_hlog_compaction, start_link, [[]]},
+         permanent, 2000, worker, [brick_blob_store_hlog_compaction]},
 
     MaxMB = get_env(brick_max_log_size_mb),
     MinMB = get_env(brick_min_log_size_mb),
@@ -117,7 +127,9 @@ init([]) ->
         %% It's important that all bricks restart if the CommonLog crashes.
                                   H2LevelDB,
                                   BrickMetadataStore,
+                                  BrickBlobStoreRegistory,
                                   BrickBlobStore,
+                                  BrickBlobStoreCompaction,
                                   WAL,
                                   WALWriteBack,
                                   BrickBrickSup,

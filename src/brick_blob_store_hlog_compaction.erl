@@ -341,9 +341,3 @@ live_hunk_locations(MetadataStore, Locations, FilterFun) ->
     LiveKeysSet = gb_sets:from_list(LiveKeys),
     [ Location || #l{key=Key, timestamp=TS}=Location <- Locations,
                   gb_sets:is_member({Key, TS}, LiveKeysSet) ].
-
-
-%% ====================================================================
-%% Internal functions - tests and debug
-%% ====================================================================
-

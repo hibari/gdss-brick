@@ -68,10 +68,10 @@
 -type wal_entry() :: term().
 
 -record(state, {
-          brick_name                   :: brickname(),
-          leveldb                      :: h2leveldb:db()
+          brick_name :: brickname(),
+          leveldb    :: h2leveldb:db()
          }).
--type state() :: #state{}.
+%% -type state() :: #state{}.
 
 -define(TIMEOUT, 60 * 1000).
 -define(HUNK, brick_hlog_hunk).
@@ -209,8 +209,8 @@ handle_cast(_, State) ->
 handle_info(_, State) ->
     {noreply, State}.
 
-terminate(_Reason, State) ->
-    catch close_metadata_db(State),
+terminate(_Reason, #state{brick_name=BrickName}) ->
+    catch close_metadata_db(BrickName),
     ok.
 
 code_change(_OldVsn, State, _Extra) ->
@@ -258,8 +258,8 @@ repair_metadata_db(BrickName) ->
     MDBPath = filename:join(MDBDir, "leveldb"),
     h2leveldb:repair_db(MDBPath).
 
--spec close_metadata_db(state()) -> ok.
-close_metadata_db(#state{brick_name=BrickName}) ->
+-spec close_metadata_db(brickname()) -> ok.
+close_metadata_db(BrickName) ->
     %% @TODO Create a function to return the metadata DB path.
     MDBPath = filename:join(metadata_dir(BrickName), "leveldb"),
     try h2leveldb:close_db(MDBPath) of

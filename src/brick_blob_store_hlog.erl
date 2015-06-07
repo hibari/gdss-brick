@@ -141,7 +141,6 @@
 
 -type prop() :: {atom(), term()}.
 -type count() :: non_neg_integer().
--type byte_size() :: non_neg_integer().
 
 -type storage_location_hlog() :: private_hlog() | wal() | no_blob.
 
