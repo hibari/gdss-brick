@@ -145,17 +145,19 @@
 -type storage_location_hlog() :: private_hlog() | wal() | no_blob.
 
 -record(state, {
-          %% name                         :: atom(),
-          brick_name                   :: brickname(),
-          %% brick_pid                    :: pid(), %% or reg name?
-          %% log_dir                      :: file:directory(),
-          file_len_max                 :: len(),                    % WAL file size max
-          file_len_min                 :: len(),                    % WAL file size min
-          hunk_count_min               :: count(),
-          head_seqnum                  :: seqnum(),
-          head_position                :: offset(),
-          head_seqnum_hunk_count=0     :: count(),
-          head_seqnum_hunk_overhead=0  :: non_neg_integer()
+          %% name                          :: atom(),
+          brick_name                    :: brickname(),
+          %% brick_pid                     :: pid(), %% or reg name?
+          %% log_dir                       :: file:directory(),
+          file_len_max                  :: len(),  %% WAL file size max
+          file_len_min                  :: len(),  %% WAL file size min
+          hunk_count_min                :: count(),
+          head_seqnum                   :: seqnum(),
+          head_position                 :: offset(),
+          head_seqnum_hunk_count=0      :: count(),
+          head_seqnum_hunk_overhead=0   :: non_neg_integer(),
+          writeback_seqnum              :: seqnum(),
+          writeback_seqnum_hunk_count=0 :: count()
           %% hunk_overhead=dict:new()     :: dict(seqnum(), non_neg_integer())
          }).
 -type state() :: #state{}.
@@ -171,7 +173,7 @@
 -define(TIMEOUT, 60 * 1000).
 -define(HUNK, brick_hlog_hunk).
 -define(WAL, brick_hlog_wal).
-
+-define(BLOB_HLOG_REG, brick_blob_store_hlog_registory).
 
 %% ====================================================================
 %% API
@@ -236,9 +238,13 @@ write_value(Pid, Value) ->
 
 %% @TODO CHECKME: Is wal_entry() actually an hunk()? -> yes
 -spec writeback_to_stable_storage(pid(), brickname(), [wal_entry()]) -> ok | {error, term()}.
-writeback_to_stable_storage(_Pid, BrickName, WalEntries) ->
+writeback_to_stable_storage(Pid, BrickName, WalEntries) ->
     case writeback_values(BrickName, WalEntries, undefined, -1, -1, 0) of
-        {ok, _CurrentWBSeqNum, _CurrentWBPos, _SuccessCount} ->
+        {ok, SeqNum, _Offset, SuccessCount} ->
+            %% @TODO: Support full-writeback. (Right now, this will make
+            %% writeback_hunk_count inaccurate)
+            %% @TODO: FIXME: SuccessCount may contain counts for other seqnums
+            gen_server:cast(Pid, {update_writeback_seqnum, SeqNum, SuccessCount}),
             ok;
         Err ->
             Err
@@ -479,7 +485,8 @@ init([BrickName, Options]) ->
                 file_len_min=LenMin,
                 hunk_count_min=HunkCountMin,
                 head_seqnum=CurSeq,
-                head_position=Position}}.
+                head_position=Position,
+                writeback_seqnum=0}}.
 
 handle_call({write_value, Value}, _From, #state{brick_name=BrickName}=State)
   when is_binary(Value) ->
@@ -523,12 +530,50 @@ handle_call({write_value, Value}, _From, #state{brick_name=BrickName}=State)
 handle_call({reserve_positions, LogType, Hunks}, _From, State) ->
     {Positions, State1} = lists:foldl(reserve_position_fun(LogType), {[], State}, Hunks),
     {reply, lists:reverse(Positions), State1};
-handle_call(current_writeback_seqnum, _From, #state{head_seqnum=SeqNum}=State) ->
-    %% @TODO: This is a quick inacculate implementation
-    {reply, max(0, SeqNum - 1), State};
+handle_call(current_writeback_seqnum, _From, #state{writeback_seqnum=WBSeqNum}=State) ->
+    {reply, WBSeqNum, State};
 handle_call(_, _From, State) ->
     {reply, ok, State}.
 
+handle_cast({update_writeback_seqnum, NewWBSeqNum, _SuccessCount},
+            #state{writeback_seqnum=WBSeqNum}=State) when NewWBSeqNum < WBSeqNum ->
+    {noreply, State};
+handle_cast({update_writeback_seqnum, NewWBSeqNum, SuccessCount},
+            #state{writeback_seqnum=WBSeqNum,
+                   writeback_seqnum_hunk_count=HunkCount}=State) when NewWBSeqNum =:= WBSeqNum ->
+    {noreply, State#state{writeback_seqnum_hunk_count= HunkCount + SuccessCount}};
+handle_cast({update_writeback_seqnum, NewWBSeqNum, SuccessCount},
+            #state{writeback_seqnum=0}=State) ->
+    {noreply, State#state{writeback_seqnum=NewWBSeqNum,
+                          writeback_seqnum_hunk_count=SuccessCount}};
+handle_cast({update_writeback_seqnum, NewWBSeqNum, SuccessCount},
+            #state{brick_name=BrickName,
+                   writeback_seqnum=WBSeqNum, writeback_seqnum_hunk_count=HunkCount}=State) ->
+    Dir = blob_dir(BrickName),
+    %% @TODO: Write the trailer block to the hlog file.
+    %% ok = write_log_trailer(FH, ...),
+
+    %% Register blob file info
+    {ok, _Path, FI} = blob_file_info(BrickName, Dir, WBSeqNum),
+    BlobFileInfo = #blob_file_info{
+                      brick_name=BrickName,
+                      seqnum=WBSeqNum,
+                      short_term=true,  %% @TODO
+                      byte_size=FI#file_info.size,
+                      %% @TODO: FIXME: SuccessCount may contain counts for both old and new seqnums.
+                      total_hunks= HunkCount + SuccessCount
+                     },
+    case ?BLOB_HLOG_REG:set_blob_file_info(BlobFileInfo) of
+        ok ->
+            ?ELOG_DEBUG("Registered blob file info with sequence ~w:~n\t~p",
+                        [WBSeqNum, BlobFileInfo]),
+            {noreply, State#state{writeback_seqnum=NewWBSeqNum,
+                                  writeback_seqnum_hunk_count=SuccessCount}};
+        {error, Err} ->
+            ?ELOG_WARNING("Can't register blob file info with sequence ~w: ~p",
+                          [WBSeqNum, Err]),
+            {noreply, State}
+        end;
 handle_cast(_, State) ->
     {noreply, State}.
 
@@ -788,7 +833,8 @@ do_advance_seqnum(Incr, #state{brick_name=BrickName, head_seqnum=SeqNum}=State) 
 %% @TODO: Better error handling
 -spec create_log(brickname(), seqnum()) -> offset().
 create_log(BrickName, SeqNum) ->
-    Path = blob_path(BrickName, blob_dir(BrickName), SeqNum),
+    Dir = blob_dir(BrickName),
+    Path = blob_path(BrickName, Dir, SeqNum),
     {error, enoent} = file:read_file_info(Path),  %% sanity
     case open_log_for_write(BrickName, SeqNum) of
         {ok, FH} ->
@@ -796,7 +842,7 @@ create_log(BrickName, SeqNum) ->
             try
                 %% ok = write_log_header(FH),
                 ?ELOG_INFO("Created brick private log with sequence ~w: ~s", [SeqNum, Path]),
-                {ok, FI} = file:read_file_info(Path),
+                {ok, _Path, FI} = blob_file_info(BrickName, Dir, SeqNum),
                 FI#file_info.size
             catch
                 _:_=Err ->
@@ -906,6 +952,18 @@ open_location_files_for_write(BrickName, SeqNum) ->
             end;
         {error, Err} ->
             {error, {location_info_file, LPath, Err}}
+    end.
+
+-spec blob_file_info(brickname(), dirname(), seqnum()) ->
+                            {ok, file:name(), file:file_info()}
+                                | {error, {file:name(), term()}}.
+blob_file_info(BrickName, Dir, SeqNum) ->
+    Path = blob_path(BrickName, Dir, SeqNum),
+    case file:read_file_info(Path) of
+        {ok, FI} ->
+            {ok, Path, FI};
+        {error, Err} ->
+            {error, {Path, Err}}
     end.
 
 -spec blob_dir(brickname()) -> dirname().

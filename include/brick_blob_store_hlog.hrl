@@ -33,6 +33,36 @@
          }).
 -type location_info() :: #l{}.
 
+%% Obtained by gmt_time_otp18:erlang_system_time(seconds)
+-type system_time_seconds() :: integer().
+
+-record(blob_file_info, {
+          brick_name                    :: brickname(),
+          seqnum                        :: seqnum(),
+          short_term=true               :: boolean(),
+          byte_size                     :: byte_size(),
+          total_hunks                   :: non_neg_integer(),
+          estimated_live_hunk_ratio=1.0 :: float(),
+          score=0.0                     :: float(),
+          live_hunk_scaned              :: undefined | system_time_seconds(),
+          scrub_scaned                  :: undefined | system_time_seconds()
+         }).
+-type blob_file_info() :: #blob_file_info{}.
+
+-record(score, {
+          score      :: float(),
+          brick_name :: brickname(),
+          seqnum     :: seqnum()
+         }).
+-type score() :: #score{}.
+
+-record(live_hunk_scan_time, {
+          live_hunk_scaned :: undefined | system_time_seconds(),
+          brick_name       :: brickname(),
+          seqnum           :: seqnum()
+         }).
+-type live_hunk_scan_time() :: #live_hunk_scan_time{}.
+
 -type location_info_file() :: disk_log:log().
 -type key_sample_file() :: disk_log:log().
 -type continuation() :: disk_log:continuation().
