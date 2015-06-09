@@ -171,9 +171,12 @@
 -define(SEQNUM_DIGITS, 12).
 
 -define(TIMEOUT, 60 * 1000).
--define(HUNK, brick_hlog_hunk).
--define(WAL, brick_hlog_wal).
+
+-define(HUNK,          brick_hlog_hunk).
+-define(WAL,           brick_hlog_wal).
 -define(BLOB_HLOG_REG, brick_blob_store_hlog_registory).
+-define(TIME,          gmt_time_otp18).
+
 
 %% ====================================================================
 %% API
@@ -408,7 +411,8 @@ schedule_blob_file_deletion(_Pid, BrickName, SeqNum, SleepTimeSec) ->
                        [SeqNum, Path]),
             ignore;
         {ok, _} ->
-            %% @TODO: Register seqnum to the deleting list
+            %% @TODO: Register seqnum to the deleting list instead of deleting the info here.
+            _ = ?BLOB_HLOG_REG:delete_blob_file_info(BrickName, SeqNum),
             spawn(
               fun() ->
                       timer:sleep(SleepTimeSec * 1000),
@@ -473,10 +477,25 @@ init([BrickName, Options]) ->
     HunkCountMin = proplists:get_value(hunk_count_min, Options, 100),
     %% HunkCountMin = proplists:get_value(hunk_count_min, Options, 1000),
 
-    CurSeq = case list_seqnums(undefined, BrickName) of
-                 [] ->
+    SeqNums = list_seqnums(undefined, BrickName),
+    %% Ensure all existing blob files are registered.
+    lists:foreach(
+      fun(SeqNum) ->
+              case ?BLOB_HLOG_REG:get_blob_file_info(BrickName, SeqNum) of
+                  not_exist ->
+                      HunkCount = 0, %% @TODO: Count the hunks.
+                      _ = register_blob_file_info(BrickName, SeqNum, HunkCount);
+                  {ok, _BlobFileInfo} ->
+                      ok;
+                  {error, _} ->
+                      ok  %% Ingore for now. @TODO CHECKME: Shall we crash this server?
+              end
+      end, SeqNums),
+
+    CurSeq = if
+                 SeqNums =:= [] ->
                      1;
-                 SeqNums ->
+                 true ->
                      lists:max(SeqNums) + 1
              end,
     Position = create_log(BrickName, CurSeq),
@@ -549,31 +568,13 @@ handle_cast({update_writeback_seqnum, NewWBSeqNum, SuccessCount},
 handle_cast({update_writeback_seqnum, NewWBSeqNum, SuccessCount},
             #state{brick_name=BrickName,
                    writeback_seqnum=WBSeqNum, writeback_seqnum_hunk_count=HunkCount}=State) ->
-    Dir = blob_dir(BrickName),
     %% @TODO: Write the trailer block to the hlog file.
     %% ok = write_log_trailer(FH, ...),
 
-    %% Register blob file info
-    {ok, _Path, FI} = blob_file_info(BrickName, Dir, WBSeqNum),
-    BlobFileInfo = #blob_file_info{
-                      brick_name=BrickName,
-                      seqnum=WBSeqNum,
-                      short_term=true,  %% @TODO
-                      byte_size=FI#file_info.size,
-                      %% @TODO: FIXME: SuccessCount may contain counts for both old and new seqnums.
-                      total_hunks= HunkCount + SuccessCount
-                     },
-    case ?BLOB_HLOG_REG:set_blob_file_info(BlobFileInfo) of
-        ok ->
-            ?ELOG_DEBUG("Registered blob file info with sequence ~w:~n\t~p",
-                        [WBSeqNum, BlobFileInfo]),
-            {noreply, State#state{writeback_seqnum=NewWBSeqNum,
-                                  writeback_seqnum_hunk_count=SuccessCount}};
-        {error, Err} ->
-            ?ELOG_WARNING("Can't register blob file info with sequence ~w: ~p",
-                          [WBSeqNum, Err]),
-            {noreply, State}
-        end;
+    %% @TODO: FIXME: SuccessCount may contain counts for both old and new seqnums.
+    _ = register_blob_file_info(BrickName, WBSeqNum, HunkCount + SuccessCount),
+    {noreply, State#state{writeback_seqnum=NewWBSeqNum,
+                          writeback_seqnum_hunk_count=SuccessCount}};
 handle_cast(_, State) ->
     {noreply, State}.
 
@@ -811,6 +812,33 @@ write_hunks(Pid, BrickName, HLogType, HunksAndLocations, AppendTo) ->
 %%         error:badarg ->
 %%             lists:flatten(io_lib:format("~p", [Bin]))
 %%     end.
+
+
+%% ====================================================================
+%% Internal functions - blob_file_info
+%% ====================================================================
+
+-spec register_blob_file_info(brickname(), seqnum(), non_neg_integer()) -> ok | {error, term()}.
+register_blob_file_info(BrickName, WBSeqNum, HunkCount) ->
+    {ok, _Path, FI} = blob_file_info(BrickName, blob_dir(BrickName), WBSeqNum),
+    BlobFileInfo = #blob_file_info{
+                      brick_name=BrickName,
+                      seqnum=WBSeqNum,
+                      short_term=true,  %% @TODO
+                      byte_size=FI#file_info.size,
+                      total_hunks=HunkCount,
+                      live_hunk_scaned=?TIME:erlang_system_time(seconds)
+                     },
+    case ?BLOB_HLOG_REG:set_blob_file_info(BlobFileInfo) of
+        ok ->
+            %% ?ELOG_DEBUG("Registered blob file info with sequence ~w:~n\t~p",
+            %%             [WBSeqNum, BlobFileInfo]),
+            ok;
+        {error, Err1}=Err ->
+            ?ELOG_WARNING("Can't register blob file info with sequence ~w: ~p",
+                          [WBSeqNum, Err1]),
+            Err
+    end.
 
 
 %% ====================================================================

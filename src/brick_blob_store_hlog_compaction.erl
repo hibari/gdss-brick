@@ -82,6 +82,7 @@
          show_hlog_files/0,  %% temporary API
          list_hlog_files/0,  %% temporary API
          estimate_live_hunk_ratio/2,
+         request_compaction/0,
          compact_hlog_file/2
         ]).
 
@@ -102,13 +103,21 @@
 -type mdstore() :: term().
 -type blobstore() :: term().
 -type blobstore_impl_info() :: {module(), pid()}.
+-type count() :: non_neg_integer().
 
 -type prop() :: {atom(), term()}.
 
--record(state, {}).
+-record(state, {
+          live_hunk_threshold :: float(),
+          compaction_timer    :: timer:tref(),
+          %% @TODO: Implement concurrent compaction processes
+          compaction_pid      :: pid()
+         }).
 
--define(METADATA, brick_metadata_store).
--define(BLOB,     brick_blob_store).
+-define(METADATA,      brick_metadata_store).
+-define(BLOB,          brick_blob_store).
+-define(BLOB_HLOG_REG, brick_blob_store_hlog_registory).
+-define(TIME,          gmt_time_otp18).
 
 
 %% ====================================================================
@@ -162,11 +171,19 @@ list_hlog_files() ->
 estimate_live_hunk_ratio(BrickName, SeqNum) ->
     do_estimate_live_hunk_ratio(BrickName, SeqNum).
 
+-spec request_compaction() -> ok.
+request_compaction() ->
+    ?COMPACTION_SERVER_REG_NAME ! request_compaction,
+    ok.
+
 -spec compact_hlog_file(brickname(), seqnum()) -> ok | ignore | {error, term()}.
 compact_hlog_file(BrickName, SeqNum) ->
     {ok, BlobStore} = ?BLOB:get_blob_store(BrickName),
     {BlobImplMod, BlobImplPid}=BlobStoreInfo = BlobStore:get_impl_info(),
     case BlobImplMod:current_writeback_seqnum(BlobImplPid, BrickName) of
+        %% @TODO FIXME: If brick has written no blob after boot, WBSeqNum will
+        %% never be updated. This will make impossible to compact the blob files
+        %% for the brick.
         WBSeqNum when SeqNum >= WBSeqNum ->
             ?ELOG_INFO("Ignoring a compaction request for brick private blob file "
                        "~w with sequence ~w. The file might be still opened for write.",
@@ -207,15 +224,28 @@ compact_hlog_file(BrickName, SeqNum) ->
 %% ====================================================================
 
 init([_Options]) ->
-    {ok, #state{}}.
+    LiveHunkThreshold  = 0.80,           %% 80%.       @TODO: Configurable
+    CompactionInterval = 5 * 60 * 1000,  %% 5 minutes. @TODO: Configurable
+    {ok, TRef} = timer:send_interval(CompactionInterval, request_compaction),
+    {ok, #state{live_hunk_threshold=LiveHunkThreshold, compaction_timer=TRef}}.
 
 handle_call(_Cmd, _From, #state{}=State) ->
     {reply, ok, State}.
 
+handle_cast(compaction_finished, State) ->
+    {noreply, State#state{compaction_pid=undefined}};
 handle_cast(stop, State) ->
     {stop, normal, State}.
 
-handle_info(_Cmd, State) ->
+handle_info(request_compaction, #state{compaction_pid=undefined,
+                                       live_hunk_threshold=LiveHunkThreshold}=State) ->
+    Pid = schedule_compaction(LiveHunkThreshold),
+    {noreply, State#state{compaction_pid=Pid}};
+handle_info(request_compaction, #state{compaction_pid=Pid}=State) when Pid =/= undefined ->
+    %% a compaction process is already running. Ignore the request.
+    {noreply, State};
+%% @TODO: Add handle_info clause to handle compaction process's error
+handle_info({'DOWN', _Ref, process, _Pid, _Reason}, State) ->
     {noreply, State}.
 
 terminate(_Reason, #state{}) ->
@@ -228,6 +258,112 @@ code_change(_OldVsn, State, _Extra) ->
 %% ====================================================================
 %% Internal functions
 %% ====================================================================
+
+-spec schedule_compaction(float()) -> pid().
+schedule_compaction(LiveHunkThreshold) ->
+    MaxLiveHunkEstimationFiles = 30,  %% @TODO: Make this configurable
+    MaxCompactionFiles = 10,          %% @TODO: Make this configurable
+
+    {Pid, _Ref} =
+        spawn_monitor(
+          fun() ->
+                  case do_estimate_live_hunk_ratio_for_files(MaxLiveHunkEstimationFiles) of
+                      ok ->
+                          ?ELOG_INFO("Compaction started."),
+                          case do_compaction(MaxCompactionFiles, LiveHunkThreshold) of
+                              ok ->
+                                  ?ELOG_INFO("Compaction finished."),
+                                  gen_server:cast(?COMPACTION_SERVER_REG_NAME, compaction_finished),
+                                  exit(normal);
+                              {error, _}=Err ->
+                                  %% @TODO:
+                                  ?ELOG_ERROR("~p", [Err]),
+                                  exit(normal)
+                              end;
+                      {error, _}=Err ->
+                          %% @TODO:
+                          ?ELOG_ERROR("~p", [Err]),
+                          exit(normal)
+                  end
+          end),
+    Pid.
+
+-spec do_estimate_live_hunk_ratio_for_files(count()) -> ok | {error, term()}.
+do_estimate_live_hunk_ratio_for_files(MaxLiveHunkEstimationFiles) ->
+    case ?BLOB_HLOG_REG:get_live_hunk_scan_time_records(MaxLiveHunkEstimationFiles) of
+        {ok, ScanTimeRecords} ->
+            lists:foreach(
+              fun(#live_hunk_scan_time{live_hunk_scaned=_TS,
+                                       brick_name=BrickName, seqnum=SeqNum}) ->
+                      %% @TODO: Check the TS
+                      case do_estimate_live_hunk_ratio(BrickName, SeqNum) of
+                          {ok, EstimatedRatio} ->
+                              update_score(BrickName, SeqNum, EstimatedRatio);
+                          unknown ->
+                              %% All registered blob files should be already closed for
+                              %% writes, and unknown ratio means the key sample file is empty.
+                              %% Therefore we can assume the blob file has zero or very small
+                              %% number of hunks (We can verify this by checking total_hunks
+                              %% field). Let's give it a very low ratio so that we can try
+                              %% compacting the file.
+                              EstimatedRatio = 0.0,
+                              update_score(BrickName, SeqNum, EstimatedRatio);
+                          {error, _}=Err ->
+                              Err
+                      end
+              end, ScanTimeRecords),
+            ok;
+        {error, _}=Err ->
+            Err
+    end.
+
+-spec update_score(brickname(), seqnum(), EstimatedLiveHunkRatio::float()) -> ok | {error, term()}.
+update_score(BrickName, SeqNum, EstimatedLiveHunkRatio) ->
+    %% @TODO: Need a better scoring
+    Score = 1.0 - EstimatedLiveHunkRatio,
+    Res = ?BLOB_HLOG_REG:update_score_and_scan_time(
+             BrickName, SeqNum,
+             Score, EstimatedLiveHunkRatio, ?TIME:erlang_system_time(seconds)),
+    ?ELOG_DEBUG("Updated score for blob file ~w with sequence ~w. "
+                "score: ~.2f, estimated live hunk ratio: ~.2f",
+                [BrickName, SeqNum, Score, EstimatedLiveHunkRatio]),
+    Res.
+
+-spec do_compaction(count(), float()) -> ok | {error, term()}.
+do_compaction(MaxCompactionFiles, LiveHunkThreshold) ->
+    case ?BLOB_HLOG_REG:get_top_scores(MaxCompactionFiles) of
+        {ok, Scores} ->
+            lists:foreach(
+              fun(#score{score=_Float, brick_name=BrickName, seqnum=SeqNum}) ->
+                      case ?BLOB_HLOG_REG:get_blob_file_info(BrickName, SeqNum) of
+                          {ok, #blob_file_info{estimated_live_hunk_ratio=Ratio}} ->
+                              if
+                                  Ratio > LiveHunkThreshold ->
+                                      ok;
+                                  true ->
+                                      case compact_hlog_file(BrickName, SeqNum) of
+                                          ok ->
+                                              ?ELOG_INFO("Compacted blob file ~w with sequence ~w",
+                                                         [BrickName, SeqNum]),
+                                              ok;
+                                          ignore ->
+                                              ok;
+                                          {error, Err1}=Err ->
+                                              ?ELOG_ERROR("Failed to compact blob file ~w with sequence ~w. ~p",
+                                                          [BrickName, SeqNum, Err1]),
+                                              Err
+                                      end
+                              end;
+                          not_exist ->
+                              ok; %% Race condition: The file has been deleted.
+                          {error, _} ->
+                              ok  %% Ingore for now
+                      end
+              end, Scores),
+            ok;
+        {error, _}=Err ->
+            Err
+    end.
 
 -spec do_estimate_live_hunk_ratio(brickname(), seqnum()) ->
                                          {ok, float()} | unknown | {error, term()}.

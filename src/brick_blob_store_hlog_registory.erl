@@ -36,7 +36,7 @@
          set_blob_file_info/1,
          get_blob_file_info/2,
          delete_blob_file_info/2,
-         update_score_and_scan_time/4,
+         update_score_and_scan_time/5,
          get_top_scores/1,
          get_live_hunk_scan_time_records/1
         ]).
@@ -111,12 +111,24 @@ get_blob_file_info_for_brick(BrickName, MaxRecords) ->
 -spec set_blob_file_info(blob_file_info()) -> ok | {error, term()}.
 set_blob_file_info(#blob_file_info{live_hunk_scaned=undefined}=BlobFileInfo) ->
     set_blob_file_info(BlobFileInfo#blob_file_info{live_hunk_scaned=?UNDEFINED_SYSTEM_TIME});
-set_blob_file_info(BlobFileInfo) when is_record(BlobFileInfo, blob_file_info) ->
+set_blob_file_info(#blob_file_info{brick_name=BrickName, seqnum=SeqNum}=BlobFileInfo) ->
     {ok, DB} = gen_server:call(?HLOG_REGISTORY_SERVER_REG_NAME, get_leveldb, ?TIMEOUT),
-    Mutations = [h2leveldb:make_put(blob_file_info_key(BlobFileInfo), term_to_binary(BlobFileInfo)),
-                 h2leveldb:make_put(score_key(BlobFileInfo), <<>>),
-                 h2leveldb:make_put(live_hunk_scan_time_key(BlobFileInfo), <<>>)],
-    h2leveldb:write(DB, Mutations).
+    BIKey = blob_file_info_key(BrickName, SeqNum),
+    Mutations0 =
+        case h2leveldb:get(DB, BIKey) of
+            {ok, Bin} ->
+                BlobFileInfo0 = binary_to_term(Bin),
+                [h2leveldb:make_delete(BIKey),
+                 h2leveldb:make_delete(score_key(BlobFileInfo0)),
+                 h2leveldb:make_delete(live_hunk_scan_time_key(BlobFileInfo0))];
+            _ ->
+                []
+        end,
+    Mutations1 = Mutations0 ++
+        [h2leveldb:make_put(BIKey, term_to_binary(BlobFileInfo)),
+         h2leveldb:make_put(score_key(BlobFileInfo), <<>>),
+         h2leveldb:make_put(live_hunk_scan_time_key(BlobFileInfo), <<>>)],
+    h2leveldb:write(DB, Mutations1).
 
 -spec get_blob_file_info(brickname(), seqnum()) ->
                                 {ok, blob_file_info()} | not_exist | {error, term()}.
@@ -148,11 +160,11 @@ delete_blob_file_info(BrickName, SeqNum) ->
             Err
     end.
 
--spec update_score_and_scan_time(brickname(), seqnum(), float(), system_time_seconds()) ->
+-spec update_score_and_scan_time(brickname(), seqnum(), float(), float(), system_time_seconds()) ->
                                         ok | key_not_exist | {error, term()}.
-update_score_and_scan_time(BrickName, SeqNum, Score, undefined) ->
-    update_score_and_scan_time(BrickName, SeqNum, Score, ?UNDEFINED_SYSTEM_TIME);
-update_score_and_scan_time(BrickName, SeqNum, Score, LiveHunkScaned) ->
+update_score_and_scan_time(BrickName, SeqNum, Score, LiveHunkRatio, undefined) ->
+    update_score_and_scan_time(BrickName, SeqNum, Score, LiveHunkRatio, ?UNDEFINED_SYSTEM_TIME);
+update_score_and_scan_time(BrickName, SeqNum, Score, LiveHunkRatio, LiveHunkScaned) ->
     {ok, DB} = gen_server:call(?HLOG_REGISTORY_SERVER_REG_NAME, get_leveldb, ?TIMEOUT),
     BIKey = blob_file_info_key(BrickName, SeqNum),
     case h2leveldb:get(DB, BIKey) of
@@ -160,9 +172,12 @@ update_score_and_scan_time(BrickName, SeqNum, Score, LiveHunkScaned) ->
             BlobFileInfo0 = binary_to_term(Bin),
             BlobFileInfo1 = BlobFileInfo0#blob_file_info{
                               score=Score,
+                              estimated_live_hunk_ratio=LiveHunkRatio,
                               live_hunk_scaned=LiveHunkScaned
                              },
-            Mutations = [h2leveldb:make_put(BIKey), term_to_binary(BlobFileInfo1),
+            Mutations = [h2leveldb:make_delete(score_key(BlobFileInfo0)),
+                         h2leveldb:make_delete(live_hunk_scan_time_key(BlobFileInfo0)),
+                         h2leveldb:make_put(BIKey, term_to_binary(BlobFileInfo1)),
                          h2leveldb:make_put(score_key(BlobFileInfo1), <<>>),
                          h2leveldb:make_put(live_hunk_scan_time_key(BlobFileInfo1), <<>>)],
             h2leveldb:write(DB, Mutations);
@@ -340,55 +355,55 @@ close_registory_db() ->
 %% Internal functions - tests and debug
 %% ====================================================================
 
--define(BLOB_HLOG_REG, brick_blob_store_hlog_registory).
+%% -define(BLOB_HLOG_REG, brick_blob_store_hlog_registory).
 
-test1() ->
-    BrickName1 = perf1_ch1_b1,
-    BrickName2 = perf1_ch1_b2,
+%% test1() ->
+%%     BrickName1 = perf1_ch1_b1,
+%%     BrickName2 = perf1_ch1_b2,
 
-    BI1 = #blob_file_info{
-             brick_name=BrickName1,
-             seqnum=1,
-             short_term=true,
-             byte_size=1000000,
-             total_hunks=10000,
-             estimated_live_hunk_ratio=0.28,
-             score=192.3,
-             live_hunk_scaned=?TIME:erlang_system_time(seconds),
-             scrub_scaned=?TIME:erlang_system_time(seconds)
-            },
-    BI2 = #blob_file_info{
-             brick_name=BrickName1,
-             seqnum=2,
-             short_term=true,
-             byte_size=1000000,
-             total_hunks=10000,
-             estimated_live_hunk_ratio=0.85,
-             score=54.8
-            },
-    BI3 = #blob_file_info{
-             brick_name=BrickName2,
-             seqnum=1,
-             short_term=true,
-             byte_size=1000000,
-             total_hunks=10000,
-             estimated_live_hunk_ratio=0.54,
-             score=100.0
-            },
+%%     BI1 = #blob_file_info{
+%%              brick_name=BrickName1,
+%%              seqnum=1,
+%%              short_term=true,
+%%              byte_size=1000000,
+%%              total_hunks=10000,
+%%              estimated_live_hunk_ratio=0.28,
+%%              score=192.3,
+%%              live_hunk_scaned=?TIME:erlang_system_time(seconds),
+%%              scrub_scaned=?TIME:erlang_system_time(seconds)
+%%             },
+%%     BI2 = #blob_file_info{
+%%              brick_name=BrickName1,
+%%              seqnum=2,
+%%              short_term=true,
+%%              byte_size=1000000,
+%%              total_hunks=10000,
+%%              estimated_live_hunk_ratio=0.85,
+%%              score=54.8
+%%             },
+%%     BI3 = #blob_file_info{
+%%              brick_name=BrickName2,
+%%              seqnum=1,
+%%              short_term=true,
+%%              byte_size=1000000,
+%%              total_hunks=10000,
+%%              estimated_live_hunk_ratio=0.54,
+%%              score=100.0
+%%             },
 
-    %% Set in random order
-    ok = ?BLOB_HLOG_REG:set_blob_file_info(BI2),
-    ok = ?BLOB_HLOG_REG:set_blob_file_info(BI3),
-    ok = ?BLOB_HLOG_REG:set_blob_file_info(BI1),
+%%     %% Set in random order
+%%     ok = ?BLOB_HLOG_REG:set_blob_file_info(BI2),
+%%     ok = ?BLOB_HLOG_REG:set_blob_file_info(BI3),
+%%     ok = ?BLOB_HLOG_REG:set_blob_file_info(BI1),
 
-    {ok, BI1r} = ?BLOB_HLOG_REG:get_blob_file_info(BrickName1, 1),
-    {ok, BIs, false} = ?BLOB_HLOG_REG:get_blob_file_info_for_brick(BrickName1, 10),
-    io:format("Bi1r: ~p~nBIs: ~p~n", [BI1r, BIs]),
+%%     {ok, BI1r} = ?BLOB_HLOG_REG:get_blob_file_info(BrickName1, 1),
+%%     {ok, BIs, false} = ?BLOB_HLOG_REG:get_blob_file_info_for_brick(BrickName1, 10),
+%%     io:format("Bi1r: ~p~nBIs: ~p~n", [BI1r, BIs]),
 
-    {ok, Top1Score} = ?BLOB_HLOG_REG:get_top_scores(1),
-    {ok, Top2Scores} = ?BLOB_HLOG_REG:get_top_scores(2),
-    io:format("Top1Score: ~p~nTop2Scores: ~p~n", [Top1Score, Top2Scores]),
+%%     {ok, Top1Score} = ?BLOB_HLOG_REG:get_top_scores(1),
+%%     {ok, Top2Scores} = ?BLOB_HLOG_REG:get_top_scores(2),
+%%     io:format("Top1Score: ~p~nTop2Scores: ~p~n", [Top1Score, Top2Scores]),
 
-    {ok, Top2LiveHunkScanTime} = ?BLOB_HLOG_REG:get_live_hunk_scan_time_records(2),
-    io:format("Top2LiveHunkScanTime: ~p~n", [Top2LiveHunkScanTime]),
-    ok.
+%%     {ok, Top2LiveHunkScanTime} = ?BLOB_HLOG_REG:get_live_hunk_scan_time_records(2),
+%%     io:format("Top2LiveHunkScanTime: ~p~n", [Top2LiveHunkScanTime]),
+%%     ok.

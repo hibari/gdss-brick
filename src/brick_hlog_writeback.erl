@@ -102,7 +102,7 @@ full_writeback() ->
 init([_Options]) ->
     WritebackBlockSize = 20 * 1024 * 1024,  %% 20MB.     @TODO: Configurable
     WritebackInterval  = 30000,             %% 30 secs.  @TODO: Configurable
-    {ok, TRef} = timer:send_interval(WritebackInterval, schedule_async_writeback),
+    {ok, TRef} = timer:send_interval(WritebackInterval, request_async_writeback),
     {ok, #state{writeback_blocksize=WritebackBlockSize, writeback_timer=TRef}}.
 
 handle_call(full_writeback, From, #state{writeback_pid=undefined,
@@ -138,18 +138,19 @@ handle_cast({writeback_finished, LastSeqNum, LastOffset},
 handle_cast(stop, State) ->
     {stop, normal, State}.
 
-handle_info(schedule_async_writeback, #state{writeback_pid=undefined,
-                                             writeback_blocksize=BlockSize,
-                                             writeback_reqs=[],
-                                             writeback_reqs_next_round=NextRoundReqs,
-                                             last_seq=LastSeqNum,
-                                             last_pos=LastOffset}=State) ->
+handle_info(request_async_writeback, #state{writeback_pid=undefined,
+                                            writeback_blocksize=BlockSize,
+                                            writeback_reqs=[],
+                                            writeback_reqs_next_round=NextRoundReqs,
+                                            last_seq=LastSeqNum,
+                                            last_pos=LastOffset}=State) ->
     Pid = schedule_async_writeback(LastSeqNum, LastOffset, BlockSize),
     {noreply, State#state{writeback_pid=Pid,
                           writeback_reqs=NextRoundReqs,
                           writeback_reqs_next_round=[]
                          }};
-handle_info(schedule_async_writeback, #state{writeback_pid=Pid}=State) when Pid =/= undefined ->
+handle_info(request_async_writeback, #state{writeback_pid=Pid}=State) when Pid =/= undefined ->
+    %% an a write-back process is already running. Ignore the request.
     {noreply, State};
 %% @TODO: Add handle_info clause to handle writeback process's error
 handle_info({'DOWN', _Ref, process, _Pid, _Reason}, State) ->
