@@ -198,7 +198,8 @@ compact_hlog_file(BrickName, SeqNum) ->
                             %% to tell the seqnum is being compactied.
                             case BlobImplMod:get_blob_file_info(BlobImplPid, BrickName, SeqNum) of
                                 {ok, _Path, #file_info{size=Size}} -> %% Size is a bound variable
-                                    SleepTimeSec = 30,  %% @TODO: Use the configuration value
+                                    %% @TODO: Use the configuration value (brick_dirty_buffer_wait)
+                                    SleepTimeSec = 60,
                                     _Pid = BlobImplMod:schedule_blob_file_deletion(
                                              BlobImplPid, BrickName, SeqNum, SleepTimeSec),
                                     ok;

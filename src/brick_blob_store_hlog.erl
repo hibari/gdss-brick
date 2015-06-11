@@ -157,8 +157,9 @@
           head_seqnum_hunk_count=0      :: count(),
           head_seqnum_hunk_overhead=0   :: non_neg_integer(),
           writeback_seqnum              :: seqnum(),
-          writeback_seqnum_hunk_count=0 :: count()
+          writeback_seqnum_hunk_count=0 :: count(),
           %% hunk_overhead=dict:new()     :: dict(seqnum(), non_neg_integer())
+          deleting_seqnums              :: gb_sets:gb_sets(seqnum())
          }).
 -type state() :: #state{}.
 
@@ -318,20 +319,10 @@ close_location_info_file(_Pid, _BrickName, DiskLog) ->
     disk_log:close(DiskLog).
 
 -spec list_seqnums(pid(), brickname()) -> [seqnum()].
-list_seqnums(_Pid, BrickName) ->
-    Dir = blob_dir(BrickName),
-    HLogFiles = filelib:wildcard("*" ++ ?FILE_EXT_HLOG, Dir),
-    %% @TODO: Exclude seqnums that are scheduled for deletion.
-    %%        But watch out; init/1 also calls this function (list_seqnum/2).
-    SeqNums = lists:map(
-                fun(Path) ->
-                        BaseName = filename:basename(Path, ?FILE_EXT_HLOG),
-                        %% substr's start position is 1-based index
-                        SeqNumStr = string:substr(BaseName, length(BaseName) - ?SEQNUM_DIGITS + 1),
-                        list_to_integer(SeqNumStr)
-                end, HLogFiles),
-    %% Not sure if wildcard/2 will always sort the paths. So sort them here.
-    lists:sort(SeqNums).
+list_seqnums(Pid, BrickName) ->
+    AllSeqs = gb_sets:from_list(list_all_seqnums_on_disk(BrickName)),
+    DelSeqs = gen_server:call(Pid, get_deleting_seqnums, ?TIMEOUT),
+    gb_sets:to_list(gb_sets:subtract(AllSeqs, DelSeqs)).
 
 -spec current_writeback_seqnum(pid(), brickname()) -> seqnum().
 current_writeback_seqnum(Pid, _BrickName) ->
@@ -402,7 +393,7 @@ get_blob_file_info(_Pid, BrickName, SeqNum) ->
     end.
 
 -spec schedule_blob_file_deletion(pid(), brickname(), seqnum(), non_neg_integer()) -> pid() | ignore.
-schedule_blob_file_deletion(_Pid, BrickName, SeqNum, SleepTimeSec) ->
+schedule_blob_file_deletion(Pid, BrickName, SeqNum, SleepTimeSec) ->
     Path = blob_path(BrickName, blob_dir(BrickName), SeqNum),
     case file:read_file_info(Path) of
         {error, enoent} ->
@@ -411,45 +402,49 @@ schedule_blob_file_deletion(_Pid, BrickName, SeqNum, SleepTimeSec) ->
                        [SeqNum, Path]),
             ignore;
         {ok, _} ->
-            %% @TODO: Register seqnum to the deleting list instead of deleting the info here.
+            ok  = gen_server:call(Pid, {add_seqnum_to_deletion_list, SeqNum}, ?TIMEOUT),
             _ = ?BLOB_HLOG_REG:delete_blob_file_info(BrickName, SeqNum),
             spawn(
               fun() ->
-                      timer:sleep(SleepTimeSec * 1000),
-                      Result =
-                          case delete_blob_file(BrickName, SeqNum) of
-                              {ok, Path, Size}=OkRes ->
-                                  ?ELOG_INFO("Deleted brick private log "
-                                             "with sequence ~w: ~s (~w bytes)",
-                                             [SeqNum, Path, Size]),
-                                  OkRes;
-                              {error, {Path, Err1}}=ErrRes ->
-                                  ?ELOG_ERROR("Error deleting brick private log "
-                                              "with sequence ~w: ~s (~p)",
-                                              [SeqNum, Path, Err1]),
-                                  ErrRes
-                      end,
-                      BlobDir = blob_dir(BrickName),
-                      {LPath, SPath} = blob_location_and_key_sample_paths(BrickName, BlobDir, SeqNum),
-                      case file:delete(LPath) of
-                          ok ->
-                              ok;
-                          {error, enoent} ->
-                              ok;
-                          {error, _}=Err2 ->
-                              ?ELOG_ERROR("Error deleting blob location file ~w: ~s (~p)",
-                                          [SeqNum, LPath, Err2])
-                      end,
-                      case file:delete(SPath) of
-                          ok ->
-                              ok;
-                          {error, enoent} ->
-                              ok;
-                          {error, _}=Err3 ->
-                              ?ELOG_ERROR("Error deleting key sample file ~w: ~s (~p)",
-                                          [SeqNum, SPath, Err3])
-                      end,
-                      Result
+                      try
+                          timer:sleep(SleepTimeSec * 1000),
+                          Result =
+                              case delete_blob_file(BrickName, SeqNum) of
+                                  {ok, Path, Size}=OkRes ->
+                                      ?ELOG_INFO("Deleted brick private log "
+                                                 "with sequence ~w: ~s (~w bytes)",
+                                                 [SeqNum, Path, Size]),
+                                      OkRes;
+                                  {error, {Path, Err1}}=ErrRes ->
+                                      ?ELOG_ERROR("Error deleting brick private log "
+                                                  "with sequence ~w: ~s (~p)",
+                                                  [SeqNum, Path, Err1]),
+                                      ErrRes
+                              end,
+                          BlobDir = blob_dir(BrickName),
+                          {LPath, SPath} = blob_location_and_key_sample_paths(BrickName, BlobDir, SeqNum),
+                          case file:delete(LPath) of
+                              ok ->
+                                  ok;
+                              {error, enoent} ->
+                                  ok;
+                              {error, _}=Err2 ->
+                                  ?ELOG_ERROR("Error deleting blob location file ~w: ~s (~p)",
+                                              [SeqNum, LPath, Err2])
+                          end,
+                          case file:delete(SPath) of
+                              ok ->
+                                  ok;
+                              {error, enoent} ->
+                                  ok;
+                              {error, _}=Err3 ->
+                                  ?ELOG_ERROR("Error deleting key sample file ~w: ~s (~p)",
+                                              [SeqNum, SPath, Err3])
+                          end,
+                          Result
+                      after
+                          _ = gen_server:call(Pid, {remove_seqnum_from_deletion_list, SeqNum}, ?TIMEOUT)
+                      end
               end)
     end.
 
@@ -477,7 +472,7 @@ init([BrickName, Options]) ->
     HunkCountMin = proplists:get_value(hunk_count_min, Options, 100),
     %% HunkCountMin = proplists:get_value(hunk_count_min, Options, 1000),
 
-    SeqNums = list_seqnums(undefined, BrickName),
+    SeqNums = list_all_seqnums_on_disk(BrickName),
     %% Ensure all existing blob files are registered.
     lists:foreach(
       fun(SeqNum) ->
@@ -505,7 +500,8 @@ init([BrickName, Options]) ->
                 hunk_count_min=HunkCountMin,
                 head_seqnum=CurSeq,
                 head_position=Position,
-                writeback_seqnum=0}}.
+                writeback_seqnum=0,
+                deleting_seqnums=gb_sets:new()}}.
 
 handle_call({write_value, Value}, _From, #state{brick_name=BrickName}=State)
   when is_binary(Value) ->
@@ -551,8 +547,17 @@ handle_call({reserve_positions, LogType, Hunks}, _From, State) ->
     {reply, lists:reverse(Positions), State1};
 handle_call(current_writeback_seqnum, _From, #state{writeback_seqnum=WBSeqNum}=State) ->
     {reply, WBSeqNum, State};
-handle_call(_, _From, State) ->
-    {reply, ok, State}.
+handle_call({add_seqnum_to_deletion_list, SeqNum}, _From, #state{deleting_seqnums=DelSeqs}=State) ->
+    {reply, ok, State#state{deleting_seqnums=gb_sets:add(SeqNum, DelSeqs)}};
+handle_call({remove_seqnum_from_deletion_list, SeqNum}, _From, #state{deleting_seqnums=DelSeqs}=State) ->
+    case gb_sets:is_member(SeqNum, DelSeqs) of
+        true ->
+            {reply, ok, State#state{deleting_seqnums=gb_sets:delete(SeqNum, DelSeqs)}};
+        false ->
+            {reply, ignore, State}
+    end;
+handle_call(get_deleting_seqnums, _From, #state{deleting_seqnums=DelSeqs}=State) ->
+    {reply, DelSeqs, State}.
 
 handle_cast({update_writeback_seqnum, NewWBSeqNum, _SuccessCount},
             #state{writeback_seqnum=WBSeqNum}=State) when NewWBSeqNum < WBSeqNum ->
@@ -844,6 +849,20 @@ register_blob_file_info(BrickName, WBSeqNum, HunkCount) ->
 %% ====================================================================
 %% Internal functions - files
 %% ====================================================================
+
+-spec list_all_seqnums_on_disk(brickname()) -> [seqnum()].
+list_all_seqnums_on_disk(BrickName) ->
+    Dir = blob_dir(BrickName),
+    HLogFiles = filelib:wildcard("*" ++ ?FILE_EXT_HLOG, Dir),
+    SeqNums = lists:map(
+                fun(Path) ->
+                        BaseName = filename:basename(Path, ?FILE_EXT_HLOG),
+                        %% substr's start position is 1-based index
+                        SeqNumStr = string:substr(BaseName, length(BaseName) - ?SEQNUM_DIGITS + 1),
+                        list_to_integer(SeqNumStr)
+                end, HLogFiles),
+    %% Not sure if wildcard/2 will always sort the paths. So sort them here.
+    lists:sort(SeqNums).
 
 -spec should_advance_seqnum(state()) -> boolean().
 should_advance_seqnum(#state{head_position=Position, file_len_max=MaxLen, file_len_min=MinLen,

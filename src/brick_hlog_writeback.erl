@@ -126,6 +126,7 @@ handle_cast({writeback_finished, LastSeqNum, LastOffset},
     lists:foreach(fun(From) ->
                           gen_server:reply(From, ok)
                   end, Reqs),
+    _ = ?WAL:writeback_finished(LastSeqNum, LastOffset),
     if
         NextRoundReqs =/= [] ->
             Delay = 200, %% 0.2 secs

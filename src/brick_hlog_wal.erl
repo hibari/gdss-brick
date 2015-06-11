@@ -34,6 +34,7 @@
          open_wal_for_read/1,
          get_all_seqnums/0,
          get_current_seqnum_and_offset/0,
+         writeback_finished/2,
          schedule_wal_deletion/2
         ]).
 
@@ -88,12 +89,14 @@
           cur_fh                        :: file:fd(),                % current file
           cur_hunk_count=0              :: count(),
           %% cur_hunk_overhead=0           :: non_neg_integer(),
+          writeback_seq                 :: seqnum(),                 % writeback sequence #
           sync_listeners=gb_sets:new()  :: set(pid()),
           hunk_count_in_group_commit=0  :: non_neg_integer(),
           callback_ticket               :: callback_ticket(),
           sync_timer                    :: undefined | timer:tref(),
           sync_proc=undefined           :: undefined | {pid(), reference()},
-          write_backlog=[]              :: [hunk_bytes()]
+          write_backlog=[]              :: [hunk_bytes()],
+          deleting_seqnums              :: gb_sets:gb_sets(seqnum())
          }).
 -type state() :: #state{}.
 
@@ -139,11 +142,19 @@ open_wal_for_read(SeqNum) ->
 get_all_seqnums() ->
     Dir = gen_server:call(?WAL_SERVER_REG_NAME, get_wal_dir, ?TIMEOUT),
     HLogFiles = filelib:wildcard("*.hlog", Dir),
-    [ list_to_integer(filename:basename(N, ".hlog")) || N <- lists:sort(HLogFiles) ].
+    AllSeqs = gb_sets:from_list([ list_to_integer(filename:basename(N, ".hlog"))
+                                  || N <- lists:sort(HLogFiles) ]),
+    DelSeqs = gen_server:call(?WAL_SERVER_REG_NAME, get_deleting_seqnums, ?TIMEOUT),
+    gb_sets:to_list(gb_sets:subtract(AllSeqs, DelSeqs)).
 
 -spec get_current_seqnum_and_offset() -> {seqnum(), offset()}.
 get_current_seqnum_and_offset() ->
     gen_server:call(?WAL_SERVER_REG_NAME, get_current_seqnum_and_offset, ?TIMEOUT).
+
+-spec writeback_finished(seqnum(), offset()) -> ok.
+writeback_finished(SeqNum, Offset) ->
+    gen_server:cast(?WAL_SERVER_REG_NAME, {writeback_finished, SeqNum, Offset}),
+    ok.
 
 -spec schedule_wal_deletion(seqnum(), non_neg_integer()) -> pid() | ignore.
 schedule_wal_deletion(SeqNum, SleepTimeSec) ->
@@ -154,22 +165,37 @@ schedule_wal_deletion(SeqNum, SleepTimeSec) ->
                        "The file does not exist.",
                        [SeqNum, Path]),
             ignore;
-        {ok, _, _} ->
-            %% @TODO: Register WAL to the deleting list
-            spawn(
-              fun() ->
-                      timer:sleep(SleepTimeSec * 1000),
-                      case delete_wal(Dir, SeqNum) of
-                          {ok, Path, Size} ->
-                              ?ELOG_INFO("Deleted WAL with sequence ~w: ~s (~w bytes)",
-                                         [SeqNum, Path, Size]),
-                              ok;
-                          {error, {Path, Reason}}=Err ->
-                              ?ELOG_ERROR("Error deleting WAL with sequence ~w ~s: (~p)",
-                                          [SeqNum, Path, Reason]),
-                              Err
-                      end
-              end)
+        {ok, Path, _} ->
+            case get_current_seqnum_and_offset() of
+                {CurSeqNum, _} when SeqNum >= CurSeqNum ->
+                    ?ELOG_INFO("Ignoring a deletion request for WAL with sequence ~w: ~s. "
+                               "The file might be still opened for write.",
+                               [SeqNum, Path]),
+                    ignore;
+                {_, _} ->
+                    ok  = gen_server:call(?WAL_SERVER_REG_NAME,
+                                          {add_seqnum_to_deletion_list, SeqNum}, ?TIMEOUT),
+                    spawn(
+                      fun() ->
+                              try
+                                  timer:sleep(SleepTimeSec * 1000),
+                                  case delete_wal(Dir, SeqNum) of
+                                      {ok, Path, Size} ->
+                                          ?ELOG_INFO("Deleted WAL with sequence ~w: ~s (~w bytes)",
+                                                     [SeqNum, Path, Size]),
+                                          ok;
+                                      {error, {Path, Reason}}=Err ->
+                                          ?ELOG_ERROR("Error deleting WAL with sequence ~w ~s: (~p)",
+                                                      [SeqNum, Path, Reason]),
+                                          Err
+                                  end
+                              after
+                                  _ = gen_server:call(?WAL_SERVER_REG_NAME,
+                                                      {remove_seqnum_from_deletion_list, SeqNum},
+                                                      ?TIMEOUT)
+                              end
+                      end)
+            end
     end.
 
 
@@ -214,7 +240,9 @@ init(Options) ->
                 cur_seq=CurSeq,
                 cur_fh=CurFH,
                 cur_pos=CurPos,
-                callback_ticket=make_ref()
+                writeback_seq=0,
+                callback_ticket=make_ref(),
+                deleting_seqnums=gb_sets:new()
                }}.
 
 %% @TODO Create batch write request also (write_batch)
@@ -297,8 +325,31 @@ handle_call(get_wal_dir, _From, #state{wal_dir=Dir}=State) ->
     {reply, Dir, State};
 handle_call(get_current_seqnum_and_offset, _From,
             #state{cur_seq=CurSeq, cur_pos=CurPos}=State) ->
-    {reply, {CurSeq, CurPos}, State}.
+    {reply, {CurSeq, CurPos}, State};
+handle_call({add_seqnum_to_deletion_list, SeqNum}, _From, #state{deleting_seqnums=DelSeqs}=State) ->
+    {reply, ok, State#state{deleting_seqnums=gb_sets:add(SeqNum, DelSeqs)}};
+handle_call({remove_seqnum_from_deletion_list, SeqNum}, _From, #state{deleting_seqnums=DelSeqs}=State) ->
+    case gb_sets:is_member(SeqNum, DelSeqs) of
+        true ->
+            {reply, ok, State#state{deleting_seqnums=gb_sets:delete(SeqNum, DelSeqs)}};
+        false ->
+            {reply, ignore, State}
+    end;
+handle_call(get_deleting_seqnums, _From, #state{deleting_seqnums=DelSeqs}=State) ->
+    {reply, DelSeqs, State}.
 
+handle_cast({writeback_finished, NewSeqNum, _Offset},
+            #state{writeback_seq=SeqNum}=State) when NewSeqNum =< SeqNum ->
+    {noreply, State};
+handle_cast({writeback_finished, NewSeqNum, _Offset}, #state{writeback_seq=0}=State) ->
+    {noreply, State#state{writeback_seq=NewSeqNum}};
+handle_cast({writeback_finished, NewSeqNum, _Offset}, #state{writeback_seq=SeqNum}=State) ->
+    %% @TODO: Use the configuration value (brick_dirty_buffer_wait)
+    SleepTimeSec = 60,
+    %% @TODO ENHANCEME: Need a better solution
+    %% spawn a process to avoid dead-lock beetween gen_server:handle_* calls
+    _ = spawn(?MODULE, schedule_wal_deletion, [SeqNum, SleepTimeSec]),
+    {noreply, State#state{writeback_seq=NewSeqNum}};
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
