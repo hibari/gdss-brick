@@ -31,8 +31,6 @@
 %%   sync updates similar to "group commit"). </li>
 %% <li> Dirty key management: avoid accessing keys that are currently being
 %%   logged to disk. </li>
-%% <li> Table checkpointing (though not fully implemented, e.g. automatic
-%%   checkpoints at prescribed times or when logs get too big or .... ) </li>
 %% </ul>
 %%
 %% With review and inevitable dev growth, I expect several of these
@@ -169,8 +167,7 @@
 %%% ETS Tables (Section 2.3.14.3 of Hibari Contributor's Guide)
 %%%
 %%% #state.ctab, the contents table:
-%%%    Except for changes made during a checkpoint, all data about a
-%%%    key lives in this table as a "store tuple".
+%%%    All data about a key lives in this table as a "store tuple".
 %%%
 %%% #state.dirty_tab, the dirty table:
 %%%    If a key has been updated but not yet flushed to disk, the key
@@ -525,6 +522,20 @@ handle_call({status}, _From, State) ->
     {reply, Reply, State};
 handle_call({state}, _From, State) ->
     {reply, State, State};
+handle_call({first_key}, _From, State) ->
+    case ets:first(State#state.ctab) of
+        '$end_of_table' ->
+            {reply, key_not_exist, State};
+        Key ->
+            {reply, {ok, Key}, State}
+        end;
+handle_call({last_key}, _From, State) ->
+    case ets:last(State#state.ctab) of
+        '$end_of_table' ->
+            {reply, key_not_exist, State};
+        Key ->
+            {reply, {ok, Key}, State}
+        end;
 handle_call({flush_all}, _From, State) ->
     {Reply, NewState} = do_flush_all(State),
     {reply, Reply, NewState};
@@ -1325,8 +1336,7 @@ get_many1b(Key, Flags, IncreasingOrderP, State) ->
             Res
     end.
 
-%% @doc Get a list of keys, starting with Key, in increasing order when
-%% our current state is not checkpointing.
+%% @doc Get a list of keys, starting with Key, in increasing order
 %%
 %% The tuples returned here are in external tuple format.
 %%

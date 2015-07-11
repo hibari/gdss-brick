@@ -362,6 +362,9 @@
          delete/3, delete/4,
          get_many/4, get_many/5, get_many/6, get_many/7,
          do/3, do/4, do/5]).
+-export([first_key/2,
+         last_key/2
+        ]).
 
 -export([make_add/2, make_add/4, make_add/5,
          make_replace/2, make_replace/4, make_replace/5,
@@ -973,6 +976,14 @@ do(ServerName, Node, DoList, DoFlags, Timeout)
             exit(timeout)
     end.
 
+-spec first_key(brick_name(), node_name()) -> {ok, key()} | key_not_exist.
+first_key(ServerName, Node) ->
+    gen_server:call({ServerName, Node}, {first_key}, foo_timeout()).
+
+-spec last_key(brick_name(), node_name()) -> {ok, key()} | key_not_exist.
+last_key(ServerName, Node) ->
+    gen_server:call({ServerName, Node}, {last_key}, foo_timeout()).
+
 %% @spec (brick_name(), node_name())
 %%    -> zzz_status_reply()
 %% @doc Request a brick's status.
@@ -995,7 +1006,7 @@ state(ServerName, Node) when not is_list(Node) ->
 
 %% @spec (brick_name(), node_name())
 %%    -> zzz_flushall_reply()
-%% @doc Delete all keys from a brick ... requires +18 constitution to use.
+%% @doc Delete all keys from a brick
 
 -spec flush_all(brick_name(), node_name()) -> flushall_reply().
 flush_all(ServerName, Node) when not is_list(Node) ->
@@ -1431,6 +1442,8 @@ handle_call({do, _SentAt, _, _} = Msg, From, State) ->
     handle_call_do_prescreen(Msg, From, State);
 handle_call(Msg, From, State)
   when element(1, Msg) =:= state;
+       element(1, Msg) =:= first_key;
+       element(1, Msg) =:= last_key;
        element(1, Msg) =:= flush_all;
        element(1, Msg) =:= dump_state;
        element(1, Msg) =:= sync_stats;           % debugging? useful?
@@ -2787,7 +2800,21 @@ handle_call_via_impl({do, _SentAt, DoOpList, DoFlags}=Msg, From, State) ->
                 end,
             ImplMod:bcb_squidflash_primer(Keys, ResubmitFun, ImplState),
             {noreply, State}
+    end;
+handle_call_via_impl(Msg, From, State) ->
+    {ImplMod, ImplState} = impl_details(State),
+    false = size(ImplState) == record_info(size, state), %sanity
+    case ImplMod:handle_call(Msg, From, ImplState) of
+        {up1, _, _} ->
+            throw(up1);
+        {up1_sync_done, _, _, _} ->
+            throw(up1_sync_done);
+        {up1_read_only_mode, _, _, _} ->
+            throw(up1_read_only_mode);
+        OrigReturn ->
+            calc_original_return(OrigReturn, State)
     end.
+
 
 %% @spec (gen_server_handle_call_reply_tuple(), state_r())
 %%    -> gen_server_handle_call_reply_tuple()
