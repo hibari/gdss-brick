@@ -229,10 +229,10 @@ init(Options) ->
              end,
     {CurFH, CurPos} = create_wal(Dir, CurSeq),
 
-    ?ELOG_INFO("The WAL server ~w started. current sequence: ~w, "
-               "minimum hunk count: ~w hunks, "
-               "minimum file length: ~w bytes, maximum file length: ~w bytes",
-               [?WAL_SERVER_REG_NAME, CurSeq, HunkCountMin, LenMin, LenMax]),
+    ?ELOG_NOTICE("The WAL server ~w started. current sequence: ~w, "
+                 "minimum hunk count: ~w hunks, "
+                 "minimum file length: ~w bytes, maximum file length: ~w bytes",
+                 [?WAL_SERVER_REG_NAME, CurSeq, HunkCountMin, LenMin, LenMax]),
 
     {ok, #state{wal_dir=Dir,
                 file_len_max=LenMax,

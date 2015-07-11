@@ -187,7 +187,8 @@
 start_link(BrickName, Options) when is_atom(BrickName) ->
     %% @TODO: Check if brick server with the BrickName exists
     RegName = list_to_atom(atom_to_list(BrickName) ++ "_blob_store"),
-    gen_server:start_link({local, RegName}, ?MODULE, [BrickName, Options], []);
+    gen_server:start_link({local, RegName}, ?MODULE,
+                          [BrickName, RegName, Options], []);
 start_link(BrickName, _Options) ->
     {error, {brick_name_is_not_atom, BrickName}}.
 
@@ -457,7 +458,7 @@ sync(_Pid) ->
 %% gen_server callbacks
 %% ====================================================================
 
-init([BrickName, Options]) ->
+init([BrickName, RegName, Options]) ->
     process_flag(trap_exit, true),
     %% process_flag(priority, high),
 
@@ -494,6 +495,12 @@ init([BrickName, Options]) ->
                      lists:max(SeqNums) + 1
              end,
     Position = create_log(BrickName, CurSeq),
+
+    ?ELOG_NOTICE("Brick private blob server ~w started. current sequence: ~w, "
+                 "minimum hunk count: ~w hunks, "
+                 "minimum file length: ~w bytes, maximum file length: ~w bytes",
+                 [RegName, CurSeq, HunkCountMin, LenMin, LenMax]),
+
     {ok, #state{brick_name=BrickName,
                 file_len_max=LenMax,
                 file_len_min=LenMin,
