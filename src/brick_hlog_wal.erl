@@ -33,7 +33,7 @@
          request_group_commit/1,
          open_wal_for_read/1,
          get_all_seqnums/0,
-         get_current_seqnum_and_offset/0,
+         get_current_seqnum_and_disk_offset/0,
          writeback_finished/2,
          schedule_wal_deletion/2
         ]).
@@ -63,8 +63,8 @@
 %% types and records
 %% ====================================================================
 
-%% -define(SYNC_DELAY_MILLS, 5).
--define(SYNC_DELAY_MILLS, 20).
+-define(INITIAL_SYNC_DELAY_MILLS, 3).
+-define(SYNC_INTERVAL_MILLS, 15).
 -define(TIMEOUT, 60 * 1000).
 
 -type prop() :: {name, servername()}
@@ -81,19 +81,20 @@
 
 -record(state, {
           wal_dir                       :: dirname(),
-          file_len_max                  :: len(),                    % WAL file size max
-          file_len_min                  :: len(),                    % WAL file size min
+          file_len_max                  :: len(),             %% WAL file size max
+          file_len_min                  :: len(),             %% WAL file size min
           hunk_count_min                :: count(),
-          cur_seq                       :: seqnum(),                 % current sequence #
-          cur_pos                       :: offset(),                 % current position
-          cur_fh                        :: file:fd(),                % current file
+          cur_seq                       :: seqnum(),          %% current sequence number
+          cur_reserved_pos              :: offset(),          %% position that allocated to hunks
+          cur_disk_pos                  :: offset(),          %% position that written to disk
+          cur_fh                        :: file:fd(),         %% current file
           cur_hunk_count=0              :: count(),
           %% cur_hunk_overhead=0           :: non_neg_integer(),
-          writeback_seq                 :: seqnum(),                 % writeback sequence #
+          writeback_seq                 :: seqnum(),          %% writeback sequence number
           sync_listeners=gb_sets:new()  :: set(pid()),
           hunk_count_in_group_commit=0  :: non_neg_integer(),
           callback_ticket               :: callback_ticket(),
-          sync_timer                    :: undefined | timer:tref(),
+          sync_timer                    :: undefined | {oneshot | interval, timer:tref()},
           sync_proc=undefined           :: undefined | {pid(), reference()},
           write_backlog=[]              :: [hunk_bytes()],
           deleting_seqnums              :: gb_sets:gb_sets(seqnum())
@@ -147,9 +148,9 @@ get_all_seqnums() ->
     DelSeqs = gen_server:call(?WAL_SERVER_REG_NAME, get_deleting_seqnums, ?TIMEOUT),
     gb_sets:to_list(gb_sets:subtract(AllSeqs, DelSeqs)).
 
--spec get_current_seqnum_and_offset() -> {seqnum(), offset()}.
-get_current_seqnum_and_offset() ->
-    gen_server:call(?WAL_SERVER_REG_NAME, get_current_seqnum_and_offset, ?TIMEOUT).
+-spec get_current_seqnum_and_disk_offset() -> {seqnum(), offset()}.
+get_current_seqnum_and_disk_offset() ->
+    gen_server:call(?WAL_SERVER_REG_NAME, get_current_seqnum_and_disk_offset, ?TIMEOUT).
 
 -spec writeback_finished(seqnum(), offset()) -> ok.
 writeback_finished(SeqNum, Offset) ->
@@ -166,7 +167,7 @@ schedule_wal_deletion(SeqNum, SleepTimeSec) ->
                        [SeqNum, Path]),
             ignore;
         {ok, Path, _} ->
-            case get_current_seqnum_and_offset() of
+            case get_current_seqnum_and_disk_offset() of
                 {CurSeqNum, _} when SeqNum >= CurSeqNum ->
                     ?ELOG_INFO("Ignoring a deletion request for WAL with sequence ~w: ~s. "
                                "The file might be still opened for write.",
@@ -239,7 +240,8 @@ init(Options) ->
                 hunk_count_min=HunkCountMin,
                 cur_seq=CurSeq,
                 cur_fh=CurFH,
-                cur_pos=CurPos,
+                cur_reserved_pos=CurPos,
+                cur_disk_pos=CurPos,
                 writeback_seq=0,
                 callback_ticket=make_ref(),
                 deleting_seqnums=gb_sets:new()
@@ -286,7 +288,7 @@ handle_call({write_hunk_group_commit, HunkBytes, Caller}, _From,
             %% @TODO: Refactoring
             case SyncTimer of
                 undefined ->
-                    Timer = new_sync_wal_timer(),
+                    Timer = schedule_oneshot_wal_sync(),
                     {reply, {ok, Seq, Pos, CommitTicket}, State2#state{sync_timer=Timer}};
                 _ ->
                     {reply, {ok, Seq, Pos, CommitTicket}, State2}
@@ -304,7 +306,7 @@ handle_call({write_hunk_group_commit, HunkBytes, Caller}, _From,
             %% @TODO: Refactoring
             case SyncTimer of
                 undefined ->
-                    Timer = new_sync_wal_timer(),
+                    Timer = schedule_oneshot_wal_sync(),
                     {reply, {ok, Seq, Pos, CommitTicket}, State2#state{sync_timer=Timer}};
                 _ ->
                     {reply, {ok, Seq, Pos, CommitTicket}, State2}
@@ -316,16 +318,16 @@ handle_call({request_group_commit, Requester}, _From,
     %% @TODO: Refactoring
     case SyncTimer of
         undefined ->
-            Timer = new_sync_wal_timer(),
+            Timer = schedule_oneshot_wal_sync(),
             {reply, CommitTicket, State1#state{sync_timer=Timer}};
         _ ->
             {reply, CommitTicket, State1}
     end;
 handle_call(get_wal_dir, _From, #state{wal_dir=Dir}=State) ->
     {reply, Dir, State};
-handle_call(get_current_seqnum_and_offset, _From,
-            #state{cur_seq=CurSeq, cur_pos=CurPos}=State) ->
-    {reply, {CurSeq, CurPos}, State};
+handle_call(get_current_seqnum_and_disk_offset, _From,
+            #state{cur_seq=CurSeq, cur_disk_pos=DiskPos}=State) ->
+    {reply, {CurSeq, DiskPos}, State};
 handle_call({add_seqnum_to_deletion_list, SeqNum}, _From, #state{deleting_seqnums=DelSeqs}=State) ->
     {reply, ok, State#state{deleting_seqnums=gb_sets:add(SeqNum, DelSeqs)}};
 handle_call({remove_seqnum_from_deletion_list, SeqNum}, _From, #state{deleting_seqnums=DelSeqs}=State) ->
@@ -348,11 +350,18 @@ handle_cast({writeback_finished, NewSeqNum, _Offset}, #state{writeback_seq=SeqNu
     SleepTimeSec = 60,
     %% @TODO ENHANCEME: Need a better solution
     %% spawn a process to avoid dead-lock beetween gen_server:handle_* calls
-    _ = spawn(?MODULE, schedule_wal_deletion, [SeqNum, SleepTimeSec]),
+    lists:foreach(fun(SN) ->
+                          _ = spawn(?MODULE, schedule_wal_deletion, [SN, SleepTimeSec])
+                  end, lists:seq(SeqNum, NewSeqNum - 1)),
     {noreply, State#state{writeback_seq=NewSeqNum}};
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
+handle_info(sync_wal, #state{sync_timer={oneshot, _}}=State) ->
+    State1 = do_sync_wal(State),
+    %% Shall we do this before do_sync_wal()?
+    Timer = schedule_periodical_wal_sync(),
+    {noreply, State1#state{sync_timer=Timer}};
 handle_info(sync_wal, State) ->
     State1 = do_sync_wal(State),
     {noreply, State1};
@@ -377,13 +386,13 @@ code_change(_OldVsn, State, _Extra) ->
 -spec do_write_hunk(hunk_bytes(), state())
                    -> {sync_in_progress | ok, seqnum(), offset(), state()}.
 do_write_hunk(HunkBytes, #state{write_backlog=Backlog, sync_proc=SyncProcess,
-                                cur_seq=CurSeq, cur_pos=Pos1,
+                                cur_seq=CurSeq, cur_reserved_pos=Pos1,
                                 cur_hunk_count=HunkCount}=State)
   when SyncProcess =/= undefined; Backlog =/= [] ->
     %% do_sync_wal/1 or do_sync_done/3 is running. Do not write the hunk to
     %% the file; instead, put the hunk to the waiting list (write_backlog).
     Pos2 = Pos1 + byte_size(HunkBytes),
-    State1 = State#state{cur_pos=Pos2, write_backlog=[HunkBytes | Backlog],
+    State1 = State#state{cur_reserved_pos=Pos2, write_backlog=[HunkBytes | Backlog],
                          cur_hunk_count=HunkCount + 1},
     {sync_in_progress, CurSeq, Pos1, State1};
 do_write_hunk(HunkBytes, State) ->
@@ -395,7 +404,7 @@ do_write_hunk(HunkBytes, State) ->
                 State
         end,
     FH        = State1#state.cur_fh,
-    Pos1      = State1#state.cur_pos,
+    Pos1      = State1#state.cur_reserved_pos,
     HunkCount = State1#state.cur_hunk_count,
 
     HunkSize = byte_size(HunkBytes),
@@ -406,7 +415,8 @@ do_write_hunk(HunkBytes, State) ->
     Pos2 = Pos1 + HunkSize,
     %% DEBUG: assert_file_position(post_write, FH, Pos2),
 
-    {done, State1#state.cur_seq, Pos1, State1#state{cur_pos=Pos2, cur_hunk_count=HunkCount + 1}}.
+    {done, State1#state.cur_seq, Pos1,
+     State1#state{cur_reserved_pos=Pos2, cur_disk_pos=Pos2, cur_hunk_count=HunkCount + 1}}.
 
 
 %% -spec assert_file_position(atom(), file:fd(), offset()) -> ok | no_return().
@@ -452,7 +462,7 @@ do_sync_wal(State) ->
 
 -spec spawn_sync_wal(callback_ticket(), [pid()], non_neg_integer(),
                      dirname(), seqnum()) -> {pid(), reference()}.
-spawn_sync_wal(Ticket, ListenerList, Count, Dir, CurSeq) ->
+spawn_sync_wal(Ticket, ListenerList, _Count, Dir, CurSeq) ->
     spawn_monitor(
       fun() ->
               Start1 = brick_metrics:histogram_timed_begin(wal_sync_latencies),
@@ -478,46 +488,53 @@ spawn_sync_wal(Ticket, ListenerList, Count, Dir, CurSeq) ->
                   Notification = {wal_sync, Ticket, Res},
                   lists:foreach(fun(Pid) ->
                                         Pid ! Notification
-                                end, ListenerList),
+                                end, ListenerList)
 
                   %% NOTE: ElapseMillis does not include the time for sending notifications.
-                  if ElapseMillis > 200 ->   %% 200 ms
-                          ?ELOG_INFO("sync was ~p msec for ~p writes",
-                                     [ElapseMillis, Count]);
-                     true ->
-                          ok
-                  end
+                  %% if ElapseMillis > 200 ->   %% 200 ms
+                  %%         ?ELOG_INFO("sync was ~p msec for ~p writes",
+                  %%                    [ElapseMillis, Count]);
+                  %%    true ->
+                  %%         ok
+                  %% end
               after
                   ok = file:close(FH)
               end,
               normal
       end).
 
+-spec do_sync_done(pid(), term(), state()) -> state().
 do_sync_done(Pid, _Reason, #state{sync_proc={Pid, _}}=State) ->
     do_pending_writes(State#state{sync_proc=undefined}).
 
+-spec do_pending_writes(state()) -> state().
 do_pending_writes(#state{write_backlog=[], sync_timer=Timer}=State) ->
+    %% No more pending write. Cancel the timer (if any).
     cancel_sync_wal_timer(Timer),
     State#state{sync_timer=undefined};
 do_pending_writes(State) ->
-    write_backlog(State),
-    State#state{write_backlog=[]}.
+    write_backlog(State).
 
-write_backlog(#state{cur_fh=FH, cur_pos=Pos, write_backlog=Backlog}) ->
+-spec write_backlog(state()) -> state().
+write_backlog(#state{cur_fh=FH, cur_reserved_pos=Pos, write_backlog=Backlog}=State) ->
     ok = file:write(FH, lists:reverse(Backlog)),
     assert_file_position(write_backlog, FH, Pos),        %% @TODO: DEBUG DESABLEME
-    %% @TODO: advance seq if necessary
+    State#state{write_backlog=[], cur_disk_pos=Pos}.
 
-    ok.
+-spec schedule_oneshot_wal_sync() -> {oneshot, timer:tref()}.
+schedule_oneshot_wal_sync() ->
+    {ok, SyncTimer} = timer:send_after(?INITIAL_SYNC_DELAY_MILLS, sync_wal),
+    {oneshot, SyncTimer}.
 
--spec new_sync_wal_timer() -> timer:tref().
-new_sync_wal_timer() ->
-    {ok, SyncTimer} = timer:send_interval(?SYNC_DELAY_MILLS, sync_wal),
-    SyncTimer.
+-spec schedule_periodical_wal_sync() -> {interval, timer:tref()}.
+schedule_periodical_wal_sync() ->
+    {ok, SyncTimer} = timer:send_interval(?INITIAL_SYNC_DELAY_MILLS, sync_wal),
+    {interval, SyncTimer}.
 
+-spec cancel_sync_wal_timer(undefined | {oneshot | interval, timer:tref()}) -> ok.
 cancel_sync_wal_timer(undefined) ->
     ok;
-cancel_sync_wal_timer(TimerRef) ->
+cancel_sync_wal_timer({_, TimerRef}) ->
     timer:cancel(TimerRef),
     ok.
 
@@ -527,21 +544,21 @@ cancel_sync_wal_timer(TimerRef) ->
 %% ====================================================================
 
 -spec should_advance_seqnum(state()) -> boolean().
-should_advance_seqnum(#state{cur_pos=Position, file_len_max=MaxLen, file_len_min=MinLen,
+should_advance_seqnum(#state{cur_reserved_pos=Pos, file_len_max=MaxLen, file_len_min=MinLen,
                              cur_hunk_count=HunkCount, hunk_count_min=MinHunkCount}) ->
-    Position >= MaxLen
-        orelse (Position >= MinLen andalso HunkCount >= MinHunkCount).
+    Pos >= MaxLen
+        orelse (Pos >= MinLen andalso HunkCount >= MinHunkCount).
 
 -spec do_advance_seqnum(non_neg_integer(), state()) -> state().
 do_advance_seqnum(Incr, #state{sync_proc=undefined, write_backlog=[],
                                wal_dir=Dir, cur_seq=CurSeq, cur_fh=CurFH,
-                               cur_pos=Position, cur_hunk_count=HunkCount}=State) ->
+                               cur_reserved_pos=Pos, cur_hunk_count=HunkCount}=State) ->
     ?ELOG_INFO("Switching WAL from sequence ~w: ~s (~w hunks, ~w bytes written)",
-               [CurSeq, wal_path(Dir, CurSeq), HunkCount, Position]),
+               [CurSeq, wal_path(Dir, CurSeq), HunkCount, Pos]),
     close_wal(Dir, CurSeq, CurFH),
     NewSeq = CurSeq + Incr,
-    {NewFH, NewPosition} = create_wal(Dir, NewSeq),
-    State#state{cur_seq=NewSeq, cur_fh=NewFH, cur_pos=NewPosition, cur_hunk_count=0};
+    {NewFH, NewPos} = create_wal(Dir, NewSeq),
+    State#state{cur_seq=NewSeq, cur_fh=NewFH, cur_reserved_pos=NewPos, cur_hunk_count=0};
 do_advance_seqnum(_Incr, #state{sync_proc={Pid, Ref}}) ->
     error({do_advance_seqnum, {sync_proc, Pid, Ref}}).
 

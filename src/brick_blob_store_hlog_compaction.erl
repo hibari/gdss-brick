@@ -209,7 +209,7 @@ compact_hlog_file(BrickName, SeqNum) ->
                                                  "Not deleting for now. "
                                                  "(old size: ~w, new size: ~w)",
                                                  [BrickName, SeqNum, Size, NewSize]),
-                                    skip
+                                    ok
                             end;
                         {error, _}=Err ->
                             Err
@@ -270,10 +270,8 @@ schedule_compaction(LiveHunkThreshold) ->
           fun() ->
                   case do_estimate_live_hunk_ratio_for_files(MaxLiveHunkEstimationFiles) of
                       ok ->
-                          ?ELOG_INFO("Compaction started."),
                           case do_compaction(MaxCompactionFiles, LiveHunkThreshold) of
                               ok ->
-                                  ?ELOG_INFO("Compaction finished."),
                                   gen_server:cast(?COMPACTION_SERVER_REG_NAME, compaction_finished),
                                   exit(normal);
                               {error, _}=Err ->
@@ -337,13 +335,23 @@ do_compaction(MaxCompactionFiles, LiveHunkThreshold) ->
             lists:foreach(
               fun(#score{score=_Float, brick_name=BrickName, seqnum=SeqNum}) ->
                       case ?BLOB_HLOG_REG:get_blob_file_info(BrickName, SeqNum) of
-                          {ok, #blob_file_info{estimated_live_hunk_ratio=Ratio}} ->
+                          {ok, #blob_file_info{
+                                  estimated_live_hunk_ratio=Ratio,
+                                  byte_size=Size, total_hunks=HunkCount}} ->
                               if
                                   Ratio > LiveHunkThreshold ->
                                       ok;
                                   true ->
+                                      ?ELOG_INFO(
+                                         "Compacting blob file ~w with sequence ~w. "
+                                         "size: ~w, hunk count: ~w, estimatad live hunk ratio: ~.2f",
+                                         [BrickName, SeqNum, Size, HunkCount, Ratio]),
                                       case compact_hlog_file(BrickName, SeqNum) of
                                           ok ->
+                                              %% @TODO: Display stats:
+                                              %%        - copy count/bytes
+                                              %%        - delete count/bytes
+                                              %%        - estimated/actual live hunk ratio
                                               ?ELOG_INFO("Compacted blob file ~w with sequence ~w",
                                                          [BrickName, SeqNum]),
                                               ok;
@@ -460,6 +468,7 @@ find_and_copy_live_hunks(BrickName, MetadataStore,
             StoreTuples = BlobImplMod:copy_hunks(BlobPid, BrickName, SeqNum,
                                                  LiveHunkLocations, AgeThreshold),
             _ = MetadataStore:update_blob_locations(StoreTuples),
+            %% DEBUG: display_debug_info(SeqNum, Locations, LiveHunkLocations, StoreTuples),
             %% repeat
             find_and_copy_live_hunks(BrickName, MetadataStore,
                                      BlobStore, BlobStoreInfo, SeqNum, FilterFun,
@@ -478,3 +487,32 @@ live_hunk_locations(MetadataStore, Locations, FilterFun) ->
     LiveKeysSet = gb_sets:from_list(LiveKeys),
     [ Location || #l{key=Key, timestamp=TS}=Location <- Locations,
                   gb_sets:is_member({Key, TS}, LiveKeysSet) ].
+
+%% -record(p, {
+%%           seqnum      :: seqnum(),
+%%           hunk_pos    :: offset(),     %% position of the hunk in private log
+%%           val_offset  :: offset(),     %% offset of the value from hunk_pos
+%%           val_len     :: len()
+%%          }).
+%%
+%% display_debug_info(FromSeqNum, Locations, LiveHunkLocations, StoreTuples) ->
+%%     AllLocsSet = gb_sets:from_list(Locations),
+%%     LiveLocsSet = gb_sets:from_list(LiveHunkLocations),
+%%     DelLocs = gb_sets:to_list(gb_sets:subtract(AllLocsSet, LiveLocsSet)),
+%%
+%%     %% copied
+%%     lists:foreach(fun({#l{key=FromKey, timestamp=FromTS, hunk_pos=FromPos}, ST}) ->
+%%                           %% ToKey = brick_ets:storetuple_key(ST),
+%%                           %% ToTS  = brick_ets:storetuple_ts(ST),
+%%                           #p{seqnum=ToSeqNum, hunk_pos=ToPos} = brick_ets:storetuple_val(ST),
+%%                           ?ELOG_DEBUG("Copied: ~s, ~w, {~w, ~w} -> {~w, ~w}",
+%%                                       [gmt_util:safe_binary_to_display_string(FromKey),
+%%                                        FromTS, FromSeqNum, FromPos,
+%%                                        ToSeqNum, ToPos])
+%%                   end, lists:zip(LiveHunkLocations, StoreTuples)),
+%%     %% deleted
+%%     lists:foreach(fun(#l{key=Key, timestamp=TS, hunk_pos=Pos}) ->
+%%                           ?ELOG_DEBUG("Deleted: ~s, ~w, {~w, ~w}",
+%%                                       [gmt_util:safe_binary_to_display_string(Key),
+%%                                        TS, FromSeqNum, Pos])
+%%                   end, DelLocs).

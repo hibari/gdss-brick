@@ -107,7 +107,7 @@ live_keys(Pid, _BrickName, Keys, FilterFun) ->
     {ok, MetadataDB} = gen_server:call(Pid, get_leveldb, ?TIMEOUT),
     Result =
         lists:foldl(
-          fun(_Key, {error, _}=Err) ->
+          fun(_KT, {error, _}=Err) ->
                   Err;
              ({Key, TS}=KT, LiveKeys) ->
                   case h2leveldb:get(MetadataDB, metadata_db_key(Key)) of
@@ -390,18 +390,34 @@ do_update_blob_locations_ets(BrickName, StoreTuples) ->
     DoOperations = [make_update_location(ST) || ST <- StoreTuples],
     DoOptions = [ignore_role, {sync_override, false}, local_op_only_do_not_forward],
     DoRes = brick_server:do(BrickName, node(), DoOperations, DoOptions, 60 * 1000),
-    AnyError = lists:any(fun({ok, _})       -> false;
-                            (key_not_exist) -> false;
-                            ({ts_error, _}) -> false;
-                            (_X)            -> true
-                         end, DoRes),
-    if AnyError ->
-            Keys = [brick_ets:storetuple_key(ST) || ST <- StoreTuples],
-            ?ELOG_ERROR("Failed to update locations. brick: ~p~n"
-                        "keys: ~p~nresponse: ~p~n",
-                        [BrickName, Keys, DoRes]),
+    IsError =
+        fun({_, {ok, _}}) ->
+                false;
+           ({_, key_not_exist}) ->
+                false;
+           ({_ST, {ts_error, _}=_Res}) ->
+                %% Key = gmt_util:binary_to_display_string(brick_ets:storetuple_key(ST)),
+                %% OrigTS = brick_ets:storetuple_ts(ST),
+                %% ?ELOG_INFO(
+                %%    "Did not update blob location because the key value "
+                %%    "has been updated by others. "
+                %%    "brick: ~w, key: ~p, original timestamp: ~w, "
+                %%    "response: ~p~n",
+                %%    [BrickName, Key, OrigTS, Res]),
+                false;
+           ({ST, Res}) ->
+                Key = gmt_util:binary_to_display_string(brick_ets:storetuple_key(ST)),
+                OrigTS = brick_ets:storetuple_ts(ST),
+                ?ELOG_ERROR(
+                   "Failed to update blob location. brick: ~w, "
+                   "key: ~p, original timestamp: ~w, response: ~p~n",
+                   [BrickName, Key, OrigTS, Res]),
+                true
+        end,
+    case lists:any(IsError, lists:zip(StoreTuples, DoRes)) of
+        true ->
             {error, failed_to_update_locations};
-       true ->
+        false ->
             ok
     end.
 

@@ -175,7 +175,7 @@ schedule_async_writeback(LastSeqNum, LastOffset, BlockSize) ->
         spawn_monitor(
           fun() ->
                   case do_writeback(LastSeqNum, LastOffset, BlockSize) of
-                      {NewSeqNum, NewOffset} ->
+                      {ok, NewSeqNum, NewOffset} ->
                           gen_server:cast(?WRITEBACK_SERVER_REG_NAME,
                                           {writeback_finished, NewSeqNum, NewOffset}),
                           exit(normal)
@@ -183,41 +183,81 @@ schedule_async_writeback(LastSeqNum, LastOffset, BlockSize) ->
           end),
     Pid.
 
--spec do_writeback(seqnum(), offset(), blocksize()) -> {seqnum(), offset()}.
+%% @TODO: IMPORTANT: Return end offsets of all wroteback sequence files so that
+%% WAL module can ensure each sequence file has been fully processed.
+-spec do_writeback(seqnum(), offset(), blocksize()) -> {ok, seqnum(), offset()}.
 do_writeback(LastSeqNum, LastOffset, BlockSize) ->
     SeqNums0 = ?WAL:get_all_seqnums(),
-    {CurSeqNum, CurOffset} = ?WAL:get_current_seqnum_and_offset(),
+    {CurSeqNum, CurOffset} = ?WAL:get_current_seqnum_and_disk_offset(),
+    {ok, EndSeqNum, EndOffset} =
+        if
+            LastSeqNum =:= CurSeqNum ->
+                do_writeback_wal(CurSeqNum, LastOffset, CurOffset, BlockSize);
+            true ->
+                SeqNums1 = lists:filter(fun(Seq) ->
+                                                LastSeqNum < Seq andalso Seq < CurSeqNum
+                                        end, SeqNums0),
+                if
+                    0 < LastSeqNum ->
+                        do_writeback_wal(LastSeqNum, LastOffset, undefined, BlockSize);
+                    true ->
+                        ok
+                end,
+                lists:foreach(fun(Seq) ->
+                                      do_writeback_wal(Seq, 0, undefined, BlockSize)
+                              end, SeqNums1),
+                do_writeback_wal(CurSeqNum, 0, CurOffset, BlockSize)
+        end,
     if
-        LastSeqNum =:= CurSeqNum ->
-            do_writeback_wal(CurSeqNum, LastOffset, CurOffset, BlockSize);
+        CurSeqNum =:= EndSeqNum, CurOffset =:= EndOffset ->
+            ok;
         true ->
-            SeqNums1 = lists:filter(fun(Seq) ->
-                                            LastSeqNum < Seq andalso Seq < CurSeqNum
-                                    end, SeqNums0),
-            if
-                0 < LastSeqNum ->
-                    do_writeback_wal(LastSeqNum, LastOffset, undefined, BlockSize);
-                true ->
-                    ok
-            end,
-            lists:foreach(fun(Seq) ->
-                                  do_writeback_wal(Seq, 0, undefined, BlockSize)
-                          end, SeqNums1),
-            do_writeback_wal(CurSeqNum, 0, CurOffset, BlockSize)
+            ?ELOG_DEBUG("Different seqnums and/or offsets. "
+                        "expected: {~w, ~w}, actual: {~w, ~w}",
+                        [CurSeqNum, CurOffset, EndSeqNum, EndOffset])
     end,
-    %% @TODO: Return the actual location from do_writeback_wal.
-    {CurSeqNum, CurOffset}.
+    {ok, EndSeqNum, EndOffset}.
 
--spec do_writeback_wal(seqnum(), offset(), offset() | undefined, blocksize()) -> ok.
+%% @TODO: Return error when necessary.
+-spec do_writeback_wal(seqnum(), offset(), offset() | undefined, blocksize()) ->
+                              {ok, seqnum(), offset()}.
 do_writeback_wal(SeqNum, StartOffset, EndOffset, BlockSize) ->
     {ok, FH} = ?WAL:open_wal_for_read(SeqNum),
     try file:position(FH, StartOffset) of
         {ok, StartOffset} ->
-            do_writeback_wal_block(SeqNum, FH, StartOffset, EndOffset, BlockSize, <<>>);
+            case do_writeback_wal_block(SeqNum, FH, StartOffset, EndOffset, BlockSize, <<>>) of
+                {SeqNum, EndOffset2, <<>>, maybe_ok} ->
+                    if
+                        StartOffset =:= EndOffset2 ->
+                            %% ?ELOG_DEBUG(
+                            %%    "No hunks to writeback in WAL sequence ~w (offset: ~w)",
+                            %%    [SeqNum, StartOffset]),
+                            {ok, SeqNum, StartOffset};
+                        true ->
+                            ?ELOG_DEBUG(
+                               "Wrote hunks from WAL sequence ~w (offsets: ~w..~w) "
+                               "to metadata and blob storages",
+                               [SeqNum, StartOffset, EndOffset2 - 1]),
+                            {ok, SeqNum, EndOffset2}
+                        end;
+                {SeqNum, EndOffset2, Remainder, maybe_ok} ->
+                    ?ELOG_WARNING(
+                       "Wrote hunks from WAL sequence ~w (offsets: ~w..~w) "
+                       "to metadata and blob storages, "
+                       "but there are un-parsed bytes: ~p",
+                       [SeqNum, StartOffset, EndOffset2 - 1, Remainder]),
+                    {ok, SeqNum, EndOffset2 - byte_size(Remainder)};
+                {SeqNum, EndOffset2, _Remainder, Err} ->
+                    ?ELOG_CRITICAL(
+                       "Failed to write hunks from WAL sequence ~w (offsets: ~w..~w) "
+                       "to metadata and blob storages. error: ~p",
+                       [SeqNum, StartOffset, EndOffset2 - 1, Err]),
+                    {ok, SeqNum, EndOffset2}
+            end;
         {ok, OtherOffset} ->
             ?ELOG_CRITICAL("Different offset. Skipping. expected: ~w, actual: ~w",
                            [StartOffset, OtherOffset]),
-            ok;
+            error({different_offsets, {expected, StartOffset}, {actual, OtherOffset}});
         {error, _}=Err ->
             throw(Err)
     after
@@ -225,19 +265,22 @@ do_writeback_wal(SeqNum, StartOffset, EndOffset, BlockSize) ->
     end.
 
 -spec do_writeback_wal_block(seqnum(), file:fd(),
-                             offset(), offset() | undefined, blocksize(), binary()) -> ok.
+                             offset(), offset() | undefined, blocksize(), binary()) ->
+                                    {seqnum(), offset(), binary(), maybe_ok | {error, term()}}.
 do_writeback_wal_block(SeqNum, _FH, Offset, EndOffset, _BlockSize, Remainder)
   when EndOffset =/= undefined, Offset >= EndOffset ->
-    do_writeback_wal_finish(SeqNum, Remainder, maybe_ok);
+    {SeqNum, Offset, Remainder, maybe_ok};
 do_writeback_wal_block(SeqNum, FH, Offset, EndOffset, BlockSize, Remainder) ->
     %% ?ELOG_DEBUG("SeqNum: ~w, Offset: ~w, EndOffset: ~w, BlockSize: ~w, byte_size(Remainder): ~w",
     %%             [SeqNum, Offset, EndOffset, BlockSize, byte_size(Remainder)]),
-    %% @TODO Cleanup the logic
-    case file:read(FH, BlockSize) of
+    BytesToRead = if EndOffset =:= undefined -> BlockSize;
+                     true                    -> min(BlockSize, EndOffset - Offset)
+                  end,
+    case file:read(FH, BytesToRead) of
         {error, Err1} ->
-            do_writeback_wal_finish(SeqNum, Remainder, {error, {Err1, offset, Offset}});
+            {SeqNum, Offset, Remainder, {error, {Err1, offset, Offset}}};
         eof ->
-            do_writeback_wal_finish(SeqNum, Remainder, maybe_ok);
+            {SeqNum, Offset, Remainder, maybe_ok};
         {ok, Bin} ->
             Bin2 = if Remainder =:= <<>> -> Bin;
                       true               -> <<Remainder/binary, Bin/binary>>
@@ -245,40 +288,19 @@ do_writeback_wal_block(SeqNum, FH, Offset, EndOffset, BlockSize, Remainder) ->
             %% @TODO ENHANCEME: Perhaps just parse hunk headers? (to save RAM)
             case ?HUNK:parse_hunks(Bin2) of
                 {ok, Hunks, Remainder2} ->
-                    %% try
-                        do_writeback_hunks(Hunks),
-                        ReadSize = byte_size(Bin),
-                        if
-                            ReadSize < BlockSize ->
-                                do_writeback_wal_finish(SeqNum, Remainder2, maybe_ok);
-                            true ->
-                                do_writeback_wal_block(SeqNum, FH,
-                                                       Offset + ReadSize, EndOffset, BlockSize,
-                                                       Remainder2)
-                        end
-                    %% catch
-                    %%     error:Err2 ->
-                    %%         do_writeback_wal_finish(SeqNum, Remainder,
-                    %%                                 {error, {Err2, offset, Offset}});
-                    %%     _:_=Err3 ->
-                    %%         do_writeback_wal_finish(SeqNum,  Remainder, Err3)
-                    %% end
+                    ok = do_writeback_hunks(Hunks),
+                    ReadSize = byte_size(Bin),
+                    Offset2 = Offset + ReadSize,
+                    if
+                        ReadSize < BytesToRead ->
+                            {SeqNum, Offset2, Remainder2, maybe_ok};
+                        true ->
+                            do_writeback_wal_block(SeqNum, FH,
+                                                   Offset2, EndOffset, BlockSize,
+                                                   Remainder2)
+                    end
             end
     end.
-
--spec do_writeback_wal_finish(seqnum(), binary(), maybe_ok | {error, term()}) -> ok.
-do_writeback_wal_finish(SeqNum, <<>>, maybe_ok) ->
-    ?ELOG_DEBUG("Wrote hunks from WAL sequence ~w to metadata and blob storages", [SeqNum]),
-    ok;
-do_writeback_wal_finish(SeqNum, Remainder, maybe_ok) ->
-    ?ELOG_CRITICAL("BUG: Wrote hunks from WAL sequence ~w to metadata and blob storages, "
-                   "but there are un-parsed bytes: ~p",
-                   [SeqNum, Remainder]),
-    ok;
-do_writeback_wal_finish(SeqNum, _Remainder, Err) ->
-    ?ELOG_ERROR("Failed to write hunks from WAL sequence ~w to metadata and blob storages (~p)",
-                [SeqNum, Err]),
-    ok.
 
 -spec do_writeback_hunks([hunk()]) -> ok.
 do_writeback_hunks(Hunks) ->
@@ -287,7 +309,7 @@ do_writeback_hunks(Hunks) ->
 
     %% write-back metadata
     lists:foreach(fun({BrickName, Hunks1}) ->
-                          ?ELOG_DEBUG("metadata: ~w - ~w hunks.", [BrickName, length(Hunks1)]),
+                          %% ?ELOG_DEBUG("metadata: ~w - ~w hunks", [BrickName, length(Hunks1)]),
                           IsLastBatch = true,
                           {ok, MdStore} = brick_metadata_store:get_metadata_store(BrickName),
                           ok = MdStore:writeback_to_stable_storage(Hunks1, IsLastBatch)
@@ -299,8 +321,8 @@ do_writeback_hunks(Hunks) ->
                               [] ->
                                   ok;
                               Locations ->
-                                  ?ELOG_DEBUG("location: ~w - ~w locations.",
-                                              [BrickName, length(Locations)]),
+                                  %% ?ELOG_DEBUG("location: ~w - ~w locations",
+                                  %%             [BrickName, length(Locations)]),
                                   {ok, BlobStore} = brick_blob_store:get_blob_store(BrickName),
                                   ok = BlobStore:write_location_info(Locations)
                           end
@@ -308,7 +330,7 @@ do_writeback_hunks(Hunks) ->
 
     %% write-back blobs
     lists:foreach(fun({BrickName, Hunks1}) ->
-                          ?ELOG_DEBUG("blob:     ~w - ~w hunks.", [BrickName, length(Hunks1)]),
+                          %% ?ELOG_DEBUG("blob:     ~w - ~w hunks", [BrickName, length(Hunks1)]),
                           {ok, BlobStore} = brick_blob_store:get_blob_store(BrickName),
                           ok = BlobStore:writeback_to_stable_storage(Hunks1),
                           ok = BlobStore:sync()

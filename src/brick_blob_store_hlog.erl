@@ -710,12 +710,18 @@ convert_to_location_tuples(Locations) ->
     LocationGroupBySeqNum =
         lists:foldl(
           fun({Key, TS, StorageLocation}, Dict) ->
-                  {SeqNum, LocationTuple} = location_tuple(Key, TS, StorageLocation),
-                  dict:append(SeqNum, LocationTuple, Dict)
+                  case location_tuple(Key, TS, StorageLocation) of
+                      {SeqNum, LocationTuple} ->
+                          dict:append(SeqNum, LocationTuple, Dict);
+                      no_blob ->
+                          Dict
+                  end
           end, dict:new(), Locations),
     dict:to_list(LocationGroupBySeqNum).
 
--spec location_tuple(key(), ts(), storage_location()) -> {seqnum(), location_info()}.
+-spec location_tuple(key(), ts(), storage_location()) -> {seqnum(), location_info()} | no_blob.
+location_tuple(_, _, no_blob) ->
+    no_blob;
 location_tuple(Key, TS, #w{private_seqnum=SeqNum, private_hunk_pos=HunkPos,
                            val_offset=ValOffset, val_len=ValLen}) ->
     {SeqNum, #l{hunk_pos=HunkPos, val_offset=ValOffset, val_len=ValLen,
