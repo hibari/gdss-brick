@@ -3134,6 +3134,8 @@ accumulate_maybe(Key, StoreTuple, Acc) ->
         Val when is_tuple(Val) ->
             ValLen = storetuple_vallen(StoreTuple),
             [{Key, Val, ValLen}|Acc];
+        no_blob ->
+            Acc;
         Blob when is_binary(Blob) ->
             Acc
     end.
@@ -3143,6 +3145,8 @@ is_sequence_frozen(StoreTuple) ->
         Tuple when is_tuple(Tuple) ->  %% record #w{} or #p{}
             %% @TODO: Implement brick_blob_store:is_sequence_frozen/1.
             true;
+        no_blob ->
+            false;
         Blob when is_binary(Blob) ->
             false
     end.
