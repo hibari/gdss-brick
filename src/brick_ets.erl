@@ -1391,8 +1391,6 @@ ets_start_key(Tab, ?BRICK__GET_MANY_FIRST, forward) ->
     ets:first(Tab);
 ets_start_key(Tab, Key, forward) ->
     ets:next(Tab, Key);
-ets_start_key(Tab, ?BRICK__GET_MANY_FIRST, backward) ->
-    ets:last(Tab);
 ets_start_key(Tab, Key, backward) ->
     ets:prev(Tab, Key).
 
