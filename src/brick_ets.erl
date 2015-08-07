@@ -1201,11 +1201,6 @@ get_key(Key, Flags, State) ->
             key_not_exist
     end.
 
-ets_next_wrapper(Tab, ?BRICK__GET_MANY_FIRST) ->
-    ets:first(Tab);
-ets_next_wrapper(Tab, Key) ->
-    ets:next(Tab, Key).
-
 %% @spec (term(), list(), boolean(), proplist(), state_r()) ->
 %%       {{list(), true | false}, state_r()}
 %% @doc Get a list of keys, starting with Key, in order specified by
@@ -1291,23 +1286,23 @@ get_many1b(Key, Flags, IncreasingOrderP, State) ->
     DoWitnessP =
         case check_flaglist(witness, Flags) of
             {true, true} ->
-                true;
+                witness;
             _ ->
-                false
+                undefined
         end,
     DoAllAttrP =
         case check_flaglist(get_all_attribs, Flags) of
             {true, true} ->
-                true;
+                all_attribs;
             _ ->
-                false
+                undefined
         end,
     RawStoreTupleP =
         case check_flaglist(get_many_raw_storetuples, Flags) of
             {true, true} ->
-                true;
+                raw_storetuples;
             _ ->
-                false
+                undefined
         end,
     ResultFlavor = {DoWitnessP, DoAllAttrP, RawStoreTupleP},
     BinPrefix =
@@ -1315,7 +1310,7 @@ get_many1b(Key, Flags, IncreasingOrderP, State) ->
             Prefix when is_binary(Prefix) ->
                 {size(Prefix), Prefix};
             _ ->
-                0
+                undefined
         end,
     MaxBytes =
         case proplists:get_value(max_bytes, Flags) of
@@ -1324,14 +1319,24 @@ get_many1b(Key, Flags, IncreasingOrderP, State) ->
             _ ->
                 2 * 1024 * 1024 * 1024
         end,
-    Res = get_many2(ets_next_wrapper(State#state.ctab, Key),
-                    MaxNum, MaxBytes, ResultFlavor, BinPrefix, [], State),
+    ScanDirection =
+        case check_flaglist(reversed, Flags) of
+            {true, true} ->
+                backward;
+            _ ->
+                forward
+        end,
 
-    if IncreasingOrderP ->        %% dialyzer: can never succeed
+    Res = get_many2(ets_start_key(State#state.ctab, Key, ScanDirection),
+                    MaxNum, MaxBytes, ResultFlavor,
+                    BinPrefix, ScanDirection, [], State),
+
+    if
+        IncreasingOrderP ->        %% dialyzer: can never succeed
             %% ManyList is backward, must reverse it.
             {{ManyList, TorF}, State2} = Res,
             {{lists:reverse(ManyList), TorF}, State2};
-       true ->
+        true ->
             %% Result list is backward, that's OK.
             Res
     end.
@@ -1342,39 +1347,60 @@ get_many1b(Key, Flags, IncreasingOrderP, State) ->
 %%
 %% NOTE: We are *supposed* to return our results in reversed order.
 
--spec get_many2(key(), any(), any(), any(), any(), any(), any())
-               -> {{list(extern_tuple()), boolean()}, any()}.
-get_many2('$end_of_table', _MaxNum, _MaxBytes, _ResultFlavor, _BPref, Acc, State) ->
+-spec get_many2(key() | '$end_of_table',
+                non_neg_integer(), non_neg_integer(),
+                {'witness'|'undefined', 'all_attribs'|'undefined', 'raw_storetuples'|'undefined'},
+                {non_neg_integer(), binary()}|'undefined', 'forward'|'backward',
+                [extern_tuple()], term()) ->
+                       {{[extern_tuple()], boolean()}, term()}.
+get_many2('$end_of_table', _MaxNum, _MaxBytes, _ResultFlavor, _BPref, _ScanDirection, Acc, State) ->
     {{Acc, false}, State};
-get_many2(_Key, 0, _MaxBytes, _ResultFlavor, _BPref, Acc, State) ->
+get_many2(_Key, 0, _MaxBytes, _ResultFlavor, _BPref, _ScanDirection, Acc, State) ->
     {{Acc, true}, State};
-get_many2(Key, MaxNum, MaxBytes, ResultFlavor, BPref, Acc, State)
+get_many2(Key, MaxNum, MaxBytes, ResultFlavor, BPref, ScanDirection, Acc, State)
   when MaxBytes > 0 ->
     Cont = case BPref of
-               0 ->
+               undefined ->
                    ok;
                {PrefixLen, Prefix} ->
                    case Key of
                        <<Prefix:PrefixLen/binary, _Rest/binary>> ->
                            ok;
                        _ ->
-                           skip %{{lists:reverse(Acc), false}, State}
+                           skip
                    end
            end,
-    if
-        Cont =:= ok ->
-            [Tuple] = ets:lookup(State#state.ctab, Key),
+    case Cont of
+        ok ->
+            CTab = State#state.ctab,
+            [Tuple] = ets:lookup(CTab, Key),
             Bytes = storetuple_vallen(Tuple),
             Item = make_many_result(Tuple, ResultFlavor, State),
-            get_many2(ets:next(State#state.ctab, Key), MaxNum - 1,
-                      MaxBytes - Bytes,
-                      ResultFlavor, BPref, [Item|Acc], State);
-        Cont =:= skip ->
-            get_many2('$end_of_table', MaxNum, MaxBytes, ResultFlavor, BPref,
-                      Acc, State)
+            get_many2(ets_next_key(CTab, Key, ScanDirection), MaxNum - 1,
+                      MaxBytes - Bytes, ResultFlavor,
+                      BPref, ScanDirection, [Item|Acc], State);
+        skip ->
+            get_many2('$end_of_table', MaxNum, MaxBytes, ResultFlavor,
+                      BPref, ScanDirection, Acc, State)
     end;
-get_many2(_Key, _MaxNum, _MaxBytes, _ResultFlavor, _BPref, Acc, State) ->
+get_many2(_Key, _MaxNum, _MaxBytes, _ResultFlavor, _BPref, _ScanDirection, Acc, State) ->
     {{Acc, true}, State}.
+
+-spec ets_start_key(atom(), key(), 'forward' | 'backward') -> key().
+ets_start_key(Tab, ?BRICK__GET_MANY_FIRST, forward) ->
+    ets:first(Tab);
+ets_start_key(Tab, Key, forward) ->
+    ets:next(Tab, Key);
+ets_start_key(Tab, ?BRICK__GET_MANY_FIRST, backward) ->
+    ets:last(Tab);
+ets_start_key(Tab, Key, backward) ->
+    ets:prev(Tab, Key).
+
+-spec ets_next_key(atom(), key(), 'forward' | 'backword') -> key() | '$end_of_table'.
+ets_next_key(Tab, Key, forward) ->
+    ets:next(Tab, Key);
+ets_next_key(Tab, Key, backward) ->
+    ets:prev(Tab, Key).
 
 %% @doc Create the result tuple for a single get_many result.
 %%
@@ -1386,32 +1412,33 @@ get_many2(_Key, _MaxNum, _MaxBytes, _ResultFlavor, _BPref, Acc, State) ->
 %%
 %% Arg note: (StoreTuple, {DoWitnessP, DoAllAttrP, RawStoreTupleP}, State).
 
--spec make_many_result(store_tuple(), {boolean(), boolean(), boolean()}, any()) ->
-                              extern_tuple().
-make_many_result(StoreTuple, {true, false, false}, _S) ->
+-spec make_many_result(store_tuple(),
+                       {'witness'|'undefined', 'all_attribs'|'undefined', 'raw_storetuples'|'undefined'},
+                       State::term()) -> extern_tuple().
+make_many_result(StoreTuple, {witness, undefined, undefined}, _S) ->
     {storetuple_key(StoreTuple), storetuple_ts(StoreTuple)};
-make_many_result(StoreTuple, {true, true, false}, S) ->
+make_many_result(StoreTuple, {witness, all_attribs, undefined}, S) ->
     {storetuple_key(StoreTuple), storetuple_ts(StoreTuple),
      make_extern_flags(storetuple_val(StoreTuple),
                        storetuple_vallen(StoreTuple),
                        storetuple_flags(StoreTuple), S)};
-make_many_result(StoreTuple, {false, false, false}, S) ->
+make_many_result(StoreTuple, {undefined, undefined, undefined}, S) ->
     make_many_result2(StoreTuple, S);
-make_many_result(StoreTuple, {false, true, false}, S) ->
+make_many_result(StoreTuple, {undefined, all_attribs, undefined}, S) ->
     make_many_result3(StoreTuple, S);
-make_many_result(StoreTuple, {_DoWitness, _DoAllAttr, true}, _S) ->
+make_many_result(StoreTuple, {_DoWitness, _DoAllAttr, raw_storetuples}, _S) ->
     StoreTuple.
 
 make_many_result2(StoreTuple, S) ->
-    {Key, TStamp, Val0, _ExpTime, _Flags} = storetuple_to_externtuple(
-                                            StoreTuple, S),
+    {Key, TStamp, Val0, _ExpTime, _Flags} =
+        storetuple_to_externtuple(StoreTuple, S),
     ValLen = storetuple_vallen(StoreTuple),
     Val = bigdata_dir_get_val(Key, Val0, ValLen, S),
     {Key, TStamp, Val}.
 
 make_many_result3(StoreTuple, S) ->
-    {Key, TStamp, Val0, ExpTime, Flags} = storetuple_to_externtuple(
-                                            StoreTuple, S),
+    {Key, TStamp, Val0, ExpTime, Flags} =
+        storetuple_to_externtuple(StoreTuple, S),
     ValLen = storetuple_vallen(StoreTuple),
     Val = bigdata_dir_get_val(Key, Val0, ValLen, S),
     {Key, TStamp, Val, ExpTime, Flags}.
