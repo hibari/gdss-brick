@@ -1326,8 +1326,16 @@ get_many1b(Key, Flags, IncreasingOrderP, State) ->
             _ ->
                 forward
         end,
+    %% Whether the start key is inclusive or not. (Default: exclusive)
+    IncludeStartKeyP =
+        case check_flaglist(include_start_key, Flags) of
+            {true, true} ->
+                include_start_key;
+            _ ->
+                undefined
+        end,
 
-    Res = get_many2(ets_start_key(State#state.ctab, Key, ScanDirection),
+    Res = get_many2(ets_start_key(State#state.ctab, Key, ScanDirection, IncludeStartKeyP),
                     MaxNum, MaxBytes, ResultFlavor,
                     BinPrefix, ScanDirection, [], State),
 
@@ -1351,7 +1359,7 @@ get_many1b(Key, Flags, IncreasingOrderP, State) ->
                 non_neg_integer(), non_neg_integer(),
                 {'witness'|'undefined', 'all_attribs'|'undefined', 'raw_storetuples'|'undefined'},
                 {non_neg_integer(), binary()}|'undefined', 'forward'|'backward',
-                [extern_tuple()], term()) ->
+                Acc::[extern_tuple()], State::term()) ->
                        {{[extern_tuple()], boolean()}, term()}.
 get_many2('$end_of_table', _MaxNum, _MaxBytes, _ResultFlavor, _BPref, _ScanDirection, Acc, State) ->
     {{Acc, false}, State};
@@ -1386,12 +1394,28 @@ get_many2(Key, MaxNum, MaxBytes, ResultFlavor, BPref, ScanDirection, Acc, State)
 get_many2(_Key, _MaxNum, _MaxBytes, _ResultFlavor, _BPref, _ScanDirection, Acc, State) ->
     {{Acc, true}, State}.
 
--spec ets_start_key(atom(), key(), 'forward' | 'backward') -> key().
-ets_start_key(Tab, ?BRICK__GET_MANY_FIRST, forward) ->
+-spec ets_start_key(atom(), key(),
+                    'forward' | 'backward',
+                    'include_start_key' | undefined) -> key().
+ets_start_key(Tab, ?BRICK__GET_MANY_FIRST, forward, _) ->
     ets:first(Tab);
-ets_start_key(Tab, Key, forward) ->
+ets_start_key(Tab, Key, forward, include_start_key) ->
+    case ets:member(Tab, Key) of
+        true ->
+            Key;
+        false ->
+            ets:next(Tab, Key)
+    end;
+ets_start_key(Tab, Key, forward, undefined) ->
     ets:next(Tab, Key);
-ets_start_key(Tab, Key, backward) ->
+ets_start_key(Tab, Key, backward, include_start_key) ->
+    case ets:member(Tab, Key) of
+        true ->
+            Key;
+        false ->
+            ets:prev(Tab, Key)
+    end;
+ets_start_key(Tab, Key, backward, undefined) ->
     ets:prev(Tab, Key).
 
 -spec ets_next_key(atom(), key(), 'forward' | 'backword') -> key() | '$end_of_table'.
