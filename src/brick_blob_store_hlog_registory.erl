@@ -321,7 +321,8 @@ open_registory_db() ->
 
     _RepairResult = repair_registory_db(),
     ?ELOG_DEBUG("Called repair_registory_db. result: ~w", [_RepairResult]),
-    RegistoryDB = h2leveldb:get_db(RegDBPath),
+    Options = [{max_open_files, 50}, {filter_policy, {bloom, 10}}], %% @TODO: Tune the numbers
+    RegistoryDB = h2leveldb:get_db(RegDBPath, Options),
     ?ELOG_INFO("Opened registory DB: ~s", [RegDBPath]),
     {ok, RegistoryDB}.
 

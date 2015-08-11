@@ -247,7 +247,8 @@ open_metadata_db(BrickName) ->
 
     _RepairResult = repair_metadata_db(BrickName),
     ?E_DBG("Called repair_metadata_db. result: ~w", [_RepairResult]),
-    MetadataDB = h2leveldb:get_db(MDBPath),
+    Options = [{max_open_files, 50}, {filter_policy, {bloom, 10}}], %% @TODO: Tune the numbers
+    MetadataDB = h2leveldb:get_db(MDBPath, Options),
     ?ELOG_INFO("Opened metadata DB: ~s", [MDBPath]),
     {ok, MetadataDB}.
 
