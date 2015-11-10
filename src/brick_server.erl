@@ -329,6 +329,8 @@
 
 -include_lib("kernel/include/file.hrl").
 
+-define(TIME, gmt_time_otp18).
+
 -define(CHECK_NAME, "CHECK").
 -define(CHECK_FILE, ?CHECK_NAME ++ ".LOG").
 
@@ -958,7 +960,7 @@ do(ServerName, Node, DoList, Timeout)
 do(ServerName, Node, DoList, DoFlags, Timeout)
   when not is_list(Node), is_list(DoList), is_list(DoFlags),
        is_integer(Timeout) ->
-    case gen_server:call({ServerName, Node}, {do, now(), DoList, DoFlags},
+    case gen_server:call({ServerName, Node}, {do, ?TIME:timestamp(), DoList, DoFlags},
                          Timeout) of
         %% These clauses are here as an aid of Dialyzer's type inference.
         L when is_list(L) ->
@@ -1674,7 +1676,7 @@ handle_call_do_prescreen(Msg, From, State) ->
 %% Return {true, MicroAge} if the do operation is too_old to be handled, false normally
 -spec is_do_op_too_old(do_op(), state_r()) -> {true, integer()} | false.
 is_do_op_too_old({do, SentAt, _DoList, _DoFlags}, State) ->
-    case timer:now_diff(now(), SentAt) of
+    case timer:now_diff(?TIME:timestamp(), SentAt) of
         MicroAge when MicroAge > State#state.do_op_too_old_usec ->
             {true, MicroAge};
         _ ->
@@ -1768,13 +1770,14 @@ handle_call_do({do, SentAt, DoList, DoFlags0} = _Msg, From, State) ->
                                         end,
                             if SleepTime > 0 ->
                                     ?DBG_CHAIN("~p: forward to ~w after ~w: ~w: ~w",
-                                               [now(), Server, SleepTime, State#state.name, _Msg]);
+                                               [?TIME:system_time(micro_seconds),
+                                                Server, SleepTime, State#state.name, _Msg]);
                                true -> ok
                             end,
                             ?DBG_CHAIN("fwd ~p ~p hops ~w ~w", [State#state.name, Server, Hops, DoList]),
                             spawn(fun() -> timer:sleep(SleepTime),
                                            FwdMsg = {forward_call,
-                                                  {do, now(), DoList, DoFlags2},
+                                                  {do, ?TIME:timestamp(), DoList, DoFlags2},
                                                   From, Hops},
                                            gen_server:cast(Server, FwdMsg)
                                   end),
@@ -1862,7 +1865,7 @@ handle_cast({ch_serial_ack, Serial, BrickName, Node, Props} = Msg, State) ->
             {noreply, State#state{chainstate =
                                   CS#chain_r{down_acked = D_serial,
                                              down_unacked = NewQ,
-                                             last_ack = now()}}};
+                                             last_ack = ?TIME:timestamp()}}};
        CS#chain_r.read_only_p ->
             %% If we're in read-only mode, we're probably having our role in
             %% the chain reshuffled, so acks from an unexpected place isn't an
@@ -1961,7 +1964,7 @@ handle_cast({ch_repair_diff_round1_ack, Serial, _BrickName, _Node, Unknown, Ds} 
        Unknown == [] ->
             NewState = send_diff_round2(Serial, Unknown, Ds, State),
             NewCS = NewState#state.chainstate,
-            NewR = (NewCS#chain_r.ds_repair_state)#repair_r{last_ack = now()},
+            NewR = (NewCS#chain_r.ds_repair_state)#repair_r{last_ack = ?TIME:timestamp()},
             {noreply, NewState#state{chainstate =
                                      NewCS#chain_r{ds_repair_state = NewR}}};
        true ->
@@ -1991,16 +1994,16 @@ handle_cast({ch_repair_ack, Serial, BrickName, Node,
             {noreply, State};
        true ->
             if R#repair_r.key == ?BRICK__GET_MANY_LAST ->
-                    RepairTime = timer:now_diff(now(), R#repair_r.started),
+                    RepairTime = timer:now_diff(?TIME:timestamp(), R#repair_r.started),
                     Is = R#repair_r.repair_inserts + Inserted,
                     Ds = R#repair_r.repair_deletes + Deleted,
                     ?E_INFO(
-                      "Repair finished between ~p -> ~p\n"
-                      "\tTime:    ~.2f sec\n"
-                      "\tRounds:  ~p\n"
-                      "\tInserts: ~p\n"
-                      "\tDeletes: ~p",
-                      [{State#state.name, node()},
+                       "Repair finished between ~p -> ~p\n"
+                       "\tTime:    ~.2f sec\n"
+                       "\tRounds:  ~p\n"
+                       "\tInserts: ~p\n"
+                       "\tDeletes: ~p",
+                       [{State#state.name, node()},
                        CS#chain_r.downstream,
                        RepairTime / 1000000,
                        if not is_integer(R#repair_r.final_repair_serial) ->
@@ -2012,7 +2015,7 @@ handle_cast({ch_repair_ack, Serial, BrickName, Node,
                        Is, Ds]),
                     CS2 = CS#chain_r{ds_repair_state = ok,
                                      down_acked = Serial,
-                                     last_ack = now()},
+                                     last_ack = ?TIME:timestamp()},
                     {noreply, State#state{chainstate = CS2}};
                true ->
                     NewState = send_next_repair(State),
@@ -2022,11 +2025,11 @@ handle_cast({ch_repair_ack, Serial, BrickName, Node,
                     Ins = R2#repair_r.repair_inserts,
                     NewR2 = R2#repair_r{repair_deletes = Dels + Deleted,
                                         repair_inserts = Ins + Inserted,
-                                        last_ack = now()},
+                                        last_ack = ?TIME:timestamp()},
                     {noreply, NewState#state{chainstate =
-                                         CS2#chain_r{ds_repair_state = NewR2,
-                                                     down_acked = Serial,
-                                                     last_ack = now()}}}
+                                                 CS2#chain_r{ds_repair_state = NewR2,
+                                                             down_acked = Serial,
+                                                             last_ack = ?TIME:timestamp()}}}
             end
     end;
 handle_cast({ch_repair_finished, Brick, Node, Checkpoint_p, NumKeys}=RepairMsg,
@@ -2081,7 +2084,7 @@ handle_cast({ch_repair_finished, Brick, Node, Checkpoint_p, NumKeys}=RepairMsg,
             send_repair_ack(CS, 0, State#state.name, 0, Deletes),
             %% delme?? catch brick_itimer:cancel(CS#chain_r.clock_tref),
             false = size(ImplState2) == record_info(size, state), %sanity
-            OkTime = now(),
+            OkTime = ?TIME:timestamp(),
             delete_repair_overload_key(State#state.name),
             brick_pingee:set_chain_ok_time(State#state.name, node(), OkTime),
             CS2 = set_my_repair_member(State, CS, ok),
@@ -2091,7 +2094,7 @@ handle_cast({ch_repair_finished, Brick, Node, Checkpoint_p, NumKeys}=RepairMsg,
                                               up_serial = 0,
                                               down_serial = -1,
                                               down_acked = ?NEG_LIMBO_SEQNUM,
-                                              last_ack = now()},
+                                              last_ack = ?TIME:timestamp()},
                                    impl_state = ImplState2},
             {noreply, NewState};
        true ->
@@ -2249,7 +2252,7 @@ handle_info(chain_admin_periodic, State) ->
     CS = State#state.chainstate,
     case CS#chain_r.my_repair_state of
         {last_key, _} ->
-            Now = now(),
+            Now = ?TIME:timestamp(),
             case timer:now_diff(Now, CS#chain_r.repair_last_time) of
                 N when (N > 15*1000*1000) andalso (N < 16*1100*1100)
                   orelse
@@ -2287,7 +2290,8 @@ handle_info({priming_value_blobs_done_for_sweep, LastKey}, State) ->
             %% inefficient, but it's also safer.
             ?DBG_MIGRATE("kick__phase2_prime_done ~w ~w", [State#state.name, LastKey]),
             NewState = State#state{sweepstate =
-                                  Sw#sweep_r{stage = {notify_down_old, now()}}},
+                                  Sw#sweep_r{stage = {notify_down_old,
+                                                      ?TIME:timestamp()}}},
             {noreply, kick_next_sweep_do_phase2(Sw, LastKey, NewState)};
        true ->
             ?E_ERROR("priming_value_blobs_done_for_sweep: expected ~p, got ~p",
@@ -2688,22 +2692,20 @@ check_value_type(Val) ->
     end.
 
 %% @spec () -> integer()
-%% @doc Create a timestamp based on the current time (erlang:now()).
+%% @doc Create a timestamp in micro seconds based on the current time.
 
 make_timestamp() ->
-    {MSec, Sec, USec} = now(),
-    (MSec * 1000000 * 1000000) + (Sec * 1000000) + USec.
+    ?TIME:erlang_system_time(micro_seconds).
 
 %% @spec (integer()) -> {integer(), integer(), integer()}
-%% @doc Convert a timestamp from make_timestamp/1 back into erlang:now() format.
+%% @doc Convert a timestamp from make_timestamp/1 back into
+%% erlang:timestamp() format.
 
 make_now(Ts) ->
-    MSec = Ts div (1000000 * 1000000),
-    MTs = Ts rem (1000000 * 1000000),
-    Sec = MTs div 1000000,
-    STs = MTs rem 1000000,
-    USec = STs,
-    {MSec, Sec, USec}.
+    MegaSecs = Ts div (1000000 * 1000000),
+    Secs = Ts div 1000000 - MegaSecs * 1000000,
+    MicroSecs = Ts rem 1000000,
+    {MegaSecs, Secs, MicroSecs}.
 
 %% @spec (do_op()) -> integer()
 %% @doc Extract a timestamp from a do op, use only for do ops containing
@@ -3062,7 +3064,7 @@ chain_set_role(head, S, PropList) ->
                               down_serial = NewSerial,
                               down_acked = ?NEG_LIMBO_SEQNUM,
                               down_unacked = UnQ,
-                              last_ack = now(),
+                              last_ack = ?TIME:timestamp(),
                               clock_tref = TRef,
                               read_only_p = CS#chain_r.read_only_p,
                               read_only_waiters = CS#chain_r.read_only_waiters,
@@ -3112,7 +3114,7 @@ chain_set_role(tail, S, PropList) ->
                               %% down_acked & down_unacked not needed for tail
                               down_acked = ?NEG_LIMBO_SEQNUM,
                               down_unacked = undefined,
-                              last_ack = now(),
+                              last_ack = ?TIME:timestamp(),
                               clock_tref = TRef,
                               read_only_p = CS#chain_r.read_only_p,
                               read_only_waiters = CS#chain_r.read_only_waiters,
@@ -3177,7 +3179,7 @@ chain_set_role(middle, S, PropList) ->
                               down_serial = NewSerial,
                               down_acked = ?NEG_LIMBO_SEQNUM,
                               down_unacked = UnQ,
-                              last_ack = now(),
+                              last_ack = ?TIME:timestamp(),
                               clock_tref = TRef,
                               read_only_p = CS#chain_r.read_only_p,
                               read_only_waiters = CS#chain_r.read_only_waiters,
@@ -3248,7 +3250,7 @@ chain_set_my_repair_state(S, NewVal) ->
             %% But the pinger really, really expects that if a process
             %% gets into pre_init, that it has a start time different
             %% from when the pinger last saw the brick start.  {sigh}
-            Start = now(),
+            Start = ?TIME:timestamp(),
             ok = brick_pingee:set_start_time(S#state.name, node(), Start),
             {ok, S#state{chainstate = set_my_repair_member_and_chain_ok_time(
                                         S, CS, pre_init, undefined)}};
@@ -3277,7 +3279,7 @@ chain_set_my_repair_state(S, NewVal) ->
             brick_pingee:set_chain_ok_time(S#state.name, node(), undefined),
             {ok, S#state{chainstate = set_my_repair_member(S, CS, disk_error)}};
         {OldRState, ok} when OldRState /= disk_error ->
-            OkTime = now(),
+            OkTime = ?TIME:timestamp(),
             {ok, S#state{chainstate = set_my_repair_member_and_chain_ok_time(
                                         S, CS, NewVal, OkTime)}};
         _ ->
@@ -3575,14 +3577,14 @@ chain_start_repair(S) ->
                            repair_max_primers, CS#chain_r.proplist,
                            ?REPAIR_MAX_PRIMERS),
             StartingSerial = -888777666555444,
-            Repair = #repair_r{started = now(),
+            Repair = #repair_r{started = ?TIME:timestamp(),
                                started_serial = StartingSerial,
                                last_repair_serial = StartingSerial,
                                repair_method = RepairM,
                                max_keys = MaxKeys,
                                max_bytes = MaxBytes,
                                key = ?BRICK__GET_MANY_FIRST,
-                               last_ack = now()},
+                               last_ack = ?TIME:timestamp()},
             NewS = S#state{chainstate = CS#chain_r{ds_repair_state = Repair,
                                                    max_primers = MaxPrimers}},
             NewS2 = send_next_repair(NewS),
@@ -3607,7 +3609,7 @@ do_chain_admin_periodic(S) ->
                                send_serial_ack(CS, CS#chain_r.up_serial,
                                                S#state.name, node(), Props)
                        end,
-    Now = now(),
+    Now = ?TIME:timestamp(),
     DoNotInitiate_p =
         proplists:get_value(do_not_initiate_serial_ack, S#state.options, false),
     InitiateAckUpstream =
@@ -3934,7 +3936,7 @@ send_diff_round2(_Serial, [] = _Unknown, _Ds, S) ->
     %% don't update the last_ack time, we'll start to spit out (bogus)
     %% errors about not getting acks from our downstream repairee.
     CS = S#state.chainstate,
-    send_next_repair(S#state{chainstate = CS#chain_r{last_ack = now()}});
+    send_next_repair(S#state{chainstate = CS#chain_r{last_ack = ?TIME:timestamp()}});
 send_diff_round2(_Serial, Unknown, Ds, S) ->
     CS = S#state.chainstate,
     R = CS#chain_r.ds_repair_state,
@@ -3950,7 +3952,7 @@ send_diff_round2(_Serial, Unknown, Ds, S) ->
     %% repair at any point other than the tail.
     S#state{chainstate = CS#chain_r{ds_repair_state = NewR,
                                     down_serial = NewR#repair_r.last_repair_serial,
-                                    last_ack = now()}}.
+                                    last_ack = ?TIME:timestamp()}}.
 
 %% @spec (serial_number(), list(), state_r()) -> state_r()
 %% @doc Process a list of repair tuples that we've received from upstream.
@@ -3993,8 +3995,7 @@ chain_do_repair(Serial, RepairList, S) ->
     send_repair_ack(CS, Serial, NewS#state.name, Inserts, Deletes),
     RS = {last_key, LastKey},
     CS2 = set_my_repair_member(NewS, NewS#state.chainstate, RS),
-    NewS#state{chainstate = CS2#chain_r{repair_last_time = now()
-                                       }}.
+    NewS#state{chainstate = CS2#chain_r{repair_last_time = ?TIME:timestamp()}}.
 
 %% @spec (serial_number(), list(), state_r()) -> state_r()
 %% @doc Generate a list of tuples unknown to this brick from the upstream list.
@@ -4036,8 +4037,7 @@ chain_do_repair_diff_round1(Serial, RepairList, S) ->
                    start_chain_admin_periodic_timer(NewS)
            end,
     NewS#state{chainstate = CS2#chain_r{clock_tref = TRef,
-                                        repair_last_time = now()
-                                       }}.
+                                        repair_last_time = ?TIME:timestamp()}}.
 
 %% @spec (serial_number(), list(), integer(), state_r()) -> state_r()
 %% @doc Generate a list of tuples unknown to this brick from the upstream list.
@@ -4060,8 +4060,7 @@ chain_do_repair_diff_round2(Serial, RepairList, Ds, S) ->
            end,
     %% keep LastKey from round1 %%{last_key, LastKey},
     NewS#state{chainstate = CS2#chain_r{clock_tref = TRef,
-                                        repair_last_time = now()
-                                       }}.
+                                        repair_last_time = ?TIME:timestamp()}}.
 
 %% @spec (do_list(), prop_list(), state_r()) -> {true | false, list()}
 %% @doc Predicate: are all of the keys in the do list stored by this brick?
@@ -4485,7 +4484,7 @@ make_init_sweep(Cookie, MyChainName, Options, S) ->
     PropDelay = proplists:get_value(propagation_delay, Options, 0),
     {ok, TRef} = brick_itimer:send_interval(Interval, kick_next_sweep),
     #sweep_r{cookie = Cookie,
-             started = now(),
+             started = ?TIME:timestamp(),
              options = Options,
              bigdata_dir_p = BigDataDirP,
              tref = TRef,
@@ -4537,7 +4536,7 @@ do_kick_next_sweep(top, S) ->
             NewGH = brick_hash:set_chain_sweep_key(Sw#sweep_r.chain_name,
                                                    ?BRICK__GET_MANY_LAST,
                                                    S#state.globalhash),
-            Stage = {done, now(), []},
+            Stage = {done, ?TIME:timestamp(), []},
             Last = ?BRICK__GET_MANY_LAST,
             NewS = S#state{sweepstate = Sw#sweep_r{stage = Stage,
                                                    tref = undefined,
@@ -4613,7 +4612,7 @@ do_kick_next_sweep(top, S) ->
                                       LoggingSerial, [], From,
                                       Reply, Mod, NewS),
                             NewS2 = write_sweep_cp(SwC, NewS1),
-                            Stage = {notify_down_old, now()},
+                            Stage = {notify_down_old, ?TIME:timestamp()},
                             %% Do not set the global hash's sweep key here.
                             NewS2#state{sweepstate =
                                          Sw#sweep_r{stage = Stage,
@@ -4631,7 +4630,7 @@ do_kick_next_sweep(_Stage, S) ->
     Sw = S#state.sweepstate,
     StageName = element(1, Sw#sweep_r.stage),
     UpdateSent = element(2, Sw#sweep_r.stage),
-    case timer:now_diff(now(), UpdateSent) of
+    case timer:now_diff(?TIME:timestamp(), UpdateSent) of
         N when N > 2*1000*1000 ->               % TODO: configurable!
             ReKey = Sw#sweep_r.done_sweep_key,
             ?E_INFO("do_kick_next_sweep: brick ~p, stage name "
@@ -4931,7 +4930,7 @@ sweep_move_or_keep3(LastKey, MoveDict, Thisdo_Mods, S) ->
                                                val_prime_lastkey = undefined},
                        globalhash = NewGH};
        true ->
-            Stage = {collecting_phase2_replies, now(), MoveDictList},
+            Stage = {collecting_phase2_replies, ?TIME:timestamp(), MoveDictList},
             TDM = if PropDelay == 0 ->
                           Thisdo_Mods;
                      true ->
@@ -5434,8 +5433,8 @@ poll_checkpointing_bricks(BrickList) ->
 
 throttle_brick(ThrottleBrick, RepairingP) ->
     ETS = brick_server:throttle_tab_name(ThrottleBrick),
-    case RepairingP of true  -> ets:insert(ETS, {repair_throttle_key, now()});
-                       false -> ets:insert(ETS, {throttle_key, now()})
+    case RepairingP of true  -> ets:insert(ETS, {repair_throttle_key, ?TIME:timestamp()});
+                       false -> ets:insert(ETS, {throttle_key, ?TIME:timestamp()})
     end.
 
 unthrottle_brick(ThrottleBrick) ->
@@ -5445,7 +5444,7 @@ unthrottle_brick(ThrottleBrick) ->
 
 set_repair_overload_key(Brick) ->
     ETS = brick_server:throttle_tab_name(Brick),
-    ets:insert(ETS, {repair_overload_key, now()}).
+    ets:insert(ETS, {repair_overload_key, ?TIME:timestamp()}).
 
 delete_repair_overload_key(Brick) ->
     ETS = brick_server:throttle_tab_name(Brick),
@@ -5455,7 +5454,7 @@ set_sequence_file_is_bad_key(Brick, SeqNum) ->
     %% NOTE: We use the same convention of now() @ 2nd tuple element,
     %%       but we don't use timed_key_exists_p on bad sequence file keys.
     ETS = brick_server:throttle_tab_name(Brick),
-    ets:insert(ETS, {{sequence_file_is_bad, SeqNum}, now()}).
+    ets:insert(ETS, {{sequence_file_is_bad, SeqNum}, ?TIME:timestamp()}).
 
 %% This key used for throttling updates at the head of a chain.
 
@@ -5489,7 +5488,7 @@ timed_key_exists_p(ETS, Key) ->
         [] ->
             false;
         [{_, InsertTime}] ->
-            case timer:now_diff(now(), InsertTime) of
+            case timer:now_diff(?TIME:timestamp(), InsertTime) of
                 N when N > 2*1000*1000 ->
                     %% Race conditions are OK.  Re-insertion is done
                     %% frequently, if there is indeed a race.

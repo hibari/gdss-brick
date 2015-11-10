@@ -53,6 +53,8 @@
 
 -include_lib("kernel/include/file.hrl").
 
+-define(TIME, gmt_time_otp18).
+
 -define(CHECK_NAME, "CHECK").
 -define(CHECK_FILE, ?CHECK_NAME ++ ".LOG").
 
@@ -348,7 +350,8 @@ init([ServerName, Options]) ->
     %%     log's directory name: hlog.X
     %%     log's registered name: X_hlog
     LogDir = WalMod:log_name2data_dir(ServerName),
-    State0 = #state{name = ServerName, options = Options, start_time = now(),
+    State0 = #state{name = ServerName, options = Options,
+                    start_time = ?TIME:timestamp(),
                     do_logging = DoLogging, do_sync = DoSync,
                     log_dir = LogDir, bigdata_dir = BigDataDir,
                     log = LogPid, ctab = CTab, etab = ETab, mdtab = MDTab,
@@ -2341,10 +2344,11 @@ sync_pid_loop(SPA) ->
             LastSerial = sync_get_last_serial(L),
             ?DBG_GEN("SPA ~w requesting sync last serial = ~w",
                      [SPA#syncpid_arg.name, LastSerial]),
-            Start = now(),                      %qqq debug
+            Start = ?TIME:monotonic_time(),
             {ok, _X, _Y} = wal_sync(SPA#syncpid_arg.wal_pid,
                                     SPA#syncpid_arg.wal_mod),
-            DiffMS = timer:now_diff(now(), Start) div 1000, %qqq debug
+            End = ?TIME:monotonic_time(),
+            DiffMS = ?TIME:convert_time_unit(End - Start, native, milli_seconds),
             SPA#syncpid_arg.parent_pid !
                 {syncpid_stats, SPA#syncpid_arg.name, DiffMS, ms, length(L)},
             ?DBG_GEN("SPA ~p sync_done at ~w, ~w, my last serial = ~w",
@@ -3300,7 +3304,8 @@ squidflash_doit(KsRaws, DoOp, From, ParentPid, FakeS) ->
     %% least?  The alternative is to have a handle_call() ->
     %% handle_cast() conversion doodad ... this is lazier.
     {do, _SentAt, Dos, DoFlags} = DoOp,
-    ParentPid ! {'$gen_call', From, {do, now(), Dos, [squidflash_resubmit|DoFlags]}},
+    Now = ?TIME:timestamp(),
+    ParentPid ! {'$gen_call', From, {do, Now, Dos, [squidflash_resubmit|DoFlags]}},
     exit(normal).
 
 squidflash_prime1(Key, RawVal, ValLen, ReplyPid, FakeS) ->

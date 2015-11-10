@@ -131,6 +131,8 @@
 -include("gmt_hlog.hrl").
 -include("brick.hrl").                          % for ?E_ macros
 
+-define(TIME, gmt_time_otp18).
+
 %% TODO: This stuff should be configurable at runtime, but it's not
 %%       convenient to solve the problem of how to propagate such
 %%       config numbers.
@@ -518,10 +520,10 @@ init(PropList) ->
 %%----------------------------------------------------------------------
 handle_call({write_hunk_bytes, _LocalBrickName, HLogType, _Key,
              TypeNum, H_Len, H_Bytes}, _From, S) ->
-    Start1 = now(),
+    Start = ?TIME:monotonic_time(),
     {Reply, NewS} = do_write_hunk(HLogType, TypeNum, H_Len, H_Bytes, S),
-    End1 = now(),
-    case timer:now_diff(End1, Start1) div 1000 of
+    End = ?TIME:monotonic_time(),
+    case ?TIME:convert_time_unit(End - Start, native, milli_seconds) of
         N when N > 50 ->
             ?ELOG_INFO("Write to ~p took ~p ms", [S#state.dir, N]);
         _ ->
@@ -1327,7 +1329,7 @@ do_sync_asyncly(From, #state{syncers_next_round = NextRound} = S) ->
     S#state{syncers_next_round = [From|NextRound]}.
 
 spawn_sync_asyncly(Froms, S) ->
-    Start = now(),
+    Start = ?TIME:monotonic_time(),
     spawn_monitor(
       fun() ->
               ?DBG_GEN("spawn_sync_asyncly [top] ~s seq ~w off ~w",
@@ -1352,7 +1354,8 @@ spawn_sync_asyncly(Froms, S) ->
                   after
                       ok = file:close(FH)
                   end,
-              MSec = timer:now_diff(now(), Start) div 1000,
+              End = ?TIME:monotonic_time(),
+              MSec = ?TIME:convert_time_unit(End - Start, native, milli_seconds),
               if MSec > 200 ->
                       ?ELOG_INFO("~s sync was ~p msec for ~p callers",
                                  [S#state.name, MSec, length(Froms)]);

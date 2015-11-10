@@ -26,6 +26,8 @@
 -include("gmt_hlog.hrl").
 -include_lib("kernel/include/file.hrl").
 
+-define(TIME, gmt_time_otp18).
+
 -define(WB_COUNT, 200). % For write_back buffering.
 
 %% API
@@ -554,7 +556,7 @@ do_metadata_hunk_writeback(OldSeqNum, OldOffset, StopSeqNum, StopOffset, S_ro)->
                   UBlob = gmt_hlog:read_hunk_member_ll(FH, H, undefined, 1),
                   if size(UBlob) /= BLen ->
                           %% This should never happen.
-                          QQQPath = "/tmp/foo.QQQbummer."++integer_to_list(element(3,now())),
+                          QQQPath = "/tmp/foo.QQQbummer." ++ integer_to_list(?TIME:system_time(seconds)),
                           ok = file:write_file(QQQPath, term_to_binary([{args, [OldSeqNum, OldOffset, StopSeqNum, StopOffset, S_ro]}, {h, H}, {wb, WB}, {info, process_info(self())}])),
                           ?ELOG_WARNING("DBG: See ~p", [QQQPath]),
                           ?ELOG_WARNING("DBG: ~p ~p wanted blob size ~p but got ~p",
@@ -570,13 +572,15 @@ do_metadata_hunk_writeback(OldSeqNum, OldOffset, StopSeqNum, StopOffset, S_ro)->
                   %% These are copied by do_bigblob_hunk_writeback() instead.
                   WB
           end,
-    %% START = now(),  % Test pathological GC
+    %% Start = ?TIME:timestamp(),  % Test pathological GC
 
     {WB2, ErrList} =
         gmt_hlog:fold(shortterm, S_ro#state.hlog_dir, Fun, FiltFun, #wb{}),
 
-    %% END = now(),
-    %%io:format("exactly_ts length = ~p, elapsed ~p\n", [length(WB2#wb.exactly_ts), timer:now_diff(END, START)]),
+    %% End = ?TIME:timestamp(),
+    %% io:format("exactly_ts length = ~p, elapsed ~p\n",
+    %%           [length(WB2#wb.exactly_ts),
+    %%            ?TIME:convert_time_unit(End - Start, native, micro_seconds)]),
     %% with R13B04: exactly_ts length = 83053, elapsed   3816906
     %% with R13B03: exactly_ts length = 83053, elapsed 156089269
 
