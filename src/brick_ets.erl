@@ -3007,9 +3007,10 @@ bcb_handle_info(do_init_second_half, #state{name=Name}=State) ->
 
     ok = brick_hlog_writeback:full_writeback(),
     ?E_INFO("Loading metadata records for brick ~w", [Name]),
-    Start = os:timestamp(),
+    Start = ?TIME:monotonic_time(),
     {LoadCount, ErrList} = load_metadata(State),
-    Elapse = timer:now_diff(os:timestamp(), Start) div 1000,
+    End = ?TIME:monotonic_time(),
+    Elapse = ?TIME:convert_time_unit(End - Start, native, milli_seconds),
 
     ZeroDiskErrorsP = (ErrList =:= []),
     if

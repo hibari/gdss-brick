@@ -2798,7 +2798,7 @@ handle_call_via_impl({do, _SentAt, DoOpList, DoFlags}=Msg, From, State) ->
             ResubmitFun =
                 fun() ->
                         Me ! {'$gen_call', From,
-                              {do, now(), DoOpList, [squidflash_resubmit|DoFlags]}}
+                              {do, ?TIME:timestamp(), DoOpList, [squidflash_resubmit|DoFlags]}}
                 end,
             ImplMod:bcb_squidflash_primer(Keys, ResubmitFun, ImplState),
             {noreply, State}
@@ -3567,7 +3567,7 @@ chain_start_repair(#state{chainstate=#chain_r{role=Role, downstream=Down, ds_rep
                                max_keys=MaxKeys,
                                max_bytes=MaxBytes,
                                key= ?BRICK__GET_MANY_FIRST,
-                               last_ack=now()},
+                               last_ack=?TIME:timestamp()},
             NewS = S#state{chainstate=CS#chain_r{ds_repair_state=Repair,
                                                  max_primers=MaxPrimers}},
             NewS2 = send_next_repair(NewS),

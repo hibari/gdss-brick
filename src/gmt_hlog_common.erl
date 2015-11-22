@@ -612,9 +612,10 @@ do_metadata_hunk_writeback(OldSeqNum, OldOffset, StopSeqNum, StopOffset, S)->
             {ok, 0};
         {#wb{exactly_count=Count}=WB, []} ->
             ?E_DBG("~w metadata hunks to write back", [Count]),
-            Start = os:timestamp(),
+            Start = ?TIME:monotonic_time(),
             ok = write_back_to_stable_storege(WB, S),
-            Elapse = timer:now_diff(os:timestamp(), Start) div 1000,
+            End = ?TIME:monotonic_time(),
+            Elapse = ?TIME:convert_time_unit(End - Start, native, milli_seconds),
             ?E_INFO("Wrote back ~w metadata hunks to stable storage. [~w ms]",
                     [Count, Elapse]),
             {ok, Count};

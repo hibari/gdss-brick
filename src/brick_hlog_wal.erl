@@ -63,6 +63,8 @@
 %% types and records
 %% ====================================================================
 
+-define(TIME, gmt_time_otp18).
+
 -define(INITIAL_SYNC_DELAY_MILLS, 3).
 -define(SYNC_INTERVAL_MILLS, 15).
 -define(TIMEOUT, 60 * 1000).
@@ -253,20 +255,22 @@ handle_call({write_hunk, HunkBytes}, _From, State) ->
     %%     H_Len > FileLenMax ->
     %%     {{hunk_too_big, H_Len}, S};
 
-    Start = os:timestamp(),
+    Start = ?TIME:monotonic_time(),
     %% @TODO Accumulate hunk overhead
     case do_write_hunk(HunkBytes, State) of
         {sync_in_progress, Seq, Pos, State1} ->
             %% @TODO: Record metrics
-            %% _Elapse = timer:now_diff(os:timestamp(), Start),
+            %% End = ?TIME:monotonic_time(),
+            %% _Elapse = ?TIME:convert_time_unit(End - Start, native, milli_seconds) of
             {reply, {ok, Seq, Pos}, State1};
         {done, Seq, Pos, State1} ->
             %% @TODO: Record metrics
-            Elapse = timer:now_diff(os:timestamp(), Start),
+            End = ?TIME:monotonic_time(),
+            Elapse = ?TIME:convert_time_unit(End - Start, native, milli_seconds),
             if
-                Elapse > 50000 ->
+                Elapse > 50 ->
                     ?ELOG_INFO("Write to WAL ~p took ~p ms",
-                               [State1#state.wal_dir, Elapse div 1000]);
+                               [State1#state.wal_dir, Elapse]);
                 true ->
                     ok
             end,
@@ -278,13 +282,14 @@ handle_call({write_hunk_group_commit, HunkBytes, Caller}, _From,
     %%     H_Len > FileLenMax ->
     %%     {{hunk_too_big, H_Len}, S};
 
-    Start = os:timestamp(),
+    Start = ?TIME:monotonic_time(),
     {CommitTicket, State1} = do_register_group_commit(Caller, State),
     %% @TODO Accumulate hunk overhead
     case do_write_hunk(HunkBytes, State1) of
         {sync_in_progress, Seq, Pos, State2} ->
             %% @TODO: Record metrics
-            %% _Elapse = timer:now_diff(os:timestamp(), Start),
+            %% End = ?TIME:monotonic_time(),
+            %% Elapse = ?TIME:convert_time_unit(End - Start, native, milli_seconds) of
             %% @TODO: Refactoring
             case SyncTimer of
                 undefined ->
@@ -295,11 +300,12 @@ handle_call({write_hunk_group_commit, HunkBytes, Caller}, _From,
             end;
         {done, Seq, Pos, State2} ->
             %% @TODO: Record metrics
-            Elapse = timer:now_diff(os:timestamp(), Start),
+            End = ?TIME:monotonic_time(),
+            Elapse = ?TIME:convert_time_unit(End - Start, native, milli_seconds),
             if
-                Elapse > 50000 ->
+                Elapse > 50 ->
                     ?ELOG_INFO("Write to WAL ~p took ~p ms",
-                               [wal_path(State2#state.wal_dir, Seq), Elapse div 1000]);
+                               [wal_path(State2#state.wal_dir, Seq), Elapse]);
                 true ->
                     ok
             end,
@@ -466,7 +472,7 @@ spawn_sync_wal(Ticket, ListenerList, _Count, Dir, CurSeq) ->
     spawn_monitor(
       fun() ->
               Start1 = brick_metrics:histogram_timed_begin(wal_sync_latencies),
-              Start2 = os:timestamp(),
+              %% Start2 = ?TIME:monotonic_time(),
               Path = "././" ++ Dir,  %% @TODO: FIXME
               %% use 'append' mode because 'write' mode will truncate the file.
               {ok, FH} = open_wal(Path, CurSeq, [append]),
@@ -480,7 +486,8 @@ spawn_sync_wal(Ticket, ListenerList, _Count, Dir, CurSeq) ->
                           ok
                   end,
                   Res = file:sync(FH),
-                  ElapseMillis = timer:now_diff(os:timestamp(), Start2) div 1000,
+                  %% End2 = ?TIME:monotonic_time(),
+                  %% ElapseMillis = ?TIME:convert_time_unit(End - Start2, native, milli_seconds) of
                   brick_metrics:histogram_timed_notify(Start1),
                   brick_metrics:notify({wal_sync_requests, length(ListenerList)}),
 
