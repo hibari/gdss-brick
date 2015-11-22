@@ -51,6 +51,8 @@
 
 -include_lib("kernel/include/file.hrl").
 
+-define(TIME, gmt_time_otp18).
+
 -define(CHECK_NAME, "CHECK").
 -define(CHECK_FILE, ?CHECK_NAME ++ ".LOG").
 
@@ -492,7 +494,7 @@ init([ServerName, Options]) ->
     %% LogDir = WalMod:log_name2data_dir(ServerName),
     State0 = #state{name=ServerName,
                     options=Options,
-                    start_time=now(),
+                    start_time=?TIME:timestamp(),
                     do_logging=DoLogging,
                     do_sync=DoSync,
                     md_store=MdStore,

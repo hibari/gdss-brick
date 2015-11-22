@@ -35,6 +35,7 @@
 
 -define(WB_BATCH_SIZE, 500). % For write_back buffering.
 -define(WAIT_BEFORE_EXIT, timer:sleep(1500)). %% milliseconds
+-define(TIME, gmt_time_otp18).
 
 %% API
 -export([start_link/1,
@@ -589,7 +590,7 @@ do_metadata_hunk_writeback(OldSeqNum, OldOffset, StopSeqNum, StopOffset, S)->
                   UBlob = gmt_hlog:read_hunk_member_ll(FH, H, undefined, 1),
                   if size(UBlob) =/= BLen ->
                           %% This should never happen.
-                          QQQPath = "/tmp/foo.QQQbummer." ++ integer_to_list(element(3, now())),
+                          QQQPath = "/tmp/foo.QQQbummer." ++ integer_to_list(?TIME:system_time(seconds)),
                           DebugInfo = [{args, [OldSeqNum, OldOffset, StopSeqNum, StopOffset, S]},
                                        {h, H}, {wb, WB}, {info, process_info(self())}],
                           ok = file:write_file(QQQPath, term_to_binary(DebugInfo)),
@@ -609,7 +610,6 @@ do_metadata_hunk_writeback(OldSeqNum, OldOffset, StopSeqNum, StopOffset, S)->
     case gmt_hlog:fold(shortterm, S#state.hlog_dir, Fun, FiltFun, #wb{}) of
         {#wb{exactly_count=0}, []} ->
             {ok, 0};
-
         {#wb{exactly_count=Count}=WB, []} ->
             ?E_DBG("~w metadata hunks to write back", [Count]),
             Start = os:timestamp(),
@@ -618,7 +618,6 @@ do_metadata_hunk_writeback(OldSeqNum, OldOffset, StopSeqNum, StopOffset, S)->
             ?E_INFO("Wrote back ~w metadata hunks to stable storage. [~w ms]",
                     [Count, Elapse]),
             {ok, Count};
-
         {#wb{exactly_count=Count}, ErrList} ->
             %% The fold that we just finished is: a). data that's
             %% likely less than 1 second old, and b). data that has

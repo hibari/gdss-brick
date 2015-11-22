@@ -143,7 +143,8 @@ list_bricks_all_nodes() ->
                        end].
 
 %% @spec (atom()) -> {integer(), integer(), integer()}
-%% @doc Return the erlang:now() when the brick_shepherd process was started.
+%% @doc Return the erlang:system_time(micro_seconds) when
+%% the brick_shepherd process was started.
 
 -spec get_start_time(brick_server:node_name()) -> brick_bp:nowtime().
 get_start_time(Node) ->
@@ -227,7 +228,8 @@ init([]) ->
 
     Os = [{default_data_dir, DefDataDir}],
     {ok, #state{do_not_restart_list = [],
-                default_options = Os, start_time = now()}}.
+                default_options = Os,
+                start_time = gmt_time_otp18:timestamp()}}.
 
 %%--------------------------------------------------------------------
 %% Function:
