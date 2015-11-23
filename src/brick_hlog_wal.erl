@@ -346,20 +346,34 @@ handle_call({remove_seqnum_from_deletion_list, SeqNum}, _From, #state{deleting_s
 handle_call(get_deleting_seqnums, _From, #state{deleting_seqnums=DelSeqs}=State) ->
     {reply, DelSeqs, State}.
 
-handle_cast({writeback_finished, NewSeqNum, _Offset},
-            #state{writeback_seq=SeqNum}=State) when NewSeqNum =< SeqNum ->
-    {noreply, State};
-handle_cast({writeback_finished, NewSeqNum, _Offset}, #state{writeback_seq=0}=State) ->
-    {noreply, State#state{writeback_seq=NewSeqNum}};
-handle_cast({writeback_finished, NewSeqNum, _Offset}, #state{writeback_seq=SeqNum}=State) ->
+handle_cast({writeback_finished, NewWBSeqNum, _Offset},
+            #state{writeback_seq=WBSeqNum,
+                   cur_seq=CurSeqNum}=State) when NewWBSeqNum > WBSeqNum ->
+    if
+        NewWBSeqNum > CurSeqNum ->
+            ?ELOG_ERROR("New write back sequence ~w is greater than current WAL sequence ~w",
+                        [NewWBSeqNum, CurSeqNum]),
+            error({invalid_writeback_sequence, NewWBSeqNum});
+        true ->
+            ok
+    end,
+
     %% @TODO: Use the configuration value (brick_dirty_buffer_wait)
     SleepTimeSec = 60,
-    %% @TODO ENHANCEME: Need a better solution
+
+    %% @TODO: ENHANCEME: Sequentially delete WAL files from smaller seq to bigger seq.
+    %% Otherwise, a system crash can leave a smaller seq while deleting a bigger seq.
+    %% Order is very important for WAL.
+
     %% spawn a process to avoid dead-lock beetween gen_server:handle_* calls
-    lists:foreach(fun(SN) ->
-                          _ = spawn(?MODULE, schedule_wal_deletion, [SN, SleepTimeSec])
-                  end, lists:seq(SeqNum, NewSeqNum - 1)),
-    {noreply, State#state{writeback_seq=NewSeqNum}};
+    lists:foreach(fun(SN) when SN > 0 ->
+                          _ = spawn(?MODULE, schedule_wal_deletion, [SN, SleepTimeSec]);
+                     (_) ->
+                          noop
+                  end, lists:seq(WBSeqNum, NewWBSeqNum - 1)),
+    {noreply, State#state{writeback_seq=NewWBSeqNum}};
+handle_cast({writeback_finished, _WBSeqNum, _Offset}, State) ->
+    {noreply, State};
 handle_cast(_Msg, State) ->
     {noreply, State}.
 

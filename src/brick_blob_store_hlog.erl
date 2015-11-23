@@ -474,6 +474,8 @@ init([BrickName, RegName, Options]) ->
     %% HunkCountMin = proplists:get_value(hunk_count_min, Options, 1000),
 
     SeqNums = list_all_seqnums_on_disk(BrickName),
+    ?ELOG_DEBUG("Found private log sequences: ~p", [SeqNums]),
+
     %% Ensure all existing blob files are registered.
     lists:foreach(
       fun(SeqNum) ->

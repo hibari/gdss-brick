@@ -137,6 +137,8 @@
          read_blob_directly/4
         ]).
 
+-export([dump_hlog/1]).
+
 %% DEBUG
 -export([test1/0,
          test2/0,
@@ -536,7 +538,6 @@ total_blob_size(Blobs) ->
 
 -spec dump_hlog(file:path()) -> ok.
 dump_hlog(Path) ->
-    %% @TODO: read ahead?
     case file:open(Path, [binary, raw, read, read_ahead]) of
         {ok, FH} ->
             dump_hlog_loop(FH, 1, 25, false);
