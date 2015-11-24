@@ -28,24 +28,33 @@
   {registered, []},
   {applications, [kernel, stdlib, sasl, crypto]},
   {mod, {brick, []}},
-  {modules, [brick, brick_sup,
-             brick_pingee, brick_cinfo,
-             brick_brick_sup, brick_data_sup,
-             brick_mboxmon,
-             brick_hash, brick_mon_sup,
-             brick_server, brick_shepherd,
+  {modules, [brick,
+             brick_sup,
+             brick_brick_sup,
+             brick_data_sup,
+             brick_server,
              brick_ets,
-             brick_metadata_store, brick_metadata_store_leveldb,
-             brick_blob_store, brick_blob_store_hlog,
+             brick_blob_store,
+             brick_blob_store_hlog,
+             brick_blob_store_hlog_compaction,
+             brick_blob_store_hlog_registory,
+             brick_cinfo,
+             brick_hash,
              brick_hlog_hunk,
-             brick_hlog_wal, brick_hlog_writeback,
              brick_hlog_scavenger,
-             gmt_hlog, gmt_hlog_local, gmt_hlog_common,
-             brick_metrics,
+             brick_hlog_wal,
+             brick_hlog_writeback,
              brick_itimer,
+             brick_mboxmon,
+             brick_metadata_store,
+             brick_metadata_store_leveldb,
+             brick_metrics,
+             brick_pingee,
+             brick_shepherd,
              brick_ticket
             ]},
   {env, [{brick_default_data_dir, "."}
+         %% Not implemented yet
          , {brick_dirty_buffer_wait, 60}
          , {brick_do_op_too_old_timeout, 3000}
          , {brick_expiration_processor, "[]."}
@@ -60,19 +69,16 @@
          , {brick_preprocess_method, ""}
          , {brick_repair_max_bytes, 65000000}
          , {brick_repair_max_primers, 7}
-         %% , {brick_scavenger_start_time, "3:00"}
-         %% , {brick_scavenger_suppress, false}
-         %% , {brick_scavenger_temp_dir, "/tmp/hibari_scavenger"}
-         , {brick_scavenger_throttle_bytes, 2097152}  %% 2MB
          , {brick_server_default_timeout, 5000}
-         , {brick_skip_live_percentage_greater_than, 90}
+         %% Not implemented yet
+         , {brick_compaction_interval_seconds, 300}  %% 5 minutes
+         %% Not implemented yet
+         , {brick_compaction_throttle_bytes, 2097152}  %% 2MB
+         %% Not implemented yet
+         , {brick_compaction_skip_live_percentage_greater_than, 90}
          , {brick_sync_interval_msec, 500}
          , {debug_check_hunk_blob, false}
          , {debug_check_hunk_summ, false}
-         , {scavenger_get_many_max, 1000}
-         , {scavenger_get_many_retry, 5}
-         , {scavenger_get_many_timeout, 5000}
-         , {scavenger_get_many_sleep, 0}
         ]}
   %%
   %% brick_default_data_dir
@@ -110,6 +116,9 @@
   %%   In MB, the typical minimum size of any individual file in the
   %%   transaction write-ahead log.
   %%
+  %% brick_min_hunk_count
+  %%   TODO
+  %%
   %% brick_max_primers
   %%   TODO
   %%
@@ -145,29 +154,16 @@
   %% brick_repair_max_primers
   %%   Maximum number of parallel repair primer processes.
   %%
-  %% brick_scavenger_start_time
-  %%   The scavenger daily start time in hh:mm where hh is in hours
-  %%   greater than, or equal to zero and less than 23.
-  %%
-  %% brick_scavenger_suppress
-  %%   TODO
-  %%
-  %% brick_scavenger_temp_dir
-  %%   The temporary directory used by the scavenger for data
-  %%   sorting. It is used by scavenger for temporary swapping.  The
-  %%   work directory will be unconditionally removed by "rm -rf" at
-  %%   the start of the scavenger and then created.  Any parent
-  %%   directories are not automatically created and therefore must
-  %%   exist.  Up to tens of gigabytes of scratch space may be
-  %%   required.
-  %%
-  %% brick_scavenger_throttle_bytes
-  %%   Scavenger disk bandwidth throttle in bytes per seconds.
-  %%
   %% brick_server_default_timeout
   %%   TODO
   %%
-  %% brick_skip_live_percentage_greater_than
+  %% brick_compaction_interval_seconds
+  %%   TODO
+  %%
+  %% brick_compaction_throttle_bytes
+  %%   Compaction disk bandwidth throttle in bytes per seconds.
+  %%
+  %% brick_compaction_skip_live_percentage_greater_than
   %%   For the daily scavenger run, specify threshold for which data
   %%   files with "live" data greater than this percentage will be
   %%   ignored. A value of 0 will skip all files, 100 will skip no
@@ -184,17 +180,5 @@
   %%
   %% debug_check_hunk_summ
   %%   TOOD
-  %%
-  %% scavenger_get_many_max
-  %%   TODO
-  %%
-  %% scavenger_get_many_retry
-  %%   TODO
-  %%
-  %% scavenger_get_many_timeout
-  %%   TODO
-  %%
-  %% scavenger_get_many_sleep
-  %%   TODO
   %%
  ]}.
