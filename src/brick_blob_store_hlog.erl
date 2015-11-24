@@ -187,8 +187,18 @@
 start_link(BrickName, Options) when is_atom(BrickName) ->
     %% @TODO: Check if brick server with the BrickName exists
     RegName = list_to_atom(atom_to_list(BrickName) ++ "_blob_store"),
-    gen_server:start_link({local, RegName}, ?MODULE,
-                          [BrickName, RegName, Options], []);
+    case gen_server:start_link({local, RegName}, ?MODULE,
+                               [BrickName, RegName, Options], []) of
+        {ok, Pid}=OKRes ->
+            %% Write a dummy data to the WAL.
+            %% init/0 sets #state.writeback_seqnum to 0, and we need the write back
+            %% process to advance it to the latest seqnum, so that older seqnums
+            %% will become subject of compaction.
+            _ = write_value(Pid, <<"$$ Dummy data from brick_blob_store_hlog:start_link/2 $$">>),
+            OKRes;
+        OtherRes ->
+            OtherRes
+    end;
 start_link(BrickName, _Options) ->
     {error, {brick_name_is_not_atom, BrickName}}.
 
@@ -509,6 +519,8 @@ init([BrickName, RegName, Options]) ->
                 hunk_count_min=HunkCountMin,
                 head_seqnum=CurSeq,
                 head_position=Position,
+                head_seqnum_hunk_count=0,
+                head_seqnum_hunk_overhead=0,
                 writeback_seqnum=0,
                 deleting_seqnums=gb_sets:new()}}.
 
@@ -526,7 +538,6 @@ handle_call({write_value, Value}, _From, #state{brick_name=BrickName}=State)
     HunkCount    = State1#state.head_seqnum_hunk_count,
     HunkOverhead = State1#state.head_seqnum_hunk_overhead,
 
-    %% @TODO: Maybe store the key as well
     WALBlobs = [Value, term_to_binary({SeqNum2, Position2})],
     Flags = [],
     {WALHunkIOList, _, _, [WALValOffset, _]} =

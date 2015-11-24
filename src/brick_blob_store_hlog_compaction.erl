@@ -438,15 +438,21 @@ count_live_hunks(BrickName, MetadataStore,
                            blobstore_impl_info(), seqnum()) -> ok | {error, term()}.
 do_compact_hlog_file(BrickName, BlobStore, {BlobImplMod, _}=BlobStoreInfo, SeqNum) ->
     MaxLocations = 1000,
-    {ok, MetadataStore} = ?METADATA:get_metadata_store(BrickName),
-    {ok, LocationFile} = BlobStore:open_location_info_file_for_read(SeqNum),
-    FilterFun = BlobImplMod:live_keys_filter_fun(SeqNum),
-    try
-        find_and_copy_live_hunks(BrickName, MetadataStore,
-                                 BlobStore, BlobStoreInfo, SeqNum, FilterFun,
-                                 LocationFile, start, MaxLocations)
-    after
-        _ = (catch BlobStore:close_location_info_file(LocationFile))
+    case BlobStore:open_location_info_file_for_read(SeqNum) of
+        {ok, LocationFile} ->
+            {ok, MetadataStore} = ?METADATA:get_metadata_store(BrickName),
+            FilterFun = BlobImplMod:live_keys_filter_fun(SeqNum),
+            try
+                find_and_copy_live_hunks(BrickName, MetadataStore,
+                                         BlobStore, BlobStoreInfo, SeqNum, FilterFun,
+                                         LocationFile, start, MaxLocations)
+            after
+                _ = (catch BlobStore:close_location_info_file(LocationFile))
+            end;
+        {error, {file_error, _Path, enoent}} ->
+            %% The blob file has no real blob data. Consider this file is done.
+            %% TODO: ENHANCEME: Read the blob file to ensure there is no real blob data.
+            ok
     end.
 
 -spec find_and_copy_live_hunks(brickname(), mdstore(),
@@ -463,13 +469,12 @@ find_and_copy_live_hunks(BrickName, MetadataStore,
         {ok, NewCont, Locations} ->
             %% @TODO: Change this back to 3 when long-term log is implemented.
             %% AgeThreshold = 3,
-            AgeThreshold = 200,
+            AgeThreshold = 256, %% The max value of age is 255 (1 byte, unsigned int)
             LiveHunkLocations = live_hunk_locations(MetadataStore, Locations, FilterFun),
             StoreTuples = BlobImplMod:copy_hunks(BlobPid, BrickName, SeqNum,
                                                  LiveHunkLocations, AgeThreshold),
             _ = MetadataStore:update_blob_locations(StoreTuples),
             %% DEBUG: display_debug_info(SeqNum, Locations, LiveHunkLocations, StoreTuples),
-            %% repeat
             find_and_copy_live_hunks(BrickName, MetadataStore,
                                      BlobStore, BlobStoreInfo, SeqNum, FilterFun,
                                      LocationFile, NewCont, MaxLocations);
